@@ -5,17 +5,19 @@ public sealed class ConvTests
 {
     const float Sentinel = -777f;
 
-    internal static readonly (string Name, GpuKernelMode Mode, bool Hardware)[] Configurations =
+    /// <summary>Kernel configurations every parity test runs: the default, matrix hardware off, the deterministic mode, and the column-matrix path in place of the implicit kernel.</summary>
+    internal static readonly (string Name, GpuKernelMode Mode, bool Hardware, bool Implicit)[] Configurations =
     [
-        ("fast", GpuKernelMode.Fast, true),
-        ("fast-portable", GpuKernelMode.Fast, false),
-        ("deterministic", GpuKernelMode.Deterministic, true),
+        ("fast", GpuKernelMode.Fast, true, true),
+        ("fast-portable", GpuKernelMode.Fast, false, true),
+        ("deterministic", GpuKernelMode.Deterministic, true, true),
+        ("fast-im2col", GpuKernelMode.Fast, true, false),
     ];
 
     static bool Full => Environment.GetEnvironmentVariable("ONEGPU_CONV_FULL") == "1";
 
-    internal static ConvKernels Make(GpuDevice d, GpuKernelMode mode, bool hardware) =>
-        new(d, mode, new GemmOptions { AllowMatrixHardware = hardware });
+    internal static ConvKernels Make(GpuDevice d, GpuKernelMode mode, bool hardware, bool useImplicit = true) =>
+        new(d, mode, new GemmOptions { AllowMatrixHardware = hardware }) { AllowImplicit = useImplicit };
 
     internal static ConvProblem P(int batch, int cin, int h, int w, int cout, int kh, int kw, int stride = 1, int dilation = 1, int pad = 0, int groups = 1) =>
         new(batch, cin, h, w, cout, kh, kw)
@@ -222,14 +224,14 @@ public sealed class ConvTests
         foreach (var half in new[] { false, true })
         {
             var tol = half ? 2e-3 : 1e-5;
-            foreach (var (cfg, mode, hw) in Configurations)
+            foreach (var (cfg, mode, hw, imp) in Configurations)
             {
                 if (!hw && !half)
                 {
-                    continue; // the float32 matrix product has one portable kernel; forcing it off changes nothing
+                    continue; // the float32 matrix product has one portable kernel on Vulkan; forcing hardware off changes nothing
                 }
 
-                using var k = Make(d, mode, hw);
+                using var k = Make(d, mode, hw, imp);
                 double worst = 0, worstRel = 0, outside = 0;
                 var cases = 0;
                 var variants = new Dictionary<ConvVariant, int>();
@@ -346,13 +348,18 @@ public sealed class ConvTests
         Assert.Throws<GpuKernelShapeException>(() => k.Encode(enc, ok with { OutChannels = 8 }, x, w, null, null, y));
         Assert.Throws<GpuKernelShapeException>(() => k.Encode(enc, ok with { Height = int.MaxValue / 2, Width = 4 }, x, w, null, null, y));
         using var tiny = d.CreateBuffer<float>(16);
-        Assert.Throws<GpuKernelShapeException>(() => k.Encode(enc, ok, x, w, null, null, y, tiny));
+        using var column = new ConvKernels(d) { AllowImplicit = false };
+        Assert.Throws<GpuKernelShapeException>(() => column.Encode(enc, ok, x, w, null, null, y, tiny));
         d.Submit(enc);
     }
 
     // ---- the layer shapes of the vision models -------------------------------------------------------------------------------
 
-    internal sealed record Layer(string Name, ConvProblem P, GpuActivation Act, bool Bias);
+    internal sealed record Layer(string Name, ConvProblem P, GpuActivation Act, bool Bias)
+    {
+        /// <summary>How many times the model runs this shape.</summary>
+        public int Count { get; set; } = 1;
+    }
 
     /// <summary>The distinct convolutions of ResNet-50 v1.5 at <paramref name="size"/> x <paramref name="size"/>.</summary>
     internal static List<Layer> ResNet50(int batch, int size)
@@ -361,7 +368,7 @@ public sealed class ConvTests
         void Add(string name, ConvProblem p, GpuActivation act, bool bias = true)
         {
             var key = $"{p.InChannels}x{p.Height}x{p.Width}->{p.OutChannels} k{p.KernelHeight} s{p.StrideHeight} p{p.PadTop}";
-            layers.TryAdd(key, new Layer(name, p, act, bias));
+            if (layers.TryGetValue(key, out var seen)) { seen.Count++; } else { layers.Add(key, new Layer(name, p, act, bias)); }
         }
 
         var relu = new GpuActivation(GpuUnaryOp.Relu);
@@ -398,7 +405,7 @@ public sealed class ConvTests
         void Add(string name, ConvProblem p, GpuActivation act)
         {
             var key = $"{p.InChannels}x{p.Height}x{p.Width}->{p.OutChannels} k{p.KernelHeight} s{p.StrideHeight} g{p.Groups}";
-            layers.TryAdd(key, new Layer(name, p, act, true));
+            if (layers.TryGetValue(key, out var seen)) { seen.Count++; } else { layers.Add(key, new Layer(name, p, act, true)); }
         }
 
         var relu = new GpuActivation(GpuUnaryOp.Relu);
@@ -446,7 +453,7 @@ public sealed class ConvTests
         void Add(string name, ConvProblem p, GpuActivation act = default)
         {
             var key = $"{p.InChannels}x{p.Height}x{p.Width}->{p.OutChannels} k{p.KernelHeight} s{p.StrideHeight} g{p.Groups}";
-            layers.TryAdd(key, new Layer(name, p, act, true));
+            if (layers.TryGetValue(key, out var seen)) { seen.Count++; } else { layers.Add(key, new Layer(name, p, act, true)); }
         }
 
         var relu = new GpuActivation(GpuUnaryOp.Relu);
@@ -495,14 +502,14 @@ public sealed class ConvTests
         foreach (var half in new[] { false, true })
         {
             var tol = half ? 2e-3 : 1e-5;
-            foreach (var (cfg, mode, hw) in Configurations)
+            foreach (var (cfg, mode, hw, imp) in Configurations)
             {
                 if (!hw && !half)
                 {
                     continue;
                 }
 
-                using var k = Make(d, mode, hw);
+                using var k = Make(d, mode, hw, imp);
                 double worst = 0, worstRel = 0;
                 var count = 0;
                 var perVariant = new Dictionary<ConvVariant, double>();
@@ -581,14 +588,14 @@ public sealed class ConvTests
         foreach (var half in new[] { false, true })
         {
             var tol = half ? 2e-3 : 1e-5;
-            foreach (var (cfg, mode, hw) in Configurations)
+            foreach (var (cfg, mode, hw, imp) in Configurations)
             {
                 if (!hw && !half)
                 {
                     continue;
                 }
 
-                using var k = Make(d, mode, hw);
+                using var k = Make(d, mode, hw, imp);
                 double worst = 0, worstRel = 0;
                 var cases = 0;
                 foreach (var (name, p0) in TransposeShapes())
@@ -684,7 +691,7 @@ public sealed class ConvTests
         };
         foreach (var (name, p) in classes)
         {
-            Rig.Row(d, "conv", "variant", name, $"{ConvKernels.ChooseVariant(p)}; f16 gemm {fast.GemmVariantFloat16} (matrix hardware off: {portable.GemmVariantFloat16}); f32 gemm {fast.GemmVariantFloat32}");
+            Rig.Row(d, "conv", "variant", name, $"f32: {fast.DescribeVariant(p, false)}; f16: {fast.DescribeVariant(p, true)}; f16 with matrix hardware off: {portable.DescribeVariant(p, true)}");
         }
 
         Assert.Equal(ConvVariant.MatrixProduct, ConvKernels.ChooseVariant(classes[0].P));

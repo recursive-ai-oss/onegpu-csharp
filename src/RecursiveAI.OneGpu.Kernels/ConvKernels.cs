@@ -58,6 +58,7 @@ public sealed class ConvKernels : IDisposable
     readonly KernelPipeline?[] _epilogue = new KernelPipeline?[2];
     readonly KernelPipeline?[] _depthwise = new KernelPipeline?[2];
     readonly KernelPipeline?[] _col2im = new KernelPipeline?[2];
+    readonly ConvPipeline?[] _convGemm = new ConvPipeline?[3];
     Gemm? _gemm32;
     Gemm? _gemm16;
     GpuBuffer<float>? _dummy;
@@ -79,6 +80,9 @@ public sealed class ConvKernels : IDisposable
         _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
     }
 
+    /// <summary>Lets tests turn the implicit kernel off to compare it with the column-matrix path.</summary>
+    internal bool AllowImplicit { get; set; } = true;
+
     /// <summary>The mode the instance was created with.</summary>
     public GpuKernelMode Mode => _mode;
 
@@ -98,6 +102,29 @@ public sealed class ConvKernels : IDisposable
         }
 
         return IsPointwise(problem) ? ConvVariant.MatrixProduct : ConvVariant.Im2ColMatrixProduct;
+    }
+
+    /// <summary>
+    /// Names how this instance runs a convolution of the given shape and element type on its device: the passes, and the matrix product behind them. For reports and for
+    /// checking which variant a device took.
+    /// </summary>
+    /// <param name="problem">The convolution.</param>
+    /// <param name="half">True for float16 operands, false for float32.</param>
+    public string DescribeVariant(in ConvProblem problem, bool half)
+    {
+        var shape = ChooseVariant(problem);
+        if (shape == ConvVariant.Depthwise)
+        {
+            return half ? "direct depthwise (halves, float32 sum, fused epilogue)" : "direct depthwise (float32, fused epilogue)";
+        }
+
+        var gemm = half ? GemmVariantFloat16 : GemmVariantFloat32;
+        if (UsesImplicitGemm(half))
+        {
+            return (half ? "implicit " : "implicit fused-epilogue ") + gemm + " + " + (half ? "epilogue pass" : "bias/residual/activation in the store");
+        }
+
+        return (shape == ConvVariant.MatrixProduct ? "matrix product " : "im2col + matrix product ") + gemm + " + epilogue pass";
     }
 
     static bool IsPointwise(in ConvProblem p) =>
@@ -254,7 +281,10 @@ public sealed class ConvKernels : IDisposable
         }
 
         var pointwise = variant == ConvVariant.MatrixProduct;
-        long colPerImage = pointwise ? 0 : (long)p.InChannels * p.KernelHeight * p.KernelWidth * ohw;
+        var implicitGemm = UsesImplicitGemm(half);
+        // With float32 operands the implicit kernel applies the bias, residual and the activations it knows as it stores; anything else is left to the epilogue pass.
+        var fused = implicitGemm && !half && FusableActivation(p.Activation.Op);
+        long colPerImage = pointwise || implicitGemm ? 0 : (long)p.InChannels * p.KernelHeight * p.KernelWidth * ohw;
         if (colPerImage > 0)
         {
             CheckSize(ConvName, "columns", colPerImage);
@@ -286,59 +316,111 @@ public sealed class ConvKernels : IDisposable
             chunk = Math.Min(chunk, fit);
         }
 
-        var needEpilogue = half || bias is not null || residual is not null || act != 0;
+        var tilesX = (ohw + 63) / 64;
+        var tilesY = (coutG + 63L) / 64;
+        if (implicitGemm)
+        {
+            var limit = _device.Capabilities.Compute.MaxWorkgroupCount;
+            limit = limit == 0 ? 65535u : Math.Min(limit, 65535u);
+            if (tilesX > limit || tilesY > limit || p.Groups > limit)
+            {
+                throw new GpuKernelShapeException(ConvName, "grid", $"the grid of {tilesX} x {tilesY} x {p.Groups} workgroups exceeds the device limit of {limit} per axis");
+            }
+
+            chunk = Math.Min(chunk, limit / p.Groups);
+        }
+
+        var needEpilogue = (half || bias is not null || residual is not null || act != 0) && !fused;
         Span<uint> w17 = stackalloc uint[17];
         Span<uint> e = stackalloc uint[13];
+        Span<uint> cg = stackalloc uint[26];
         for (long n0 = 0; n0 < p.Batch; n0 += chunk)
         {
             var cn = (int)Math.Min(chunk, p.Batch - n0);
-            if (!pointwise)
+            if (implicitGemm)
             {
-                var pipe = _im2col[kind] ??= CreateIm2Col(half);
-                var count = (long)cn * colPerImage;
-                w17[0] = (uint)count;
-                w17[1] = (uint)(p.OffsetX + (n0 * xImage));
-                w17[2] = 0;
-                w17[4] = (uint)p.InChannels;
-                w17[5] = (uint)p.Height;
-                w17[6] = (uint)p.Width;
-                w17[7] = (uint)oh;
-                w17[8] = (uint)ow;
-                w17[9] = (uint)p.KernelHeight;
-                w17[10] = (uint)p.KernelWidth;
-                w17[11] = (uint)p.StrideHeight;
-                w17[12] = (uint)p.StrideWidth;
-                w17[13] = (uint)p.DilationHeight;
-                w17[14] = (uint)p.DilationWidth;
-                w17[15] = (uint)p.PadTop;
-                w17[16] = (uint)p.PadLeft;
-                var (gx, gy) = Grid1D(count, 0, half);
-                w17[3] = gx;
-                pipe.Record(encoder, w17, gx, gy, x.Buffer, cols!.Buffer);
+                var pipe = _convGemm[kind] ??= CreateConvGemm(half);
+                cg[0] = (uint)coutG;
+                cg[1] = (uint)ohw;
+                cg[2] = (uint)kElems;
+                cg[3] = (uint)p.Groups;
+                cg[4] = (uint)p.InChannels;
+                cg[5] = (uint)p.Height;
+                cg[6] = (uint)p.Width;
+                cg[7] = (uint)ow;
+                cg[8] = (uint)p.KernelHeight;
+                cg[9] = (uint)p.KernelWidth;
+                cg[10] = (uint)p.StrideHeight;
+                cg[11] = (uint)p.StrideWidth;
+                cg[12] = (uint)p.DilationHeight;
+                cg[13] = (uint)p.DilationWidth;
+                cg[14] = (uint)p.PadTop;
+                cg[15] = (uint)p.PadLeft;
+                cg[16] = (uint)(p.OffsetX + (n0 * xImage));
+                cg[17] = (uint)p.OffsetW;
+                cg[18] = half ? 0u : (uint)(p.OffsetY + (n0 * yImage));
+                cg[19] = (uint)p.OffsetBias;
+                cg[20] = (uint)(p.OffsetResidual + (n0 * yImage));
+                cg[21] = (uint)p.OutChannels;
+                cg[22] = (fused && bias is not null ? 1u : 0u) | (fused && residual is not null ? 2u : 0u) | (pointwise ? 4u : 0u);
+                cg[23] = fused ? act : 0u;
+                cg[24] = fused ? p0 : 0u;
+                cg[25] = fused ? p1 : 0u;
+                var target = half ? acc!.Buffer : y.Buffer;
+                var useBias = fused && bias is not null ? bias.Buffer : DummyFloat().Buffer;
+                var useRes = fused && residual is not null ? residual.Buffer : DummyFloat().Buffer;
+                pipe.Record(encoder, cg, (uint)tilesX, (uint)tilesY, (uint)(cn * p.Groups), x.Buffer, w.Buffer, target, useBias, useRes);
             }
-
-            for (var g = 0; g < p.Groups; g++)
+            else
             {
-                var gp = new GemmProblem(coutG, (int)ohw, (int)kElems)
+                if (!pointwise)
                 {
-                    Batch = cn,
-                    OffsetA = checked(p.OffsetW + (int)(g * coutG * kElems)),
-                    StrideA = 0,
-                };
-                if (pointwise)
-                {
-                    gp.OffsetB = checked((int)(p.OffsetX + (n0 * xImage) + ((long)g * cinG * ohw)));
-                    gp.StrideB = (int)xImage;
-                }
-                else
-                {
-                    gp.OffsetB = checked((int)((long)g * kElems * ohw));
-                    gp.StrideB = (int)colPerImage;
+                    var pipe = _im2col[kind] ??= CreateIm2Col(half);
+                    var count = (long)cn * colPerImage;
+                    w17[0] = (uint)count;
+                    w17[1] = (uint)(p.OffsetX + (n0 * xImage));
+                    w17[2] = 0;
+                    w17[4] = (uint)p.InChannels;
+                    w17[5] = (uint)p.Height;
+                    w17[6] = (uint)p.Width;
+                    w17[7] = (uint)oh;
+                    w17[8] = (uint)ow;
+                    w17[9] = (uint)p.KernelHeight;
+                    w17[10] = (uint)p.KernelWidth;
+                    w17[11] = (uint)p.StrideHeight;
+                    w17[12] = (uint)p.StrideWidth;
+                    w17[13] = (uint)p.DilationHeight;
+                    w17[14] = (uint)p.DilationWidth;
+                    w17[15] = (uint)p.PadTop;
+                    w17[16] = (uint)p.PadLeft;
+                    var (gx, gy) = Grid1D(count, 0, half);
+                    w17[3] = gx;
+                    pipe.Record(encoder, w17, gx, gy, x.Buffer, cols!.Buffer);
                 }
 
-                gp.StrideC = (int)yImage;
-                gp.OffsetC = half ? checked((int)((long)g * coutG * ohw)) : checked((int)(p.OffsetY + (n0 * yImage) + ((long)g * coutG * ohw)));
-                RunGemm(encoder, gp, w, pointwise ? x : cols!, half ? acc! : (GpuBuffer<float>)(object)y);
+                for (var g = 0; g < p.Groups; g++)
+                {
+                    var gp = new GemmProblem(coutG, (int)ohw, (int)kElems)
+                    {
+                        Batch = cn,
+                        OffsetA = checked(p.OffsetW + (int)(g * coutG * kElems)),
+                        StrideA = 0,
+                    };
+                    if (pointwise)
+                    {
+                        gp.OffsetB = checked((int)(p.OffsetX + (n0 * xImage) + ((long)g * cinG * ohw)));
+                        gp.StrideB = (int)xImage;
+                    }
+                    else
+                    {
+                        gp.OffsetB = checked((int)((long)g * kElems * ohw));
+                        gp.StrideB = (int)colPerImage;
+                    }
+
+                    gp.StrideC = (int)yImage;
+                    gp.OffsetC = half ? checked((int)((long)g * coutG * ohw)) : checked((int)(p.OffsetY + (n0 * yImage) + ((long)g * coutG * ohw)));
+                    RunGemm(encoder, gp, w, pointwise ? x : cols!, half ? acc! : (GpuBuffer<float>)(object)y);
+                }
             }
 
             if (needEpilogue)
@@ -370,6 +452,18 @@ public sealed class ConvKernels : IDisposable
             }
         }
     }
+
+    // The implicit kernel is the portable tiled product with the window gathering built in. Where the matrix product of the element type runs on matrix
+    // hardware the column-matrix path keeps that speed, so the implicit kernel is chosen only next to the portable product.
+    bool UsesImplicitGemm(bool half)
+    {
+        var variant = half ? GemmVariantFloat16 : GemmVariantFloat32;
+        return AllowImplicit && variant.StartsWith("tiled", StringComparison.Ordinal);
+    }
+
+    // Activations the implicit kernel applies itself (see ConvAct in ConvGemm.hlsl).
+    static bool FusableActivation(GpuUnaryOp op) =>
+        op is GpuUnaryOp.Identity or GpuUnaryOp.Tanh or GpuUnaryOp.Sigmoid or GpuUnaryOp.Relu or GpuUnaryOp.Silu or GpuUnaryOp.HardSigmoid or GpuUnaryOp.HardSwish or GpuUnaryOp.Clip or GpuUnaryOp.LeakyRelu;
 
     void EncodeTransposeCore<T>(GpuCommandEncoder encoder, in ConvTransposeProblem p, GpuBuffer<T> x, GpuBuffer<T> w, GpuBuffer<T>? bias, GpuBuffer<T> y, GpuBuffer<float>? columns)
         where T : unmanaged
@@ -487,6 +581,8 @@ public sealed class ConvKernels : IDisposable
     }
 
     GpuBuffer<float> Dummy() => _dummy ??= _device.CreateBuffer<float>(4);
+
+    GpuBuffer<float> DummyFloat() => Dummy();
 
     GpuBuffer<T> OwnColumns<T>(long perImage, long batch)
         where T : unmanaged
@@ -632,7 +728,7 @@ public sealed class ConvKernels : IDisposable
     }
 
     /// <summary>How many bind groups the family has built so far; tests use it to see the cache work.</summary>
-    internal int BindGroupsCreated => KernelPipeline.Total(_im2col, _epilogue, _depthwise, _col2im) + (_gemm32?.BindGroupsCreated ?? 0) + (_gemm16?.BindGroupsCreated ?? 0);
+    internal int BindGroupsCreated => KernelPipeline.Total(_im2col, _epilogue, _depthwise, _col2im) + ConvPipeline.Total(_convGemm) + (_gemm32?.BindGroupsCreated ?? 0) + (_gemm16?.BindGroupsCreated ?? 0);
 
     /// <summary>
     /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.
@@ -646,6 +742,11 @@ public sealed class ConvKernels : IDisposable
             {
                 p?.ReleaseBindings();
             }
+        }
+
+        foreach (var p in _convGemm)
+        {
+            p?.ReleaseBindings();
         }
 
         _gemm32?.ReleaseBindings();
@@ -662,6 +763,12 @@ public sealed class ConvKernels : IDisposable
                 set[i]?.Dispose();
                 set[i] = null;
             }
+        }
+
+        for (var i = 0; i < _convGemm.Length; i++)
+        {
+            _convGemm[i]?.Dispose();
+            _convGemm[i] = null;
         }
 
         _gemm32?.Dispose();
@@ -694,6 +801,12 @@ public sealed class ConvKernels : IDisposable
     {
         var e = DepthwiseConv.Variants.Get(new DepthwiseConv.Key(f16: half)).DepthwiseConvOp;
         return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 5, 26, "depthwise-conv", _maxBindGroups);
+    }
+
+    ConvPipeline CreateConvGemm(bool half)
+    {
+        var e = ConvGemm.Variants.Get(new ConvGemm.Key(f16: half)).ConvGemmTiled;
+        return new ConvPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 26, "conv-gemm", _maxBindGroups);
     }
 
     KernelPipeline CreateCol2Im(bool half)

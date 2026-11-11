@@ -22,6 +22,7 @@
     <OneShader Include="Shaders/Cast.hlsl" />
     <OneShader Include="Shaders/Col2Im.hlsl" Axes="F16" />
     <OneShader Include="Shaders/ConvEpilogue.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/ConvGemm.hlsl" Axes="F16" />
     <OneShader Include="Shaders/DepthwiseConv.hlsl" Axes="F16" />
     <OneShader Include="Shaders/GlobalPool.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Im2Col.hlsl" Axes="F16" />
