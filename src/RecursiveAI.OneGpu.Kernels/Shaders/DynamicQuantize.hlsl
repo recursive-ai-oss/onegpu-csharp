@@ -194,6 +194,13 @@ void DqFinish(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
         GroupMemoryBarrierWithGroupSync();
     }
 
+    // Part is declared read-write for the other pass; WGSL turns a binding that an entry point never writes into a read-only one, which then no
+    // longer matches the shared layout. A write that cannot happen (no tensor has 2^32 - 1 elements) keeps the access as declared.
+    if (tid == 0u && P.Count == 0xFFFFFFFFu)
+    {
+        Part[0] = 0u;
+    }
+
     if (tid == 0u)
     {
         float lo = min(0.0, Smin[0]);
@@ -224,6 +231,13 @@ void DqQuantize(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
     uint t = (gid.y * P.GridX + gid.x) * WG + tid;
     uint words = ((P.OffY + P.Count - 1u) >> 2) - (P.OffY >> 2) + 1u;
+    // Keeps the declared read-write access on the two parameter buffers this pass only reads (see DqFinish).
+    if (P.Count == 0xFFFFFFFFu)
+    {
+        ScaleOut[0] = 0u;
+        ZeroOut[0] = 0u;
+    }
+
     if (t >= words)
     {
         return;
