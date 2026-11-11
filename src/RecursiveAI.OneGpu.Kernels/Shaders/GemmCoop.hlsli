@@ -94,7 +94,7 @@ typedef CooperativeMatrix<float, 16, 16, MatrixUse::Accumulator> MatC;
             uint at = baseC + gm * P.Ldc + gn;                                                       \
             float r = P.Alpha * TileC[sg * 256 + ei];                                                \
             if (P.Beta != 0.0) { r = mad(P.Beta, C[at], r); }                                        \
-            C[at] = GemmEpilogue(r, gn);                                                             \
+            C[at] = GemmEpilogue(r, gm, gn);                                                          \
         }                                                                                            \
     }                                                                                                \
     GroupMemoryBarrierWithGroupSync();
