@@ -32,6 +32,7 @@ device.Submit(encoder);
 | `SoftmaxKernels` | Softmax and LogSoftmax along any axis |
 | `NormKernels` | layer normalisation and RMS normalisation over the last axis, optional scale and bias |
 | `TransposeKernels` | N-d permutation, NCHW↔NHWC, split and merge of attention heads |
+| `AttentionKernels` | fused scaled dot-product attention with masks, key lengths, causal rule and grouped heads (see [attention.md](attention.md)) |
 
 | `GatherKernels` | ONNX Gather (any axis, negative indices, int32 or int64 indices; the embedding lookup), GatherElements, GatherND (with batch dimensions) |
 | `ScatterKernels` | ScatterND and ScatterElements with reduction none, add, mul, min or max |

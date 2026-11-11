@@ -33,7 +33,31 @@ internal static class KernelSmoke
         using var bigInput = device.CreateBuffer<float>(big);
         using var bigSum = device.CreateBuffer<float>(1);
 
+        // Causal attention over 300 keys is cut into two key ranges, so both passes of the family run.
+        const int AH = 2, ASq = 5, ASk = 300, AD = 32;
+        var aq = new float[AH * ASq * AD];
+        var ak = new float[AH * ASk * AD];
+        var av = new float[AH * ASk * AD];
+        for (var i = 0; i < aq.Length; i++)
+        {
+            aq[i] = ((i * 29) % 61 - 30) / 20f;
+        }
+
+        for (var i = 0; i < ak.Length; i++)
+        {
+            ak[i] = ((i * 17) % 53 - 26) / 20f;
+            av[i] = ((i * 13) % 47 - 23) / 23f;
+        }
+
+        using var attnQ = device.CreateBuffer<float>(aq);
+        using var attnK = device.CreateBuffer<float>(ak);
+        using var attnV = device.CreateBuffer<float>(av);
+        using var attnO = device.CreateBuffer<float>(aq.Length);
+        using var attention = new AttentionKernels(device);
+        var attnProblem = new AttentionProblem(1, AH, ASq, ASk, AD) { Causal = true };
+
         var commands = device.BeginCommands();
+        attention.Encode(commands, attnProblem, attnQ, attnK, attnV, attnO, mode: GpuKernelMode.Deterministic);
         softmax.Encode(commands, input, 0, [Rows, Len], 1, soft, 0, mode: GpuKernelMode.Deterministic);
         reduce.EncodeReduce(commands, GpuReduceOp.Sum, input, 0, [Rows, Len], [1], sums, 0);
         elementwise.EncodeBinary(commands, GpuBinaryOp.Add, input, 0, [Rows, Len], input, 0, [Rows, Len], added, 0, new GpuActivation(GpuUnaryOp.Relu));
@@ -52,7 +76,43 @@ internal static class KernelSmoke
         var gotBig = new float[1];
         await bigSum.ReadAsync(gotBig);
 
+        var gotAttn = new float[aq.Length];
+        await attnO.ReadAsync(gotAttn);
+
         var wrong = 0;
+        for (var h = 0; h < AH; h++)
+        {
+            for (var i = 0; i < ASq; i++)
+            {
+                var visible = ASk - ASq + i + 1;
+                var s = new double[visible];
+                var top = double.NegativeInfinity;
+                for (var j = 0; j < visible; j++)
+                {
+                    double dot = 0;
+                    for (var e = 0; e < AD; e++)
+                    {
+                        dot += (double)aq[(((h * ASq) + i) * AD) + e] * ak[(((h * ASk) + j) * AD) + e];
+                    }
+
+                    s[j] = dot / Math.Sqrt(AD);
+                    top = Math.Max(top, s[j]);
+                }
+
+                var norm = s.Sum(v => Math.Exp(v - top));
+                for (var e = 0; e < AD; e++)
+                {
+                    double acc = 0;
+                    for (var j = 0; j < visible; j++)
+                    {
+                        acc += Math.Exp(s[j] - top) * av[(((h * ASk) + j) * AD) + e];
+                    }
+
+                    wrong += Math.Abs(gotAttn[(((h * ASq) + i) * AD) + e] - (acc / norm)) < 1e-5 ? 0 : 1;
+                }
+            }
+        }
+
         for (var r = 0; r < Rows; r++)
         {
             double max = double.NegativeInfinity, total = 0, sum = 0;
