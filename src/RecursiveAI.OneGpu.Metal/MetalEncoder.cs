@@ -22,6 +22,11 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
     /// <summary>Timestamp sets this recording writes into; the device marks them pending on the submission that carries it.</summary>
     internal readonly List<MetalTimestampSet> TimedSets = new(2);
 
+    // Arithmetic recorded since the last cut, and what the command buffer in progress holds (for the error of a failed submission).
+    double _work;
+    internal string? LastLabel;
+    internal int Passes;
+
     internal MetalEncoder(MetalDevice dev)
     {
         _dev = dev;
@@ -38,6 +43,53 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
         _timingSet = null;
         _timingUsed = 0;
         TimedSets.Clear();
+        _work = 0;
+        LastLabel = null;
+        Passes = 0;
+    }
+
+    /// <summary>Notes a compute pass using a pipeline, for the description of a failed submission.</summary>
+    internal void NotePass(string? label)
+    {
+        LastLabel = label ?? LastLabel;
+        Passes++;
+    }
+
+    /// <summary>Ends any open blit encoder and hands the command buffer in progress (and its one reference) to the device, which commits it.</summary>
+    internal nint TakeBuffer()
+    {
+        EndBlit();
+        var cb = _cb;
+        _cb = 0;
+        return cb;
+    }
+
+    /// <summary>Continues recording in a new command buffer after the previous one was committed.</summary>
+    internal void ContinueIn(nint commandBuffer)
+    {
+        _cb = commandBuffer;
+        _blit = 0;
+        LastLabel = null;
+        Passes = 0;
+    }
+
+    /// <inheritdoc />
+    public override void ReportWork(double operations)
+    {
+        EnsureOpen();
+        _work += operations;
+        if (_work >= MetalDevice.SubmissionWorkBudget)
+        {
+            SplitSubmission();
+        }
+    }
+
+    /// <inheritdoc />
+    public override void SplitSubmission()
+    {
+        EnsureOpen();
+        _dev.CommitPartial(this);
+        _work = 0;
     }
 
     internal MetalDevice Device => _dev;
@@ -794,6 +846,7 @@ internal sealed unsafe class MetalComputePass : GpuComputePass
         Check();
         var p = pipeline as MetalComputePipeline ?? throw new ArgumentException("pipeline belongs to another backend", nameof(pipeline));
         _pipeline = p;
+        _owner.NotePass(p.Label);
         Msg.Void(_enc, Sel.setComputePipelineState_, p.State);
         _dirty = 0xFF;
         _push.Dirty = _push.Bytes is not null;

@@ -180,6 +180,25 @@ public abstract class GpuCommandEncoder
 
     /// <summary>Stops timing passes and returns how many were timed since <see cref="BeginPassTiming"/>.</summary>
     public abstract uint EndPassTiming();
+
+    /// <summary>
+    /// Tells the encoder how much arithmetic the commands recorded since the last call carry, so a backend where the platform aborts a
+    /// submission that runs too long can cut the recording into shorter submissions (see <see cref="GpuComputeCapabilities.SubmissionWorkBudget"/>).
+    /// The cut falls between passes and keeps the order of the commands, so results do not change. Does nothing on backends without such a limit.
+    /// Call it between passes, not inside one.
+    /// </summary>
+    /// <param name="operations">Arithmetic operations, counting a multiply-add as two. Not negative.</param>
+    public virtual void ReportWork(double operations)
+    {
+    }
+
+    /// <summary>
+    /// Ends the submission recorded so far and continues in a new one: the commands before this call are handed to the GPU now, and the commands
+    /// after it run once they have finished. Does nothing on backends where a long submission is harmless. Call it between passes, not inside one.
+    /// </summary>
+    public virtual void SplitSubmission()
+    {
+    }
 }
 
 /// <summary>Records draws inside a render pass.</summary>

@@ -19,10 +19,23 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
     readonly bool _debugLayer;
     readonly List<string> _messages = [];
 
-    // Submissions that may still be running: (serial, command buffer, counts toward the frame limit).
-    readonly Queue<(ulong Serial, nint Buffer, bool Frame)> _inflight = new();
+    // Submissions that may still be running: (serial, command buffer, counts toward the frame limit, what the last compute pass ran, passes).
+    readonly Queue<(ulong Serial, nint Buffer, bool Frame, string? Label, int Passes)> _inflight = new();
     ulong _serial;
     int _frames;
+
+    // The first command buffer the GPU aborted or failed since the caller was last told. Whatever it wrote is invalid, so the next call that
+    // waits for the GPU or reads results throws instead of handing back wrong data.
+    GpuCommandFailedException? _failure;
+
+    /// <summary>Arithmetic operations one submission may carry before the system's GPU watchdog may abort it for running too long.</summary>
+    /// <remarks>
+    /// macOS cancels a command buffer that keeps the GPU busy long enough to hurt interactivity (reported as
+    /// <c>kIOGPUCommandBufferCallbackErrorImpactingInteractivity</c>); Apple's guidance is to split long work into several command buffers.
+    /// 2^33 operations is about 20 ms of an M2 running the matrix-hardware product and about 60 ms of the portable one, far below any limit,
+    /// and the extra commits cost microseconds.
+    /// </remarks>
+    internal const ulong SubmissionWorkBudget = 1UL << 33;
 
     // Writes waiting to be copied into their destinations before the next submitted commands.
     readonly List<PendingUpload> _uploads = [];
@@ -106,7 +119,7 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
     {
         while (_inflight.Count > 0)
         {
-            var (_, cb, _) = _inflight.Peek();
+            var (_, cb, _, _, _) = _inflight.Peek();
             var status = Msg.UL(cb, Sel.status);
             if (status < MT.StatusCompleted)
             {
@@ -117,12 +130,13 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
         }
     }
 
-    void Retire((ulong Serial, nint Buffer, bool Frame) entry)
+    void Retire((ulong Serial, nint Buffer, bool Frame, string? Label, int Passes) entry)
     {
         if (Msg.UL(entry.Buffer, Sel.status) == MT.StatusError)
         {
-            var err = Msg.Obj(entry.Buffer, Sel.error);
-            _messages.Add("command buffer failed: " + (err == 0 ? "unknown error" : Objc.ErrorText(err)));
+            var failure = Describe(entry.Buffer, $"submission {entry.Serial} ({entry.Passes} compute passes" + (entry.Label is null ? ")" : $", the last running '{entry.Label}')"));
+            _messages.Add(failure.Message);
+            _failure ??= failure;
         }
 
         if (entry.Frame)
@@ -133,6 +147,33 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
         Objc.objc_release(entry.Buffer);
     }
 
+    /// <summary>Builds the typed error for a command buffer that finished with an error, saying what it was running.</summary>
+    internal static GpuCommandFailedException Describe(nint commandBuffer, string what)
+    {
+        var err = Msg.Obj(commandBuffer, Sel.error);
+        var text = err == 0 ? "unknown error" : Objc.ErrorText(err);
+        var code = err == 0 ? 0 : (long)Msg.UL(err, Sel.code);
+        var reason = code switch
+        {
+            2 => GpuCommandFailure.Watchdog,
+            8 => GpuCommandFailure.OutOfMemory,
+            9 => GpuCommandFailure.InvalidResource,
+            _ => text.Contains("Interactivity", StringComparison.OrdinalIgnoreCase) || text.Contains("timeout", StringComparison.OrdinalIgnoreCase) ? GpuCommandFailure.Watchdog : GpuCommandFailure.Unknown,
+        };
+        var advice = reason == GpuCommandFailure.Watchdog ? " The system's GPU watchdog aborted it for running too long; everything it wrote is invalid. Cut the work into shorter submissions." : " Everything it wrote is invalid.";
+        return new GpuCommandFailedException($"Metal command buffer failed: {what}: {text}.{advice}", reason, code);
+    }
+
+    /// <summary>Throws, once, the error of a command buffer that failed since the last time the caller was told.</summary>
+    void ThrowFailure()
+    {
+        if (_failure is { } failure)
+        {
+            _failure = null;
+            throw failure;
+        }
+    }
+
     void WaitOldest()
     {
         var entry = _inflight.Dequeue();
@@ -141,14 +182,37 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
     }
 
     /// <summary>Commits a command buffer the backend now owns one reference to.</summary>
-    internal void Commit(nint commandBuffer, bool frame)
+    internal void Commit(nint commandBuffer, bool frame, string? label = null, int passes = 0)
     {
         Msg.Void(commandBuffer, Sel.commit);
-        _inflight.Enqueue((++_serial, commandBuffer, frame));
+        _inflight.Enqueue((++_serial, commandBuffer, frame, label, passes));
         if (frame)
         {
             _frames++;
         }
+    }
+
+    /// <summary>
+    /// Commits what an encoder has recorded so far and gives it a fresh command buffer to continue in. The queue runs command buffers in the
+    /// order they were committed, so the commands keep their order.
+    /// </summary>
+    internal void CommitPartial(MetalEncoder encoder)
+    {
+        using var pool = new Pool();
+        var label = encoder.LastLabel;
+        var passes = encoder.Passes;
+        var cb = encoder.TakeBuffer();
+        FlushUploads();
+        Commit(cb, frame: false, label, passes);
+        foreach (var timed in encoder.TimedSets)
+        {
+            timed.PendingSerial = _serial;
+        }
+
+        var next = Msg.Obj(_queue, Sel.commandBuffer);
+        Objc.objc_retain(next);
+        encoder.ContinueIn(next);
+        Poll();
     }
 
     /// <inheritdoc />
@@ -175,7 +239,7 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
         using var pool = new Pool();
         var cb = enc.Finish();
         FlushUploads();
-        Commit(cb, frame: true);
+        Commit(cb, frame: true, enc.LastLabel, enc.Passes);
         foreach (var timed in enc.TimedSets)
         {
             timed.PendingSerial = _serial;
@@ -190,6 +254,8 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
         {
             WaitOldest();
         }
+
+        ThrowFailure();
     }
 
     internal void Present(nint drawable)
@@ -212,6 +278,8 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
         {
             WaitOldest();
         }
+
+        ThrowFailure();
     }
 
     /// <inheritdoc />
@@ -452,6 +520,12 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
         while (_inflight.Count > 0)
         {
             WaitOldest();
+        }
+
+        if (_failure is not null)
+        {
+            Objc.objc_release(staging);
+            ThrowFailure();
         }
 
         new ReadOnlySpan<byte>((void*)Msg.Obj(staging, Sel.contents), destination.Length).CopyTo(destination);

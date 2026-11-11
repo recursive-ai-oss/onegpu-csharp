@@ -78,6 +78,111 @@ internal static class KernelSmoke
         }
 
         wrong += Math.Abs(gotBig[0] - big.Sum(v => (double)v)) < 1e-2 ? 0 : 1;
+        return wrong + await GatherAndInt8Async(device);
+    }
+
+    // Embedding-style gather with a negative index, then an int8 GEMM with a zero point and a dynamic quantize, against plain C#.
+    static async Task<int> GatherAndInt8Async(GpuDevice device)
+    {
+        var wrong = 0;
+        const int Vocab = 100, Hidden = 8;
+        var table = new float[Vocab * Hidden];
+        for (var i = 0; i < table.Length; i++)
+        {
+            table[i] = i * 0.25f;
+        }
+
+        int[] ids = [3, -1, 99, 0, 50];
+        using var tableBuf = device.CreateBuffer<float>(table);
+        using var idBuf = device.CreateBuffer<int>(ids);
+        using var gathered = device.CreateBuffer<float>(ids.Length * Hidden);
+
+        const int M = 5, N = 6, K = 7;
+        var a = new byte[M * K];
+        var b = new sbyte[K * N];
+        for (var i = 0; i < a.Length; i++)
+        {
+            a[i] = (byte)((i * 29) % 251);
+        }
+
+        for (var i = 0; i < b.Length; i++)
+        {
+            b[i] = (sbyte)((i * 13 % 255) - 127);
+        }
+
+        byte[] zeroA = [17];
+        using var aBuf = device.CreateBuffer<byte>(a);
+        using var bBuf = device.CreateBuffer<sbyte>(b);
+        using var zBuf = device.CreateBuffer<byte>(zeroA);
+        using var cBuf = device.CreateBuffer<int>(M * N);
+
+        var q = new float[300];
+        for (var i = 0; i < q.Length; i++)
+        {
+            q[i] = ((i * 37) % 101 - 40) / 9f;
+        }
+
+        using var qIn = device.CreateBuffer<float>(q);
+        using var qOut = device.CreateBuffer<byte>(q.Length);
+        using var qScale = device.CreateBuffer<float>(1);
+        using var qZero = device.CreateBuffer<byte>(1);
+        using var gather = new GatherKernels(device);
+        using var gemm = new Int8Gemm(device);
+        using var dq = new DynamicQuantizeKernels(device);
+
+        var commands = device.BeginCommands();
+        gather.EncodeGather(commands, tableBuf, 0, [Vocab, Hidden], 0, idBuf, 0, ids.Length, gathered, 0);
+        var problem = new Int8GemmProblem(M, N, K) { Lda = K, Ldb = N };
+        gemm.EncodeInt32(commands, problem, aBuf, bBuf, cBuf, zeroPointA: new Int8Operand<byte>(zBuf, 0));
+        dq.Encode(commands, qIn, 0, q.Length, qOut, 0, qScale, 0, qZero, 0);
+        device.Submit(commands);
+
+        var gotG = new float[ids.Length * Hidden];
+        var gotC = new int[M * N];
+        var gotQ = new byte[q.Length];
+        var gotScale = new float[1];
+        var gotZero = new byte[1];
+        await gathered.ReadAsync(gotG);
+        await cBuf.ReadAsync(gotC);
+        await qOut.ReadAsync(gotQ);
+        await qScale.ReadAsync(gotScale);
+        await qZero.ReadAsync(gotZero);
+
+        for (var r = 0; r < ids.Length; r++)
+        {
+            var row = ids[r] < 0 ? ids[r] + Vocab : ids[r];
+            for (var h = 0; h < Hidden; h++)
+            {
+                wrong += gotG[r * Hidden + h] == table[row * Hidden + h] ? 0 : 1;
+            }
+        }
+
+        for (var m = 0; m < M; m++)
+        {
+            for (var n = 0; n < N; n++)
+            {
+                var sum = 0;
+                for (var k = 0; k < K; k++)
+                {
+                    sum += (a[m * K + k] - zeroA[0]) * b[k * N + n];
+                }
+
+                wrong += gotC[m * N + n] == sum ? 0 : 1;
+            }
+        }
+
+        // The scale and zero point follow DynamicQuantizeLinear; the quantized values are checked against them.
+        var lo = Math.Min(0f, q.Min());
+        var hi = Math.Max(0f, q.Max());
+        var scale = (hi - lo) / 255f;
+        wrong += gotScale[0] == scale ? 0 : 1;
+        wrong += gotZero[0] == (byte)Math.Clamp(Math.Round(-(lo / scale), MidpointRounding.ToEven), 0, 255) ? 0 : 1;
+        for (var i = 0; i < q.Length; i++)
+        {
+            var expect = (byte)Math.Clamp(Math.Round(q[i] / scale, MidpointRounding.ToEven) + gotZero[0], 0, 255);
+            wrong += gotQ[i] == expect ? 0 : 1;
+        }
+
         return wrong;
     }
 }

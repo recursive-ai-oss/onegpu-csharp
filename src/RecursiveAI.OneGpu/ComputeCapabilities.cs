@@ -154,6 +154,13 @@ public sealed record GpuComputeCapabilities
     /// <summary>A storage buffer binding that starts inside a buffer (<see cref="BindGroupEntry.Offset"/>) must start at a multiple of this many bytes; the backend reports the hardware's own requirement, or a safe bound where the API gives none. <see cref="GpuDevice.DynamicOffsetAlignment"/> still applies to dynamic offsets.</summary>
     public uint StorageBufferOffsetAlignment { get; init; }
 
+    /// <summary>
+    /// Arithmetic operations (a multiply-add counts two) that one submission may carry before the platform risks aborting it as running too
+    /// long, or 0 when no such limit is known. Kernels that can run long, such as matrix products, cut their work into pieces of at most this
+    /// size and report each to <see cref="GpuCommandEncoder.ReportWork"/>, which starts a new submission between them.
+    /// </summary>
+    public ulong SubmissionWorkBudget { get; init; }
+
     /// <summary>Describes the capabilities in a few lines of plain text, for logs and test output.</summary>
     public string Describe()
     {

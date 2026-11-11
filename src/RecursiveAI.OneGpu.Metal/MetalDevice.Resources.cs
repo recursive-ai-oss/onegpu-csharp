@@ -579,7 +579,7 @@ internal sealed unsafe partial class MetalDevice
             throw new GpuException($"Metal could not create the compute pipeline: {Objc.ErrorText(error)}");
         }
 
-        return new MetalComputePipeline { State = state, Layout = layout, Slots = cs.Slots, Group = cs.GroupSize, PushIndex = cs.PushIndex };
+        return new MetalComputePipeline(desc.Label) { State = state, Layout = layout, Slots = cs.Slots, Group = cs.GroupSize, PushIndex = cs.PushIndex };
     }
 
     /// <inheritdoc />

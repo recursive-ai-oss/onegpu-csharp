@@ -12,6 +12,19 @@ public sealed class GemmOptions
     /// false to force the portable tiled variant, for example to compare the two or to rule hardware out when chasing a problem.
     /// </summary>
     public bool AllowMatrixHardware { get; init; } = true;
+
+    /// <summary>
+    /// Cut a product that is large for the device (more arithmetic than <see cref="GpuComputeCapabilities.SubmissionWorkBudget"/>) into several
+    /// dispatches over groups of batches or blocks of rows, and report each to the encoder so it can start a new submission between them. Each output element is still
+    /// summed by one thread in the same order, so the bits do not change. Set to false to record every product as one dispatch.
+    /// </summary>
+    public bool AllowSplitting { get; init; } = true;
+
+    /// <summary>
+    /// Arithmetic operations per submission above which a product is split, replacing the device's own
+    /// <see cref="GpuComputeCapabilities.SubmissionWorkBudget"/>. Null uses the device's. Meant for tests and for hosts that share the GPU with a display.
+    /// </summary>
+    public ulong? SubmissionWorkBudget { get; init; }
 }
 
 /// <summary>
@@ -45,6 +58,7 @@ public sealed class Gemm : IDisposable
     readonly GpuPipelineLayout _layout;
     readonly uint _tileM;
     readonly uint _tileN;
+    readonly ulong _splitBudget;
     readonly Dictionary<(GpuBuffer, GpuBuffer, GpuBuffer), GpuBindGroup> _bindGroups = [];
 
     /// <summary>Creates the kernel for one element type and mode.</summary>
@@ -61,6 +75,7 @@ public sealed class Gemm : IDisposable
         Mode = mode;
         _tileM = 64;
         _tileN = 64;
+        _splitBudget = (options?.AllowSplitting ?? true) ? options?.SubmissionWorkBudget ?? device.Capabilities.Compute.SubmissionWorkBudget : 0;
         if (mode == GpuKernelMode.Fast && (options?.AllowMatrixHardware ?? true) && SimdgroupMatrixVariantFits(device, elementType))
         {
             // Same reason as the SPIR-V kernel below: the shader compiler cannot express simdgroup matrices yet, so the kernel is
@@ -329,30 +344,58 @@ public sealed class Gemm : IDisposable
             _bindGroups.Add(key, group);
         }
 
-        var push = new PushBlock
+        // One dispatch unless the product carries more arithmetic than a submission should (see GemmOptions.AllowSplitting): then whole
+        // products are grouped, or a single product is cut into blocks of rows, and the encoder is told about each piece. A piece is a
+        // smaller problem over the same operands (offsets moved, M and Batch reduced), so each element's sum is the same one.
+        var opsPerProduct = 2.0 * p.M * p.N * p.K;
+        var batchesPerPiece = p.Batch;
+        var rowsPerPiece = p.M;
+        if (_splitBudget != 0 && opsPerProduct * p.Batch > _splitBudget && opsPerProduct > 0)
         {
-            M = (uint)p.M,
-            N = (uint)p.N,
-            K = (uint)p.K,
-            Lda = (uint)lda,
-            Ldb = (uint)ldb,
-            Ldc = (uint)ldc,
-            OffsetA = (uint)p.OffsetA,
-            OffsetB = (uint)p.OffsetB,
-            OffsetC = (uint)p.OffsetC,
-            StrideA = (uint)p.StrideA,
-            StrideB = (uint)p.StrideB,
-            StrideC = (uint)p.StrideC,
-            Flags = (p.TransposeA ? 1u : 0u) | (p.TransposeB ? 2u : 0u),
-            Alpha = p.Alpha,
-            Beta = p.Beta,
-        };
-        var pass = encoder.BeginComputePass();
-        pass.SetPipeline(_pipeline);
-        pass.SetBindGroup(0, group);
-        pass.SetPushConstants(0, MemoryMarshal.AsBytes(new ReadOnlySpan<PushBlock>(in push)));
-        pass.Dispatch(groupsX, groupsY, (uint)p.Batch);
-        pass.EndPass();
+            if (opsPerProduct <= _splitBudget)
+            {
+                batchesPerPiece = (int)Math.Max(1, Math.Min(p.Batch, _splitBudget / opsPerProduct));
+            }
+            else
+            {
+                batchesPerPiece = 1;
+                rowsPerPiece = (int)Math.Min(p.M, Math.Max(_tileM, (long)(_splitBudget / (2.0 * p.N * p.K) / _tileM) * _tileM));
+            }
+        }
+
+        for (var b0 = 0; b0 < p.Batch; b0 += batchesPerPiece)
+        {
+            var nb = Math.Min(batchesPerPiece, p.Batch - b0);
+            for (var r0 = 0; r0 < p.M; r0 += rowsPerPiece)
+            {
+                var rows = Math.Min(rowsPerPiece, p.M - r0);
+                var push = new PushBlock
+                {
+                    M = (uint)rows,
+                    N = (uint)p.N,
+                    K = (uint)p.K,
+                    Lda = (uint)lda,
+                    Ldb = (uint)ldb,
+                    Ldc = (uint)ldc,
+                    OffsetA = (uint)(p.OffsetA + ((long)b0 * p.StrideA) + (p.TransposeA ? r0 : (long)r0 * lda)),
+                    OffsetB = (uint)(p.OffsetB + ((long)b0 * p.StrideB)),
+                    OffsetC = (uint)(p.OffsetC + ((long)b0 * p.StrideC) + ((long)r0 * ldc)),
+                    StrideA = (uint)p.StrideA,
+                    StrideB = (uint)p.StrideB,
+                    StrideC = (uint)p.StrideC,
+                    Flags = (p.TransposeA ? 1u : 0u) | (p.TransposeB ? 2u : 0u),
+                    Alpha = p.Alpha,
+                    Beta = p.Beta,
+                };
+                var pass = encoder.BeginComputePass();
+                pass.SetPipeline(_pipeline);
+                pass.SetBindGroup(0, group);
+                pass.SetPushConstants(0, MemoryMarshal.AsBytes(new ReadOnlySpan<PushBlock>(in push)));
+                pass.Dispatch((uint)((p.N + (int)_tileN - 1) / (int)_tileN), (uint)((rows + (int)_tileM - 1) / (int)_tileM), (uint)nb);
+                pass.EndPass();
+                encoder.ReportWork(2.0 * rows * p.N * p.K * nb);
+            }
+        }
     }
 
     void CheckBindable(string operand, GpuBuffer buffer)
