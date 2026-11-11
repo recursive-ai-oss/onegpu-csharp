@@ -125,9 +125,9 @@ public sealed class ComputeTests
         }
 
         var t = new ulong[4];
-        uint iterations = 1 << 10;
-        double wallNs = 0;
-        for (var attempt = 0; attempt < 14; attempt++, iterations *= 2)
+
+        // One timed submission: GPU time of the two passes and the wall time of submit-and-wait around them.
+        (double First, double Second, double Wall) Measure(uint iterations)
         {
             var enc = d.BeginCommands();
             enc.BeginPassTiming(new PassTiming(set, 0, 2));
@@ -138,27 +138,43 @@ public sealed class ComputeTests
             var clock = System.Diagnostics.Stopwatch.StartNew();
             d.Submit(enc);
             d.WaitIdle();
-            wallNs = clock.Elapsed.TotalMilliseconds * 1e6;
+            var wall = clock.Elapsed.TotalMilliseconds * 1e6;
             Assert.True(d.TryReadTimestamps(set, 0, t), "the timestamps of a finished submission are readable");
-            if (wallNs > 60e6)
+            Assert.True(t[1] > t[0] && t[3] > t[2], "each pass ends after it begins");
+            Assert.True(t[2] >= t[1], "passes run in order");
+            return ((double)(t[1] - t[0]), (double)(t[3] - t[2]), wall);
+        }
+
+        // Grow the work until the GPU time is long enough (tens of milliseconds) for submission overhead to be small beside it.
+        uint iterations = 1 << 10;
+        var run = Measure(iterations);
+        for (var attempt = 0; attempt < 14 && run.First + run.Second < 40e6; attempt++)
+        {
+            iterations *= 2;
+            run = Measure(iterations);
+        }
+
+        // Other tests may share the GPU, and time-slicing adds to the wall time but not to the GPU time of the passes; the least disturbed of
+        // a few repeats is the one that shows whether the tick rate is right.
+        var best = run;
+        for (var repeat = 0; repeat < 6; repeat++)
+        {
+            run = Measure(iterations);
+            if (run.Wall < best.Wall)
             {
-                break;
+                best = run;
             }
         }
 
-        var first = (double)(t[1] - t[0]);
-        var second = (double)(t[3] - t[2]);
-        Assert.True(t[1] > t[0] && t[3] > t[2], "each pass ends after it begins");
-        Assert.True(t[2] >= t[1], "passes run in order");
+        var total = best.First + best.Second;
 
         // The pair of passes fits inside the wall time of the submit-and-wait, and (the wall time being mostly GPU work) fills most of it.
-        var total = first + second;
-        Assert.True(total <= wallNs * 1.02, $"GPU time {total / 1e6:F2} ms exceeds wall time {wallNs / 1e6:F2} ms");
-        Assert.True(total >= wallNs * 0.3, $"GPU time {total / 1e6:F2} ms is far below wall time {wallNs / 1e6:F2} ms");
+        Assert.True(total <= best.Wall * 1.02, $"GPU time {total / 1e6:F2} ms exceeds wall time {best.Wall / 1e6:F2} ms");
+        Assert.True(total >= best.Wall * 0.3, $"GPU time {total / 1e6:F2} ms is far below wall time {best.Wall / 1e6:F2} ms");
 
         // The second pass does twice the work of the first.
-        Assert.InRange(second / first, 1.4, 2.8);
-        Console.WriteLine($"compute pass timing on {d.Adapter.Name}: {first / 1e6:F3} ms and {second / 1e6:F3} ms of {wallNs / 1e6:F3} ms wall (iterations {iterations})");
+        Assert.InRange(best.Second / best.First, 1.4, 2.8);
+        Console.WriteLine($"compute pass timing on {d.Adapter.Name}: {best.First / 1e6:F3} ms and {best.Second / 1e6:F3} ms of {best.Wall / 1e6:F3} ms wall (iterations {iterations})");
     }
 
     /// <summary>Many timed passes in one command buffer give timestamps that never go backwards.</summary>
