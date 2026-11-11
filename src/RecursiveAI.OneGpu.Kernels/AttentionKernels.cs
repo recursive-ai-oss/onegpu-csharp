@@ -59,6 +59,7 @@ public sealed class AttentionKernels : IDisposable
     readonly KernelPipeline?[] _combine = new KernelPipeline?[2];
     GpuBuffer<float>? _scratch;
     GpuBuffer<float>? _dummyFloat;
+    GpuBuffer<float>? _dummyPart;
     GpuBuffer<int>? _dummyInt;
 
     /// <summary>Creates the family for a device.</summary>
@@ -157,7 +158,9 @@ public sealed class AttentionKernels : IDisposable
         var (splits, perSplit) = Split(p, _pairs);
         var blockRows = _pairs ? 32 : 64;
         var groups = checked((long)p.Batch * p.Heads * ((p.QLen + blockRows - 1) / blockRows) * splits);
-        var part = _dummyFloat ??= _device.CreateBuffer<float>(4, label: "attention-unused");
+        // Unused bindings still need a buffer, and a buffer bound both read-only and read-write in one pass is invalid in WebGPU, so each gets its own.
+        var unusedMask = _dummyFloat ??= _device.CreateBuffer<float>(4, label: "attention-unused-mask");
+        var part = _dummyPart ??= _device.CreateBuffer<float>(4, label: "attention-unused-partials");
         if (splits > 1)
         {
             var need = ScratchLength(p);
@@ -220,7 +223,7 @@ public sealed class AttentionKernels : IDisposable
             q.Buffer,
             k.Buffer,
             v.Buffer,
-            mask is null ? _dummyFloat.Buffer : mask.Buffer,
+            mask is null ? unusedMask.Buffer : mask.Buffer,
             keyLengths is null ? (_dummyInt ??= _device.CreateBuffer<int>(4, label: "attention-unused")).Buffer : keyLengths.Buffer,
             o.Buffer,
             part.Buffer,
@@ -266,6 +269,8 @@ public sealed class AttentionKernels : IDisposable
         _scratch = null;
         _dummyFloat?.Dispose();
         _dummyFloat = null;
+        _dummyPart?.Dispose();
+        _dummyPart = null;
         _dummyInt?.Dispose();
         _dummyInt = null;
     }

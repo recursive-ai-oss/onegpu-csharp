@@ -196,30 +196,38 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     float l = 0.0;
     bool bad = false;
 
-    for (uint kb = kBegin; kb < kEnd; kb += BC)
+    // The trip count comes from push constants only, so every barrier in the loop is in uniform control flow, which WGSL requires (the workgroup
+    // index is not known to be uniform there). Tiles past this workgroup's last visible key do nothing but meet at the barriers.
+    uint tiles = (AP.KeysPerSplit + BC - 1u) / BC;
+    for (uint tile = 0u; tile < tiles; tile++)
     {
+        uint kb = kBegin + tile * BC;
+        bool active = kb < kEnd;
         GroupMemoryBarrierWithGroupSync();
-        for (uint e = tid; e < BC * DIM; e += 64u)
+        if (active)
         {
-            uint r = e / DIM;
-            uint c = e % DIM;
-            uint key = kb + r;
-            float kv = 0.0;
-            float vv = 0.0;
-            if (c < AP.D && key < kEnd)
+            for (uint e = tid; e < BC * DIM; e += 64u)
             {
-                kv = LoadE(AK, kBase + key * AP.KRow + c);
-                vv = LoadE(AV, vBase + key * AP.VRow + c);
-            }
+                uint r = e / DIM;
+                uint c = e % DIM;
+                uint key = kb + r;
+                float kv = 0.0;
+                float vv = 0.0;
+                if (c < AP.D && key < kEnd)
+                {
+                    kv = LoadE(AK, kBase + key * AP.KRow + c);
+                    vv = LoadE(AV, vBase + key * AP.VRow + c);
+                }
 
-            gsK[e] = kv;
-            gsV[e] = vv;
+                gsK[e] = kv;
+                gsV[e] = vv;
+            }
         }
 
         GroupMemoryBarrierWithGroupSync();
 
         // Keys are folded in one at a time: the state per thread is only q, acc, m and l, which keeps the code small and the registers few.
-        uint count = min(BC, kEnd - kb);
+        uint count = active ? min(BC, kEnd - kb) : 0u;
         for (uint j = 0u; j < count; j++)
         {
             uint key = kb + j;

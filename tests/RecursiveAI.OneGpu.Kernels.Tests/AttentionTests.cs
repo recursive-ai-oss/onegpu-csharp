@@ -34,9 +34,11 @@ public sealed class AttentionTests
         }
     }
 
-    // Software rasterisers and the browser skip the largest batch-8 shapes, which cost minutes there.
+    // The software WebGPU adapter times out on the largest problems, so it gets the BERT-sized ones.
+    static bool Software { get; set; }
+
     static IEnumerable<Case> SelectedModelCases() =>
-        ModelCases().Where(c => Large || (long)c.B * c.H * c.Sq * c.Sk <= 12L * 1500 * 1500);
+        ModelCases().Where(c => Large || (long)c.B * c.H * c.Sq * c.Sk <= (Software ? 12L * 512 * 512 : 12L * 1500 * 1500));
 
     static IEnumerable<Case> EdgeCases()
     {
@@ -178,6 +180,7 @@ public sealed class AttentionTests
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
+        Software = d.Adapter.Name.Contains("swiftshader", StringComparison.OrdinalIgnoreCase);
         using var kernels = new Kernels(d);
         Rig.Row(d, "attention", "-", "variant chosen for Fast and Deterministic", $"{kernels.Auto.Variant}; forced rows: {kernels.Rows.Variant}; forced pairs: {kernels.Pairs?.Variant ?? "not supported on this device"}");
         await Sweep(d, kernels, SelectedModelCases().ToList(), "model shapes");
@@ -285,6 +288,7 @@ public sealed class AttentionTests
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
+        Software = d.Adapter.Name.Contains("swiftshader", StringComparison.OrdinalIgnoreCase);
         using var kernels = new Kernels(d);
         foreach (var half in new[] { false, true })
         {
