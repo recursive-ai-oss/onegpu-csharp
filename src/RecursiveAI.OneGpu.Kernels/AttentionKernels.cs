@@ -274,29 +274,29 @@ public sealed class AttentionKernels : IDisposable
         var flags = (mask is not null ? 1u : 0u) | (causal ? 2u : 0u) | (keyLengths is not null ? 4u : 0u) | (p.MaskedRows == GpuAttentionMaskedRows.Zero ? 8u : 0u);
         var causalOffset = p.CausalOffset ?? (p.KLen - p.QLen);
         Span<uint> w = stackalloc uint[TileWords];
-        // Push constants are limited to 128 bytes on Vulkan: heads and the group size share a word, as do the head dimension and the flags.
-        w[0] = (uint)p.Heads | ((uint)(p.Heads / p.KvHeads) << 16);
-        w[1] = (uint)p.QLen;
-        w[2] = (uint)p.KLen;
-        w[3] = (uint)p.HeadDim | (flags << 16);
-        w[4] = BitConverter.SingleToUInt32Bits(p.Scale);
-        w[5] = (uint)causalOffset;
-        Put(w, 6, p.Q);
-        Put(w, 9, p.K);
-        Put(w, 12, p.V);
-        Put(w, 15, p.O);
-        w[18] = (uint)p.Q.Offset;
-        w[19] = (uint)p.K.Offset;
-        w[20] = (uint)p.V.Offset;
-        w[21] = (uint)p.O.Offset;
-        w[22] = (uint)p.Mask.Offset;
-        w[23] = (uint)p.Mask.BatchStride;
-        w[24] = (uint)p.Mask.HeadStride;
-        w[25] = (uint)p.Mask.RowStride;
-        w[26] = (uint)p.KeyLengthsOffset;
-        w[27] = (uint)splits;
-        w[28] = (uint)perSplit;
-        w[31] = (uint)groups;
+        w[0] = (uint)p.Heads;
+        w[1] = (uint)(p.Heads / p.KvHeads);
+        w[2] = (uint)p.QLen;
+        w[3] = (uint)p.KLen;
+        w[4] = (uint)p.HeadDim;
+        w[5] = BitConverter.SingleToUInt32Bits(p.Scale);
+        w[6] = (uint)causalOffset;
+        w[7] = flags;
+        Put(w, 8, p.Q);
+        Put(w, 11, p.K);
+        Put(w, 14, p.V);
+        Put(w, 17, p.O);
+        w[20] = (uint)p.Q.Offset;
+        w[21] = (uint)p.K.Offset;
+        w[22] = (uint)p.V.Offset;
+        w[23] = (uint)p.O.Offset;
+        w[24] = (uint)p.Mask.Offset;
+        w[25] = (uint)p.Mask.BatchStride;
+        w[26] = (uint)p.Mask.HeadStride;
+        w[27] = (uint)p.Mask.RowStride;
+        w[28] = (uint)p.KeyLengthsOffset;
+        w[29] = (uint)splits;
+        w[30] = (uint)perSplit;
 
         var dim = p.HeadDim <= 32 ? 0 : (p.HeadDim <= 64 ? 1 : (p.HeadDim <= 128 ? 2 : 3));
         var tile = coop ? _coopTile[dim + (bfloat16 ? 3 : 0)] ??= CreateCoopTile(dim, bfloat16) : _tile[dim + (half ? 4 : 0) + (pairs ? 8 : 0)] ??= CreateTile(half, dim);
@@ -317,13 +317,14 @@ public sealed class AttentionKernels : IDisposable
         var budget = _budget;
         var perGroup = ops / groups;
         var piece = budget == 0 || ops <= budget ? groups : Math.Max(1, (long)(budget / perGroup));
+        // A dispatch covers at most the device's workgroup count along x, so the pieces never overshoot the problem.
+        var maxX = _device.Capabilities.Compute.MaxWorkgroupCount;
+        piece = Math.Min(piece, maxX == 0 ? 65535 : Math.Min(maxX, 65535u));
         for (var first = 0L; first < groups; first += piece)
         {
             var n = Math.Min(piece, groups - first);
-            var (gx, gy) = Grid.For(_device, n);
-            w[29] = gx;
-            w[30] = (uint)first;
-            tile.Record(encoder, w, gx, gy, bound);
+            w[31] = (uint)first;
+            tile.Record(encoder, w, (uint)n, 1, bound);
             encoder.ReportWork(perGroup * n);
         }
 
@@ -417,11 +418,6 @@ public sealed class AttentionKernels : IDisposable
         Positive(Name, nameof(p.QLen), p.QLen);
         Positive(Name, nameof(p.KLen), p.KLen);
         Positive(Name, nameof(p.HeadDim), p.HeadDim);
-        if (p.Heads > ushort.MaxValue)
-        {
-            throw new GpuKernelShapeException(Name, nameof(p.Heads), $"{p.Heads} heads are above the limit of {ushort.MaxValue}");
-        }
-
         if (p.HeadDim > HeadDimLimit)
         {
             throw new GpuKernelShapeException(Name, nameof(p.HeadDim), $"head dimension {p.HeadDim} is above the limit of {HeadDimLimit}");

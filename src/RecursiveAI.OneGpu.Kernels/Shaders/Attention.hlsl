@@ -98,12 +98,14 @@ typedef float Elem;
 
 struct AttnParams
 {
-    uint HeadsGroup;  // heads in the low 16 bits, query heads per key/value head in the high 16 bits
+    uint Heads;
+    uint Group;       // query heads per key/value head
     uint QLen;
     uint KLen;
-    uint DFlags;      // head dimension in the low 16 bits, FLAG_* in the high 16 bits
+    uint D;
     float Scale;
     int CausalOff;
+    uint Flags;
     uint QBatch; uint QHead; uint QRow;
     uint KBatch; uint KHead; uint KRow;
     uint VBatch; uint VHead; uint VRow;
@@ -113,16 +115,8 @@ struct AttnParams
     uint LensOff;
     uint NSplit;
     uint KeysPerSplit;
-    uint GridX;
     uint GroupBase;   // first workgroup of this dispatch in the whole problem's numbering (long problems are cut into several dispatches)
-    uint GroupLimit;  // workgroups in the whole problem; the grid may overshoot
 };
-
-// Push constants are limited to 128 bytes on Vulkan, so two pairs of small values share a word.
-#define P_HEADS (AP.HeadsGroup & 0xFFFFu)
-#define P_GROUP (AP.HeadsGroup >> 16)
-#define P_D (AP.DFlags & 0xFFFFu)
-#define P_FLAGS (AP.DFlags >> 16)
 
 [[vk::push_constant]] ConstantBuffer<AttnParams> AP;
 
@@ -162,22 +156,15 @@ float LoadE(StructuredBuffer<Elem> buf, uint i)
 [numthreads(64, 1, 1)]
 void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
-    uint lin = AP.GroupBase + gid.y * AP.GridX + gid.x;
-    // A grid that overshoots the problem repeats the first workgroup, which writes the same values again. An early return here made the
-    // NVIDIA 595 driver produce wrong output for padded head dimensions.
-    if (lin >= AP.GroupLimit)
-    {
-        lin = 0u;
-    }
-
+    uint lin = AP.GroupBase + gid.x;
     uint nQB = (AP.QLen + BR - 1u) / BR;
     uint split = lin % AP.NSplit;
     uint t = lin / AP.NSplit;
     uint qb = t % nQB;
     uint bh = t / nQB;
-    uint b = bh / P_HEADS;
-    uint h = bh % P_HEADS;
-    uint kvh = h / P_GROUP;
+    uint b = bh / AP.Heads;
+    uint h = bh % AP.Heads;
+    uint kvh = h / AP.Group;
 
     // Surplus threads of the last block recompute the last row and skip the writes, so every barrier below is reached by all threads.
     uint qRow = qb * BR + tid / LANES;
@@ -189,12 +176,12 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     // Keys of this workgroup's range that any of its rows can see. The bound is the same for every thread of the group.
     uint kBegin = split * AP.KeysPerSplit;
     uint kEnd = min(AP.KLen, kBegin + AP.KeysPerSplit);
-    if ((P_FLAGS & FLAG_LENS) != 0u)
+    if ((AP.Flags & FLAG_LENS) != 0u)
     {
         kEnd = min(kEnd, (uint)max(ALens[AP.LensOff + b], 0));
     }
 
-    if ((P_FLAGS & FLAG_CAUSAL) != 0u)
+    if ((AP.Flags & FLAG_CAUSAL) != 0u)
     {
         int lastQ = (int)min(AP.QLen - 1u, qb * BR + BR - 1u);
         int visible = lastQ + AP.CausalOff + 1;
@@ -208,7 +195,7 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 
     float q[PD];
     float acc[PD];
-#define INIT_STEP(d) q[d] = 0.0; acc[d] = 0.0; if (dOff + (d) < P_D) { q[d] = LoadE(AQ, qBase + dOff + (d)); }
+#define INIT_STEP(d) q[d] = 0.0; acc[d] = 0.0; if (dOff + (d) < AP.D) { q[d] = LoadE(AQ, qBase + dOff + (d)); }
     EACH_D(INIT_STEP)
 
     float m = NegInf();
@@ -232,7 +219,7 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
                 uint key = kb + r;
                 float kv = 0.0;
                 float vv = 0.0;
-                if (c < P_D && key < kEnd)
+                if (c < AP.D && key < kEnd)
                 {
                     kv = LoadE(AK, kBase + key * AP.KRow + c);
                     vv = LoadE(AV, vBase + key * AP.VRow + c);
@@ -259,7 +246,7 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
             dot = dot + WaveReadLaneAt(dot, WaveGetLaneIndex() ^ 1u);
 #endif
             bool visible = true;
-            if ((P_FLAGS & FLAG_CAUSAL) != 0u)
+            if ((AP.Flags & FLAG_CAUSAL) != 0u)
             {
                 visible = (int)key <= (int)qr + AP.CausalOff;
             }
@@ -267,7 +254,7 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
             if (visible)
             {
                 float sc = dot * AP.Scale;
-                if ((P_FLAGS & FLAG_MASK) != 0u)
+                if ((AP.Flags & FLAG_MASK) != 0u)
                 {
                     sc += AMask[mBase + key];
                 }
@@ -307,7 +294,7 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     {
         float fill = 0.0;
         bool empty = (l == 0.0);
-        if (bad || (empty && (P_FLAGS & FLAG_ZERO) == 0u))
+        if (bad || (empty && (AP.Flags & FLAG_ZERO) == 0u))
         {
             fill = QuietNaN();
         }
@@ -316,22 +303,22 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
         uint oBase = AP.OOff + b * AP.OBatch + h * AP.OHead + qRow * AP.ORow + dOff;
         bool special = bad || empty;
 #if F16
-#define OUT_STEP(d) if (((d) & 1u) == 0u && dOff + (d) < P_D) { AOut[(oBase + (d)) >> 1] = F2H(special ? fill : acc[d] * inv) | (F2H(special ? fill : acc[(d) | 1u] * inv) << 16); }
+#define OUT_STEP(d) if (((d) & 1u) == 0u && dOff + (d) < AP.D) { AOut[(oBase + (d)) >> 1] = F2H(special ? fill : acc[d] * inv) | (F2H(special ? fill : acc[(d) | 1u] * inv) << 16); }
 #else
-#define OUT_STEP(d) if (dOff + (d) < P_D) { AOut[oBase + (d)] = special ? fill : acc[d] * inv; }
+#define OUT_STEP(d) if (dOff + (d) < AP.D) { AOut[oBase + (d)] = special ? fill : acc[d] * inv; }
 #endif
         EACH_D(OUT_STEP)
     }
     else
     {
-        uint rec = ((bh * AP.QLen + qRow) * AP.NSplit + split) * (P_D + 2u);
+        uint rec = ((bh * AP.QLen + qRow) * AP.NSplit + split) * (AP.D + 2u);
         if (dOff == 0u)
         {
             APart[rec] = bad ? QuietNaN() : m;
             APart[rec + 1u] = l;
         }
 
-#define PART_STEP(d) if (dOff + (d) < P_D) { APart[rec + 2u + dOff + (d)] = acc[d]; }
+#define PART_STEP(d) if (dOff + (d) < AP.D) { APart[rec + 2u + dOff + (d)] = acc[d]; }
         EACH_D(PART_STEP)
     }
 }

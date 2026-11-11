@@ -53,12 +53,14 @@ typedef float16_t Elem;
 
 struct AttnParams
 {
-    uint HeadsGroup;  // heads in the low 16 bits, query heads per key/value head in the high 16 bits
+    uint Heads;
+    uint Group;       // query heads per key/value head
     uint QLen;
     uint KLen;
-    uint DFlags;      // head dimension in the low 16 bits, FLAG_* in the high 16 bits
+    uint D;
     float Scale;
     int CausalOff;
+    uint Flags;
     uint QBatch; uint QHead; uint QRow;
     uint KBatch; uint KHead; uint KRow;
     uint VBatch; uint VHead; uint VRow;
@@ -68,16 +70,8 @@ struct AttnParams
     uint LensOff;
     uint NSplit;
     uint KeysPerSplit;
-    uint GridX;
     uint GroupBase;   // first workgroup of this dispatch in the whole problem's numbering (long problems are cut into several dispatches)
-    uint GroupLimit;  // workgroups in the whole problem; the grid may overshoot
 };
-
-// Push constants are limited to 128 bytes on Vulkan, so two pairs of small values share a word.
-#define P_HEADS (AP.HeadsGroup & 0xFFFFu)
-#define P_GROUP (AP.HeadsGroup >> 16)
-#define P_D (AP.DFlags & 0xFFFFu)
-#define P_FLAGS (AP.DFlags >> 16)
 
 [[vk::push_constant]] ConstantBuffer<AttnParams> AP;
 
@@ -113,20 +107,16 @@ bool Poisoned(float x)
 [numthreads(128, 1, 1)]
 void AttnCoop(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
-    uint lin = AP.GroupBase + gid.y * AP.GridX + gid.x;
-    if (lin >= AP.GroupLimit)
-    {
-        return;
-    }
+    uint lin = AP.GroupBase + gid.x;
 
     uint nQB = (AP.QLen + 63u) / 64u;
     uint split = lin % AP.NSplit;
     uint t = lin / AP.NSplit;
     uint qb = t % nQB;
     uint bh = t / nQB;
-    uint b = bh / P_HEADS;
-    uint h = bh % P_HEADS;
-    uint kvh = h / P_GROUP;
+    uint b = bh / AP.Heads;
+    uint h = bh % AP.Heads;
+    uint kvh = h / AP.Group;
 
     uint sg = tid >> 5;
     uint lane = tid & 31u;
@@ -140,12 +130,12 @@ void AttnCoop(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 
     uint kBegin = split * AP.KeysPerSplit;
     uint kEnd = min(AP.KLen, kBegin + AP.KeysPerSplit);
-    if ((P_FLAGS & FLAG_LENS) != 0u)
+    if ((AP.Flags & FLAG_LENS) != 0u)
     {
         kEnd = min(kEnd, (uint)max(ALens[AP.LensOff + b], 0));
     }
 
-    if ((P_FLAGS & FLAG_CAUSAL) != 0u)
+    if ((AP.Flags & FLAG_CAUSAL) != 0u)
     {
         int lastQ = (int)min(AP.QLen - 1u, qb * 64u + 63u);
         int visible = lastQ + AP.CausalOff + 1;
@@ -169,7 +159,7 @@ void AttnCoop(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
             uint c = e % DIM;
             uint srow = min(qb * 64u + (rd * NB + row / 16u) * 16u + (row % 16u), AP.QLen - 1u);
             Elem v = (Elem)0.0f;
-            if (c < P_D)
+            if (c < AP.D)
             {
                 v = AQ[AP.QOff + b * AP.QBatch + h * AP.QHead + srow * AP.QRow + c];
             }
@@ -190,7 +180,7 @@ void AttnCoop(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     }
 
     float scale = AP.Scale;
-    uint flags = P_FLAGS;
+    uint flags = AP.Flags;
     int causalLimit = (int)qr + AP.CausalOff;
 
     // Pass 1: the exact maximum of the visible scores of every row, and whether any score is NaN or +infinity.
@@ -206,7 +196,7 @@ void AttnCoop(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
             uint c = e % DIM;
             uint key = kb + row;
             Elem v = (Elem)0.0f;
-            if (c < P_D && key < kEnd)
+            if (c < AP.D && key < kEnd)
             {
                 v = AK[kBase + key * AP.KRow + c];
             }
@@ -287,7 +277,7 @@ void AttnCoop(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
             uint c = e % DIM;
             uint key = kb + row;
             Elem v = (Elem)0.0f;
-            if (c < P_D && key < kEnd)
+            if (c < AP.D && key < kEnd)
             {
                 v = AK[kBase + key * AP.KRow + c];
             }
@@ -347,7 +337,7 @@ void AttnCoop(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
             uint c = f % DIM;
             uint key = kb + row;
             Elem v = (Elem)0.0f;
-            if (c < P_D && key < kEnd)
+            if (c < AP.D && key < kEnd)
             {
                 v = AV[vBase + key * AP.VRow + c];
             }
@@ -381,7 +371,7 @@ void AttnCoop(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 
     float inv = empty ? 0.0 : 1.0 / l;
     uint oBase = AP.OOff + b * AP.OBatch + h * AP.OHead + qRow * AP.ORow;
-    uint rec = ((bh * AP.QLen + qRow) * AP.NSplit + split) * (P_D + 2u);
+    uint rec = ((bh * AP.QLen + qRow) * AP.NSplit + split) * (AP.D + 2u);
     if (AP.NSplit != 1u && live && hh == 0u)
     {
         APart[rec] = (bad != 0u) ? QuietNaN() : m;
@@ -397,7 +387,7 @@ void AttnCoop(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
         {
             uint col = hh + 2u * i;
             uint d = dt2 * 16u + col;
-            if (live && d < P_D)
+            if (live && d < AP.D)
             {
                 float v = Sst[sg * 256 + col * 16 + r];
                 if (AP.NSplit == 1u)
