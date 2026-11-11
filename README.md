@@ -11,10 +11,13 @@ framework, the browser's WebGPU).
 | `RecursiveAI.OneGpu.Metal` | Metal backend (macOS, Apple silicon). |
 | `RecursiveAI.OneGpu.WebGpu` | WebGPU backend for the browser (`[JSImport]`). |
 | `RecursiveAI.OneGpu.Backends` | `GpuBackends`: picks Metal on Apple platforms, WebGPU in a browser and Vulkan elsewhere. |
+| `RecursiveAI.OneGpu.Kernels` | HLSL compute kernels (GEMM, attention, reductions, softmax, norms, gather and scatter, int8, integer and bool ops) built with oneshader, with generated bindings. |
 
 Shaders are HLSL, compiled at build time by [`RecursiveAI.OneShader.Build`](https://github.com/recursive-ai-oss/oneshader-csharp) to SPIR-V,
 Metal Shading Language and WGSL; the generated C# binding carries each kernel's resource layout, so a mismatch between the shader and
 the host fails at build or pipeline creation.
+
+Docs: [`docs/`](docs/) (compute, kernels, GEMM, attention).
 
 ## Build and test
 
