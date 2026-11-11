@@ -1,3 +1,4 @@
+using OneShader.Reflection;
 using RecursiveAI.OneGpu.Kernels.Shaders;
 
 namespace RecursiveAI.OneGpu.Kernels;
@@ -136,7 +137,8 @@ public sealed class Int8Gemm : IDisposable
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
-        _dot = device.Capabilities.Compute.Int8DotProduct && (options?.AllowPackedDot ?? true);
+        var compute = device.Capabilities.Compute;
+        _dot = compute.Int8DotProduct && (compute.ShaderFeatures & DeviceFeatures.IntegerDotProduct) != 0 && (options?.AllowPackedDot ?? true);
         _tile = options?.Tile ?? 0;
         Variant = _dot ? "packed-dot-tile64x64x32" : "portable-tile64x64x16";
         try
