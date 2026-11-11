@@ -29,7 +29,7 @@ Why a pass per step: a kernel that loops over all steps in one dispatch needs ev
 cannot hold a 1024 × 256 weight block's bandwidth. The per-step cost is the cost of a chain of dependent passes plus the weight read; `bench` numbers are in the report of the unit that wrote this page and are indicative.
 `RecurrentProblem.MaxLength` (a host-side bound on the sequence lengths) shortens the loop when `sequence_lens` is given.
 
-Scratch: the input projection (`RecurrentKernels.XwLength` floats) and the state with every step's output (`StateLength` floats) are kept by the family, grown on demand, or supplied by the caller (`xwScratch`, `stateScratch`) so a memory planner can place them.
+Scratch: the input projection (`RecurrentKernels.XwLength` floats) and the state with every step's output (`StateLength` floats) are kept by the family, grown on demand, or supplied by the caller (`xwScratch`, `stateScratch`, each with an element offset `xwScratchOffset`, `stateScratchOffset`, so both regions may sit in one arena buffer; a browser refuses one buffer bound read-only and read-write in a dispatch, so there they stay in two buffers) so a memory planner can place them.
 Both must fit one storage binding; larger layers throw `GpuUnsupportedException`. Sizes, offsets and shapes are checked in safe arithmetic before anything is recorded (`GpuKernelShapeException` naming `LSTM`/`GRU`/`RNN` and the argument).
 
 ## Arithmetic and determinism

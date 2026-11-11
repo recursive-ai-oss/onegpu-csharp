@@ -26,6 +26,14 @@ public readonly record struct Int8Operand<T>(GpuBuffer<T> Buffer, int Offset, bo
     where T : unmanaged;
 
 /// <summary>
+/// A caller-owned scratch region for the int32 sums that the float and requantized forms of <see cref="Int8Gemm"/> keep between the product and its
+/// last pass. Supplying one means the instance never allocates a buffer of its own, so a bind group built for it stays valid for the whole session.
+/// </summary>
+/// <param name="Buffer">The buffer; it must not overlap any other operand of the call.</param>
+/// <param name="Offset">Element (int32) offset of the region's first element.</param>
+public readonly record struct Int8Scratch(GpuBuffer<int> Buffer, int Offset = 0);
+
+/// <summary>
 /// The shape of one batch of 8-bit products <c>C[m, n] = sum over k of (A[m, k] - zeroA) * (B[k, n] - zeroB)</c>: A is M x K, B is K x N (or N x K
 /// with <see cref="TransposeB"/>), all dense row-major, counted in elements (bytes). The result is dense: <c>[Batch, M, N]</c>.
 /// </summary>
@@ -113,7 +121,7 @@ public struct Int8GemmProblem
 public sealed class Int8Gemm : IDisposable
 {
     const string Name = "Int8Gemm";
-    const int GemmWords = 14;
+    const int GemmWords = 18;
     const int EpilogueWords = 11;
 
     // On a discrete GPU the packed-dot variant runs a product with fewer 64x64 tiles than this on 32x32 tiles, which put four times as many
@@ -198,20 +206,20 @@ public sealed class Int8Gemm : IDisposable
         var count = (long)problem.Batch * problem.M * problem.N;
         Check.Range(Name, nameof(c), c.Length, problem.OffsetC, count);
         CheckBindable("C", c.Buffer);
+        Epilogue epi = default;
+        if (bias is { } ib)
+        {
+            CheckVector(nameof(bias), ib.Buffer, ib.Offset, true, problem.N);
+            CheckBindable("bias", ib.Buffer.Buffer);
+            epi = new Epilogue(2u, ib.Buffer.Buffer, (uint)ib.Offset, null, 0, null, 0);
+        }
+
         if (!ok)
         {
             return;
         }
 
-        if (bias is null)
-        {
-            Multiply(encoder, problem, a.Buffer, typeof(TA) == typeof(sbyte), b.Buffer, typeof(TB) == typeof(sbyte), c.Buffer, problem.OffsetC, zeroPointA?.Buffer.Buffer, zeroPointA, zeroPointB?.Buffer.Buffer, zeroPointB);
-            return;
-        }
-
-        var sums = Scratch(count);
-        Multiply(encoder, problem, a.Buffer, typeof(TA) == typeof(sbyte), b.Buffer, typeof(TB) == typeof(sbyte), sums.Buffer, 0, zeroPointA?.Buffer.Buffer, zeroPointA, zeroPointB?.Buffer.Buffer, zeroPointB);
-        Finish(encoder, problem, sums.Buffer, c.Buffer, problem.OffsetC, mode: 0, 0, bias, null, null, 0, 0);
+        Multiply(encoder, problem, a.Buffer, typeof(TA) == typeof(sbyte), b.Buffer, typeof(TB) == typeof(sbyte), c.Buffer, problem.OffsetC, zeroPointA?.Buffer.Buffer, zeroPointA, zeroPointB?.Buffer.Buffer, zeroPointB, in epi);
     }
 
     /// <summary>Records the float32 result <c>float(sum + intBias) * scale + floatBias</c> (the bias terms optional), the MatMulIntegerToFloat chain in one step.</summary>
@@ -249,13 +257,30 @@ public sealed class Int8Gemm : IDisposable
             return;
         }
 
-        var sums = Scratch(count);
-        Multiply(encoder, problem, a.Buffer, typeof(TA) == typeof(sbyte), b.Buffer, typeof(TB) == typeof(sbyte), sums.Buffer, 0, zeroPointA?.Buffer.Buffer, zeroPointA, zeroPointB?.Buffer.Buffer, zeroPointB);
-        Finish(encoder, problem, sums.Buffer, c.Buffer, problem.OffsetC, mode: 1, 0, intBias, scale.Buffer.Buffer, null, scale.Offset, scale.IsVector ? 2u : 0u);
-        if (floatBias is not null)
+        // The conversion, scaling and both biases happen as each sum is stored, in the same float steps as the separate passes (see the shader).
+        var flags = 1u | (scale.IsVector ? 4u : 0u);
+        uint offIntBias = 0, offFloatBias = 0;
+        GpuBuffer? intBiasBuffer = null, floatBiasBuffer = null;
+        if (intBias is { } ib)
         {
-            Finish(encoder, problem, sums.Buffer, c.Buffer, problem.OffsetC, mode: 3, 0, null, null, floatBias, 0, 0);
+            CheckVector(nameof(intBias), ib.Buffer, ib.Offset, true, problem.N);
+            CheckBindable("bias", ib.Buffer.Buffer);
+            flags |= 2u;
+            intBiasBuffer = ib.Buffer.Buffer;
+            offIntBias = (uint)ib.Offset;
         }
+
+        if (floatBias is { } fb2)
+        {
+            CheckBindable("float bias", fb2.Buffer.Buffer);
+            flags |= 8u;
+            floatBiasBuffer = fb2.Buffer.Buffer;
+            offFloatBias = (uint)fb2.Offset;
+        }
+
+        CheckBindable("scale", scale.Buffer.Buffer);
+        var epi = new Epilogue(flags, intBiasBuffer, offIntBias, scale.Buffer.Buffer, (uint)scale.Offset, floatBiasBuffer, offFloatBias);
+        Multiply(encoder, problem, a.Buffer, typeof(TA) == typeof(sbyte), b.Buffer, typeof(TB) == typeof(sbyte), c.Buffer, problem.OffsetC, zeroPointA?.Buffer.Buffer, zeroPointA, zeroPointB?.Buffer.Buffer, zeroPointB, in epi);
     }
 
     /// <summary>
@@ -275,9 +300,10 @@ public sealed class Int8Gemm : IDisposable
     /// <param name="zeroPointA">Zero point of A (type of A), or null for 0.</param>
     /// <param name="zeroPointB">Zero point of B (type of B), or null for 0.</param>
     /// <param name="intBias">An int32 bias per column added to the sums before the conversion, or null.</param>
+    /// <param name="scratch">Where to keep the int32 sums between the two passes (see <see cref="ScratchElements"/>); null uses the instance's own buffer, which grows on demand and so may build bind groups when a larger product arrives.</param>
     /// <exception cref="GpuKernelShapeException">A dimension, stride, offset, range, zero point or operand type is invalid; names the argument.</exception>
     /// <exception cref="GpuUnsupportedException">An operand is larger than one storage-buffer binding can cover on this device.</exception>
-    public void EncodeRequantized<TA, TB, TY>(GpuCommandEncoder encoder, in Int8GemmProblem problem, GpuBuffer<TA> a, GpuBuffer<TB> b, GpuBuffer<TY> y, Int8Operand<float> multiplier, int zeroPointY, Int8Operand<TA>? zeroPointA = null, Int8Operand<TB>? zeroPointB = null, Int8Operand<int>? intBias = null)
+    public void EncodeRequantized<TA, TB, TY>(GpuCommandEncoder encoder, in Int8GemmProblem problem, GpuBuffer<TA> a, GpuBuffer<TB> b, GpuBuffer<TY> y, Int8Operand<float> multiplier, int zeroPointY, Int8Operand<TA>? zeroPointA = null, Int8Operand<TB>? zeroPointB = null, Int8Operand<int>? intBias = null, Int8Scratch? scratch = null)
         where TA : unmanaged
         where TB : unmanaged
         where TY : unmanaged
@@ -300,9 +326,10 @@ public sealed class Int8Gemm : IDisposable
             return;
         }
 
-        var sums = Scratch(count);
-        Multiply(encoder, problem, a.Buffer, typeof(TA) == typeof(sbyte), b.Buffer, typeof(TB) == typeof(sbyte), sums.Buffer, 0, zeroPointA?.Buffer.Buffer, zeroPointA, zeroPointB?.Buffer.Buffer, zeroPointB);
-        Finish(encoder, problem, sums.Buffer, y.Buffer, problem.OffsetC, mode: 2, zeroPointY, intBias, multiplier.Buffer.Buffer, null, multiplier.Offset, (multiplier.IsVector ? 2u : 0u) | (outSigned ? 0u : 8u));
+        var (sums, at) = Scratch(count, scratch);
+        Epilogue none = default;
+        Multiply(encoder, problem, a.Buffer, typeof(TA) == typeof(sbyte), b.Buffer, typeof(TB) == typeof(sbyte), sums, at, zeroPointA?.Buffer.Buffer, zeroPointA, zeroPointB?.Buffer.Buffer, zeroPointB, in none);
+        Finish(encoder, problem, sums, at, y.Buffer, problem.OffsetC, mode: 2, zeroPointY, intBias, multiplier.Buffer.Buffer, null, multiplier.Offset, (multiplier.IsVector ? 2u : 0u) | (outSigned ? 0u : 8u));
     }
 
     /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
@@ -441,21 +468,58 @@ public sealed class Int8Gemm : IDisposable
         }
     }
 
-    GpuBuffer<int> Scratch(long count)
+    (GpuBuffer Buffer, int Offset) Scratch(long count, Int8Scratch? given)
     {
+        if (given is { } g)
+        {
+            ArgumentNullException.ThrowIfNull(g.Buffer, nameof(given));
+            Check.Range(Name, "scratch", g.Buffer.Length, g.Offset, count);
+            CheckBindable("scratch", g.Buffer.Buffer);
+            return (g.Buffer.Buffer, g.Offset);
+        }
+
         if (_scratch.Count > 0 && _scratch[^1].Length >= count)
         {
-            return _scratch[^1];
+            return (_scratch[^1].Buffer, 0);
         }
 
         // Grow geometrically. A smaller buffer stays alive until Dispose because commands already recorded may still name it.
         var length = (int)Math.Min(Check.MaxElements, Math.Max(count, _scratch.Count > 0 ? (long)_scratch[^1].Length * 2 : 4096));
         var buffer = _device.CreateBuffer<int>(length, label: "int8 gemm sums");
         _scratch.Add(buffer);
-        return buffer;
+        return (buffer.Buffer, 0);
     }
 
-    void Multiply<TA, TB>(GpuCommandEncoder encoder, in Int8GemmProblem p, GpuBuffer a, bool aSigned, GpuBuffer b, bool bSigned, GpuBuffer c, int offsetC, GpuBuffer? zaBuffer, Int8Operand<TA>? za, GpuBuffer? zbBuffer, Int8Operand<TB>? zb)
+    /// <summary>
+    /// The int32 elements of scratch that <see cref="EncodeRequantized{TA, TB, TY}"/> needs for a product: <c>Batch * M * N</c>. The int32 and float forms
+    /// apply their epilogue as each sum is stored, so they keep nothing between passes.
+    /// </summary>
+    /// <param name="problem">The product.</param>
+    /// <returns>Elements (4 bytes each), 0 when any of M, N or Batch is not positive.</returns>
+    public static long ScratchElements(in Int8GemmProblem problem) => problem.M <= 0 || problem.N <= 0 || problem.Batch <= 0 ? 0 : (long)problem.Batch * problem.M * problem.N;
+
+    /// <summary>
+    /// Makes the instance's own scratch at least <paramref name="elements"/> int32 elements long now, so that later calls with no <see cref="Int8Scratch"/> up to that size build no buffer
+    /// (and so no bind group) mid-session. A consumer that supplies <see cref="Int8Scratch"/> never needs it.
+    /// </summary>
+    /// <param name="elements">The largest <see cref="ScratchElements"/> the session will ask for.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="elements"/> is negative or more than the kernels address.</exception>
+    public void ReserveScratch(long elements)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(elements);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(elements, Check.MaxElements);
+        if (elements == 0 || (_scratch.Count > 0 && _scratch[^1].Length >= elements))
+        {
+            return;
+        }
+
+        _scratch.Add(_device.CreateBuffer<int>((int)Math.Max(elements, 4096), label: "int8 gemm sums"));
+    }
+
+    // What the product's store applies to each sum: bit 0 float result, bit 1 int bias, bit 2 scale per column, bit 3 float bias. Zero stores the raw int32 sum.
+    readonly record struct Epilogue(uint Flags, GpuBuffer? IntBias, uint OffIntBias, GpuBuffer? Scale, uint OffScale, GpuBuffer? FloatBias, uint OffFloatBias);
+
+    void Multiply<TA, TB>(GpuCommandEncoder encoder, in Int8GemmProblem p, GpuBuffer a, bool aSigned, GpuBuffer b, bool bSigned, GpuBuffer c, int offsetC, GpuBuffer? zaBuffer, Int8Operand<TA>? za, GpuBuffer? zbBuffer, Int8Operand<TB>? zb, in Epilogue epi)
         where TA : unmanaged
         where TB : unmanaged
     {
@@ -512,12 +576,16 @@ public sealed class Int8Gemm : IDisposable
         w[11] = flags;
         w[12] = offZa;
         w[13] = offZb;
+        w[14] = epi.Flags;
+        w[15] = epi.OffIntBias;
+        w[16] = epi.OffScale;
+        w[17] = epi.OffFloatBias;
         var dummy = _dummy.Buffer;
         var pipeline = _gemm[small ? 1 : 0] ??= CreateGemm(small);
-        pipeline.Record(encoder, w, groupsX, groupsY, (uint)p.Batch, [a, b, c, zaBuffer ?? dummy, zbBuffer ?? dummy]);
+        pipeline.Record(encoder, w, groupsX, groupsY, (uint)p.Batch, [a, b, c, zaBuffer ?? dummy, zbBuffer ?? dummy, epi.IntBias ?? dummy, epi.Scale ?? dummy, epi.FloatBias ?? dummy]);
     }
 
-    void Finish(GpuCommandEncoder encoder, in Int8GemmProblem p, GpuBuffer sums, GpuBuffer output, int offsetOutput, uint mode, int zeroPointY, Int8Operand<int>? intBias, GpuBuffer? scale, Int8Operand<float>? floatBias, int offsetScale, uint scaleFlags)
+    void Finish(GpuCommandEncoder encoder, in Int8GemmProblem p, GpuBuffer sums, int offsetSums, GpuBuffer output, int offsetOutput, uint mode, int zeroPointY, Int8Operand<int>? intBias, GpuBuffer? scale, Int8Operand<float>? floatBias, int offsetScale, uint scaleFlags)
     {
         var count = (long)p.Batch * p.M * p.N;
         var flags = scaleFlags;
@@ -538,7 +606,7 @@ public sealed class Int8Gemm : IDisposable
         var (gx, gy) = Grid.For(_device, (threads + 255) / 256);
         Span<uint> w = stackalloc uint[EpilogueWords];
         w[0] = (uint)count;
-        w[1] = 0;
+        w[1] = (uint)offsetSums;
         w[2] = (uint)offsetOutput;
         w[3] = gx;
         w[4] = (uint)p.N;

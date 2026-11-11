@@ -84,9 +84,11 @@ public sealed class RecurrentKernels : IDisposable
     /// <param name="operands">The tensors.</param>
     /// <param name="xwScratch">Optional input-projection scratch of at least <see cref="XwLength"/> floats; null uses the family's own.</param>
     /// <param name="stateScratch">Optional state scratch of at least <see cref="StateLength"/> floats; null uses the family's own.</param>
+    /// <param name="xwScratchOffset">Float offset of the input-projection region inside <paramref name="xwScratch"/> (so one arena buffer can hold both regions); must be 0 when <paramref name="xwScratch"/> is null.</param>
+    /// <param name="stateScratchOffset">Float offset of the state region inside <paramref name="stateScratch"/>; must be 0 when <paramref name="stateScratch"/> is null.</param>
     /// <exception cref="GpuKernelShapeException">A size, offset, range, attribute or operand is invalid for the cell (for example peepholes on a GRU); names the operation and the argument.</exception>
     /// <exception cref="GpuUnsupportedException">A buffer is larger than one storage binding can cover on this device.</exception>
-    public void Encode<T>(GpuCommandEncoder encoder, in RecurrentProblem problem, RecurrentOperands<T> operands, GpuBuffer<float>? xwScratch = null, GpuBuffer<float>? stateScratch = null)
+    public void Encode<T>(GpuCommandEncoder encoder, in RecurrentProblem problem, RecurrentOperands<T> operands, GpuBuffer<float>? xwScratch = null, GpuBuffer<float>? stateScratch = null, int xwScratchOffset = 0, int stateScratchOffset = 0)
         where T : unmanaged
     {
         ArgumentNullException.ThrowIfNull(encoder);
@@ -219,8 +221,8 @@ public sealed class RecurrentKernels : IDisposable
             return;
         }
 
-        var xw = Scratch(name, "xwScratch", xwScratch, xwLength, ref _xw, "recurrent input projection");
-        var state = Scratch(name, "stateScratch", stateScratch, stateLength, ref _state, "recurrent state");
+        var xw = Scratch(name, "xwScratch", xwScratch, xwScratchOffset, xwLength, ref _xw, "recurrent input projection");
+        var state = Scratch(name, "stateScratch", stateScratch, stateScratchOffset, stateLength, ref _state, "recurrent state");
         var dummy = (_dummy ??= _device.CreateBuffer<uint>(4, label: "recurrent unused operand")).Buffer;
 
         // 1. Input projection of all steps: Xw[d] = X * W[d]^T, M = Seq * Batch rows. W is stored [G*H, Input], the N x K form of the right operand.
@@ -237,7 +239,7 @@ public sealed class RecurrentKernels : IDisposable
                 Ldc = (int)gh,
                 OffsetA = o.X.Offset,
                 OffsetB = o.W.Offset,
-                OffsetC = 0,
+                OffsetC = xwScratchOffset,
                 StrideA = 0,
                 StrideB = checked((int)gh * input),
                 StrideC = checked(m * (int)gh),
@@ -262,7 +264,7 @@ public sealed class RecurrentKernels : IDisposable
             w[4] = (o.InitialH is null ? 0u : 1u) | (o.InitialC is null ? 0u : 2u) | (problem.Layout1 ? 4u : 0u);
             w[5] = (uint)(o.InitialH?.Offset ?? 0);
             w[6] = (uint)(o.InitialC?.Offset ?? 0);
-            w[7] = 0;
+            w[7] = (uint)stateScratchOffset;
             var pipeline = InitPipeline(half);
             Launch.Record(_device, encoder, pipeline, w, stateCount, 0, 0, 8, o.InitialH?.Buffer.Buffer ?? dummy, o.InitialC?.Buffer.Buffer ?? dummy, state.Buffer);
         }
@@ -287,12 +289,12 @@ public sealed class RecurrentKernels : IDisposable
         sw[2] = (uint)seq;
         sw[5] = BitConverter.SingleToUInt32Bits(problem.Clip);
         sw[6] = Activations(name, forward, reverse, dirs, sw[14..]);
-        sw[7] = 0;
+        sw[7] = (uint)xwScratchOffset;
         sw[8] = (uint)o.R.Offset;
         sw[9] = (uint)(o.B?.Offset ?? 0);
         sw[10] = (uint)(o.P?.Offset ?? 0);
         sw[11] = (uint)(o.SequenceLengths?.Offset ?? 0);
-        sw[12] = 0;
+        sw[12] = (uint)stateScratchOffset;
         var buffers = _buffers;
         buffers[0] = xw.Buffer;
         buffers[1] = o.R.Buffer.Buffer;
@@ -323,17 +325,17 @@ public sealed class RecurrentKernels : IDisposable
         var lensBuffer = o.SequenceLengths?.Buffer.Buffer ?? dummy;
         if (o.Y is { } yOut)
         {
-            Output(encoder, outPipeline, 0, yCount, problem, steps, o.SequenceLengths, yOut.Offset, state.Buffer, lensBuffer, yOut.Buffer.Buffer, half);
+            Output(encoder, outPipeline, 0, yCount, problem, steps, o.SequenceLengths, yOut.Offset, state.Buffer, lensBuffer, yOut.Buffer.Buffer, half, stateScratchOffset);
         }
 
         if (o.YH is { } yhOut)
         {
-            Output(encoder, outPipeline, 1, stateCount, problem, steps, o.SequenceLengths, yhOut.Offset, state.Buffer, lensBuffer, yhOut.Buffer.Buffer, half);
+            Output(encoder, outPipeline, 1, stateCount, problem, steps, o.SequenceLengths, yhOut.Offset, state.Buffer, lensBuffer, yhOut.Buffer.Buffer, half, stateScratchOffset);
         }
 
         if (o.YC is { } ycOut)
         {
-            Output(encoder, outPipeline, 2, stateCount, problem, steps, o.SequenceLengths, ycOut.Offset, state.Buffer, lensBuffer, ycOut.Buffer.Buffer, half);
+            Output(encoder, outPipeline, 2, stateCount, problem, steps, o.SequenceLengths, ycOut.Offset, state.Buffer, lensBuffer, ycOut.Buffer.Buffer, half, stateScratchOffset);
         }
     }
 
@@ -395,7 +397,7 @@ public sealed class RecurrentKernels : IDisposable
         pipeline.Record(encoder, sw, (uint)((hid + units - 1) / units), (uint)dirs, _buffers);
     }
 
-    void Output(GpuCommandEncoder encoder, KernelPipeline pipeline, uint mode, long count, in RecurrentProblem problem, int steps, GpuTensorRef<int>? lens, int offset, GpuBuffer state, GpuBuffer lensBuffer, GpuBuffer target, bool half)
+    void Output(GpuCommandEncoder encoder, KernelPipeline pipeline, uint mode, long count, in RecurrentProblem problem, int steps, GpuTensorRef<int>? lens, int offset, GpuBuffer state, GpuBuffer lensBuffer, GpuBuffer target, bool half, int stateOffset)
     {
         Span<uint> w = stackalloc uint[OutWords];
         w[0] = (uint)count;
@@ -407,7 +409,7 @@ public sealed class RecurrentKernels : IDisposable
         w[6] = (problem.Layout1 ? 1u : 0u) | (lens is null ? 0u : 2u);
         w[7] = (uint)offset;
         w[8] = (uint)(lens?.Offset ?? 0);
-        w[9] = 0;
+        w[9] = (uint)stateOffset;
         w[10] = (uint)(steps & 1);
         Launch.Record(_device, encoder, pipeline, w, count, offset, half ? 1 : 0, 11, state, lensBuffer, target);
     }
@@ -474,13 +476,18 @@ public sealed class RecurrentKernels : IDisposable
         return _outputs[i] = new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 3, OutWords, "recurrent outputs", _maxBindGroups);
     }
 
-    GpuBuffer<float> Scratch(string name, string argument, GpuBuffer<float>? given, long length, ref GpuBuffer<float>? owned, string label)
+    GpuBuffer<float> Scratch(string name, string argument, GpuBuffer<float>? given, int offset, long length, ref GpuBuffer<float>? owned, string label)
     {
+        if (offset < 0 || (given is null && offset != 0))
+        {
+            throw new GpuKernelShapeException(name, argument + "Offset", given is null ? "an offset needs a scratch buffer of the caller's" : $"offset {offset} must not be negative");
+        }
+
         if (given is not null)
         {
-            if (given.Length < length)
+            if (given.Length < (long)offset + length)
             {
-                throw new GpuKernelShapeException(name, argument, $"the scratch holds {given.Length} floats, {length} are needed");
+                throw new GpuKernelShapeException(name, argument, $"the scratch holds {given.Length} floats, {length} are needed from offset {offset}");
             }
 
             Bindable(name, argument, given.Buffer);

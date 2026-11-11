@@ -33,6 +33,10 @@ struct Int8GemmParams
                     // bit 7 every row of A (offset, stride, Lda) starts on a word boundary, bit 8 the same for B
     uint OffZA;
     uint OffZB;
+    uint Epi;       // see Int8GemmEpilogue.hlsli
+    uint OffBias;
+    uint OffScale;
+    uint OffFBias;
 };
 
 [[vk::push_constant]] ConstantBuffer<Int8GemmParams> P;
@@ -42,6 +46,8 @@ struct Int8GemmParams
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint> C;
 [[vk::binding(3, 0)]] StructuredBuffer<uint> ZA;
 [[vk::binding(4, 0)]] StructuredBuffer<uint> ZB;
+
+#include "Int8GemmEpilogue.hlsli"
 
 static const uint BM = 64;
 static const uint BN = 64;
@@ -214,7 +220,7 @@ void Int8GemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     i30 += (int)c30; c30 = 0; i31 += (int)c31; c31 = 0; i32 += (int)c32; c32 = 0; i33 += (int)c33; c33 = 0;
 
 #define STORE(DR, DC, V) \
-    { uint row = m0 + ty + DR; uint col = n0 + tx + DC; if (row < P.M && col < P.N) { C[baseC + row * P.N + col] = (uint)(V); } }
+    { uint row = m0 + ty + DR; uint col = n0 + tx + DC; if (row < P.M && col < P.N) { C[baseC + row * P.N + col] = StoreValue((int)(V), col); } }
     STORE(0, 0, i00) STORE(0, 16, i01) STORE(0, 32, i02) STORE(0, 48, i03)
     STORE(16, 0, i10) STORE(16, 16, i11) STORE(16, 32, i12) STORE(16, 48, i13)
     STORE(32, 0, i20) STORE(32, 16, i21) STORE(32, 32, i22) STORE(32, 48, i23)

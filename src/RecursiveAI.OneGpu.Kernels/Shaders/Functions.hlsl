@@ -43,7 +43,29 @@ float Tanh(float x)
 // The activations a matrix product can apply to its result; Unary below calls these, so a fused epilogue and the element-wise kernel run the same code.
 float ReluF(float x) { return IsNaN(x) ? x : ((x < 0.0) ? 0.0 : x); }
 float GeluErfF(float x) { return 0.5 * x * Erfc(-x * 0.70710678118654752); }
-float GeluTanhF(float x) { return x / (1.0 + exp(-1.5957691216057308 * (x + 0.044715 * x * x * x))); }  // 0.5 (1 + tanh u) = 1 / (1 + e^-2u)
+// e^a with its own range reduction and polynomial instead of the driver's exp, whose accuracy the specification leaves to the implementation (some
+// software and mobile drivers are only good to about 1e-4 relative). a = k ln2 + r with |r| <= ln2 / 2, ln2 split in two parts so that k * hi is exact
+// (Cody and Waite); e^r by its Taylor series to r^7 (error below 6e-9 relative); the factor 2^k is built in the exponent field. Outside the
+// range whose result is a normal float, above it the result is infinity, below it zero (the callers divide by 1 + e^a, where that is the right limit).
+float ExpAccurate(float a)
+{
+    if (a > 88.0)
+    {
+        return PosInf();
+    }
+
+    if (a < -87.0)
+    {
+        return 0.0;
+    }
+
+    float k = floor(a * 1.4426950408889634 + 0.5);
+    float r = (a - k * 0.693359375) + k * 2.12194440e-4;
+    float p = 1.0 + r * (1.0 + r * (0.5 + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0 + r * (1.0 / 720.0 + r * (1.0 / 5040.0)))))));
+    return p * asfloat((uint)((int)k + 127) << 23);
+}
+
+float GeluTanhF(float x) { return IsNaN(x) ? x : x / (1.0 + ExpAccurate(-1.5957691216057308 * (x + 0.044715 * x * x * x))); }  // 0.5 (1 + tanh u) = 1 / (1 + e^-2u)
 
 float Unary(uint op, float x, float p0, float p1)
 {
