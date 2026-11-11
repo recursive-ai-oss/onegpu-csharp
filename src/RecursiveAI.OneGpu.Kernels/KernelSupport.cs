@@ -180,12 +180,26 @@ internal sealed class KernelPipeline : IDisposable
 
     public void Record(GpuCommandEncoder encoder, ReadOnlySpan<uint> push, uint groupsX, uint groupsY, GpuBuffer b0, GpuBuffer? b1 = null, GpuBuffer? b2 = null, GpuBuffer? b3 = null)
     {
+        var key0 = new BindKey(b0, b1, b2, b3, null, null, null, null);
+        Record(encoder, push, groupsX, groupsY, in key0);
+    }
+
+    /// <summary>Records a pass that binds up to eight buffers, in binding order.</summary>
+    public void Record(GpuCommandEncoder encoder, ReadOnlySpan<uint> push, uint groupsX, uint groupsY, ReadOnlySpan<GpuBuffer> buffers)
+    {
+        var key = new BindKey(buffers[0], At(buffers, 1), At(buffers, 2), At(buffers, 3), At(buffers, 4), At(buffers, 5), At(buffers, 6), At(buffers, 7));
+        Record(encoder, push, groupsX, groupsY, in key);
+    }
+
+    static GpuBuffer? At(ReadOnlySpan<GpuBuffer> buffers, int i) => i < buffers.Length ? buffers[i] : null;
+
+    void Record(GpuCommandEncoder encoder, ReadOnlySpan<uint> push, uint groupsX, uint groupsY, in BindKey key)
+    {
         if (groupsX == 0 || groupsY == 0)
         {
             return;
         }
 
-        var key = new BindKey(b0, b1, b2, b3);
         if (!_groups.TryGetValue(key, out var group))
         {
             if (_groups.Count >= MaxCachedGroups)
@@ -199,20 +213,9 @@ internal sealed class KernelPipeline : IDisposable
             }
 
             var e = _entries;
-            e[0] = BindGroupEntry.ForBuffer(0, b0);
-            if (e.Length > 1)
+            for (var i = 0; i < e.Length; i++)
             {
-                e[1] = BindGroupEntry.ForBuffer(1, b1!);
-            }
-
-            if (e.Length > 2)
-            {
-                e[2] = BindGroupEntry.ForBuffer(2, b2!);
-            }
-
-            if (e.Length > 3)
-            {
-                e[3] = BindGroupEntry.ForBuffer(3, b3!);
+                e[i] = BindGroupEntry.ForBuffer((uint)i, key[i]!);
             }
 
             group = _kernel.CreateBindGroup(_device, 0, e);
@@ -238,18 +241,34 @@ internal sealed class KernelPipeline : IDisposable
         _kernel.Dispose();
     }
 
-    readonly struct BindKey(GpuBuffer b0, GpuBuffer? b1, GpuBuffer? b2, GpuBuffer? b3) : IEquatable<BindKey>
+    readonly struct BindKey(GpuBuffer b0, GpuBuffer? b1, GpuBuffer? b2, GpuBuffer? b3, GpuBuffer? b4, GpuBuffer? b5, GpuBuffer? b6, GpuBuffer? b7) : IEquatable<BindKey>
     {
         readonly GpuBuffer _b0 = b0;
         readonly GpuBuffer? _b1 = b1;
         readonly GpuBuffer? _b2 = b2;
         readonly GpuBuffer? _b3 = b3;
+        readonly GpuBuffer? _b4 = b4;
+        readonly GpuBuffer? _b5 = b5;
+        readonly GpuBuffer? _b6 = b6;
+        readonly GpuBuffer? _b7 = b7;
 
-        public bool Equals(BindKey o) => ReferenceEquals(_b0, o._b0) && ReferenceEquals(_b1, o._b1) && ReferenceEquals(_b2, o._b2) && ReferenceEquals(_b3, o._b3);
+        public GpuBuffer? this[int i] => i switch { 0 => _b0, 1 => _b1, 2 => _b2, 3 => _b3, 4 => _b4, 5 => _b5, 6 => _b6, _ => _b7 };
+
+        public bool Equals(BindKey o) =>
+            ReferenceEquals(_b0, o._b0) && ReferenceEquals(_b1, o._b1) && ReferenceEquals(_b2, o._b2) && ReferenceEquals(_b3, o._b3) &&
+            ReferenceEquals(_b4, o._b4) && ReferenceEquals(_b5, o._b5) && ReferenceEquals(_b6, o._b6) && ReferenceEquals(_b7, o._b7);
 
         public override bool Equals(object? obj) => obj is BindKey k && Equals(k);
 
-        public override int GetHashCode() =>
-            HashCode.Combine(RuntimeHelpers.GetHashCode(_b0), RuntimeHelpers.GetHashCode(_b1), RuntimeHelpers.GetHashCode(_b2), RuntimeHelpers.GetHashCode(_b3));
+        public override int GetHashCode()
+        {
+            var h = new HashCode();
+            for (var i = 0; i < 8; i++)
+            {
+                h.Add(RuntimeHelpers.GetHashCode(this[i]));
+            }
+
+            return h.ToHashCode();
+        }
     }
 }

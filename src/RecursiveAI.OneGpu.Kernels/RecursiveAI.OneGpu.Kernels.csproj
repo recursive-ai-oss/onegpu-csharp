@@ -15,6 +15,8 @@
 
   <ItemGroup>
     <OneShader Include="Shaders/ArgReduce.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Attention.hlsl" Axes="F16;HD=D32|D64|D128|D256" />
+    <OneShader Include="Shaders/AttentionCombine.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Binary.hlsl" Axes="F16;ACT;RANK=R1|R2|RN" />
     <OneShader Include="Shaders/Cast.hlsl" />
     <OneShader Include="Shaders/Compare.hlsl" Axes="F16;RANK=R1|R2|RN" />

@@ -32,6 +32,7 @@ device.Submit(encoder);
 | `SoftmaxKernels` | Softmax and LogSoftmax along any axis |
 | `NormKernels` | layer normalisation and RMS normalisation over the last axis, optional scale and bias |
 | `TransposeKernels` | N-d permutation, NCHW↔NHWC, split and merge of attention heads |
+| `AttentionKernels` | fused scaled dot-product attention with masks, key lengths, causal rule and grouped heads (see [attention.md](attention.md)) |
 
 Adding an operation to the element-wise family is a case in `Shaders/Functions.hlsl` and an enum member: the operation is a push constant, not a pipeline.
 
