@@ -30,7 +30,9 @@ struct WhereParams
 [[vk::binding(2, 0)]] StructuredBuffer<Elem> WhB;
 [[vk::binding(3, 0)]] RWStructuredBuffer<Elem> WhO;
 
-#define WSTEP(R, D, C, A, B) if (WP.Rank > R) { uint c = rem % WP.D; rem /= WP.D; ic += c * WP.C; ia += c * WP.A; ib += c * WP.B; }
+#define WSTEP(R, D, C, A, B) \
+    if (WP.Rank == R + 1u) { ic += rem * WP.C; ia += rem * WP.A; ib += rem * WP.B; } \
+    else if (WP.Rank > R) { uint c = rem % WP.D; rem /= WP.D; ic += c * WP.C; ia += c * WP.A; ib += c * WP.B; }
 
 void WhereLocate(uint i, out uint ic, out uint ia, out uint ib)
 {

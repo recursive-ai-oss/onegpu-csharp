@@ -31,7 +31,9 @@ struct ArgParams
 groupshared float gsV[256];
 groupshared uint gsI[256];
 
-#define ASTEP(R, D, S) if (AP.KRank > R) { uint c = rem % AP.D; rem /= AP.D; off += c * AP.S; }
+#define ASTEP(R, D, S) \
+    if (AP.KRank == R + 1u) { off += rem * AP.S; } \
+    else if (AP.KRank > R) { uint c = rem % AP.D; rem /= AP.D; off += c * AP.S; }
 
 uint ArgKeptOffset(uint o)
 {

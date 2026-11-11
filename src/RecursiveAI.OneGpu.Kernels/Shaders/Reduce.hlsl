@@ -3,6 +3,11 @@
 //
 // ReduceBlock gives each output element a workgroup (long reductions); ReduceThread gives it one thread that walks the reduced elements in
 // order (short ones, and reductions over outer axes where neighbouring threads read neighbouring addresses).
+//
+// A long reduction with few outputs would leave most of the GPU idle, so it runs in two passes: ReduceSplit gives each of Split fixed,
+// contiguous chunks of the reduced elements to a workgroup, which leaves its partial result in the scratch buffer (bound as the output,
+// float bits); ReduceCombine then merges the Split partials of each output with the same workgroup tree. Split and Chunk depend only on
+// the shape, so the partition and the order of combination are the same on every device and run.
 
 #include "Block.hlsl"
 
@@ -26,6 +31,10 @@ struct ReduceParams
     uint KS0, KS1, KS2, KS3;
     uint R0, R1, R2, R3;
     uint RS0, RS1, RS2, RS3;
+    uint Split;
+    uint Chunk;
+    uint TotalR;
+    uint Pad;
 };
 
 [[vk::push_constant]] ConstantBuffer<ReduceParams> RP;
@@ -64,8 +73,12 @@ float Finalize(uint op, float acc, uint n)
     return op == 8u ? log(acc) : acc;
 }
 
-#define KSTEP(R, D, S) if (RP.KRank > R) { uint c = rem % RP.D; rem /= RP.D; off += c * RP.S; }
-#define RSTEP(R, D, S) if (RP.RRank > R) { uint c = rem % RP.D; rem /= RP.D; off += c * RP.S; }
+#define KSTEP(R, D, S) \
+    if (RP.KRank == R + 1u) { off += rem * RP.S; } \
+    else if (RP.KRank > R) { uint c = rem % RP.D; rem /= RP.D; off += c * RP.S; }
+#define RSTEP(R, D, S) \
+    if (RP.RRank == R + 1u) { off += rem * RP.S; } \
+    else if (RP.RRank > R) { uint c = rem % RP.D; rem /= RP.D; off += c * RP.S; }
 
 uint KeptOffset(uint o)
 {
@@ -78,8 +91,13 @@ uint KeptOffset(uint o)
     return off;
 }
 
+// RRANK = R1: the reduced elements form one run, so the offset needs no division (integer division is slow on GPUs without hardware for it
+// and the loops below call this per element).
 uint ReducedOffset(uint r)
 {
+#if RRANK_R1
+    return r * RP.RS0;
+#else
     uint rem = r;
     uint off = 0u;
     RSTEP(0u, R0, RS0)
@@ -87,6 +105,7 @@ uint ReducedOffset(uint r)
     RSTEP(2u, R2, RS2)
     RSTEP(3u, R3, RS3)
     return off;
+#endif
 }
 
 float LoadIn(uint i)
@@ -182,4 +201,83 @@ void ReduceThread(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     acc = Combine(kind, acc, run);
 
     StoreOut(o, Finalize(RP.Op, acc, RP.R));
+}
+
+float LoadPartial(uint i)
+{
+#if F16
+    return asfloat(RIn[i]);
+#else
+    return RIn[i];
+#endif
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void ReduceSplit(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
+{
+    uint g = gid.y * RP.GridX + gid.x;
+    uint o = g / RP.Split;
+    uint s = g - o * RP.Split;
+    bool live = o < RP.NumOut;
+    if (!live)
+    {
+        o = 0u;
+    }
+
+    uint kind = KindOf(RP.Op);
+    uint baseOff = KeptOffset(o);
+    uint first = s * RP.Chunk;
+    uint last = min(first + RP.Chunk, RP.R);
+    float acc = Identity(kind);
+    float run = acc;
+    uint inRun = 0u;
+    for (uint r = first + tid; r < last; r += WG)
+    {
+        run = Combine(kind, run, Transform(RP.Op, LoadIn(baseOff + ReducedOffset(r))));
+        inRun++;
+        if (inRun == 32u)
+        {
+            acc = Combine(kind, acc, run);
+            run = Identity(kind);
+            inRun = 0u;
+        }
+    }
+
+    acc = Combine(kind, acc, run);
+
+    float total = BlockReduce(kind, acc, tid);
+    if (tid == 0u && live)
+    {
+#if F16
+        ROut[g] = asuint(total);
+#else
+        ROut[g] = total;
+#endif
+    }
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void ReduceCombine(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
+{
+    uint o = gid.y * RP.GridX + gid.x;
+    bool live = o < RP.NumOut;
+    if (!live)
+    {
+        o = 0u;
+    }
+
+    uint kind = KindOf(RP.Op);
+    float v = Identity(kind);
+    if (tid < RP.Split)
+    {
+        v = LoadPartial(o * RP.Split + tid);
+    }
+
+    float total = BlockReduce(kind, v, tid);
+    if (tid == 0u && live)
+    {
+        StoreOut(o, Finalize(RP.Op, total, RP.TotalR));
+    }
 }

@@ -30,10 +30,24 @@ struct BinaryParams
 [[vk::binding(0, 0)]] StructuredBuffer<Elem> BinA;
 [[vk::binding(1, 0)]] StructuredBuffer<Elem> BinB;
 
-#define BSTEP(R, D, A, B) if (BP.Rank > R) { uint c = rem % BP.D; rem /= BP.D; ia += c * BP.A; ib += c * BP.B; }
+// The outermost dimension needs no division: what is left of the index is its coordinate. Integer division is slow on some GPUs.
+#define BSTEP(R, D, A, B) \
+    if (BP.Rank == R + 1u) { ia += rem * BP.A; ib += rem * BP.B; } \
+    else if (BP.Rank > R) { uint c = rem % BP.D; rem /= BP.D; ia += c * BP.A; ib += c * BP.B; }
 
+// RANK picks how the index is split: R1 (one merged dimension: same-shape operands, or one operand a scalar), R2 (such as a bias added to rows)
+// or RN (up to six). The division chain is slow on GPUs without integer division hardware, so the common cases avoid it.
 void BinaryLocate(uint i, out uint ia, out uint ib)
 {
+#if RANK_R1
+    ia = BP.OffA + i * BP.A0;
+    ib = BP.OffB + i * BP.B0;
+#elif RANK_R2
+    uint outer = i / BP.D0;
+    uint inner = i - outer * BP.D0;
+    ia = BP.OffA + inner * BP.A0 + outer * BP.A1;
+    ib = BP.OffB + inner * BP.B0 + outer * BP.B1;
+#else
     uint rem = i;
     ia = BP.OffA;
     ib = BP.OffB;
@@ -43,6 +57,7 @@ void BinaryLocate(uint i, out uint ia, out uint ib)
     BSTEP(3u, D3, A3, B3)
     BSTEP(4u, D4, A4, B4)
     BSTEP(5u, D5, A5, B5)
+#endif
 }
 
 void BinaryLoad(uint i, out float a, out float b)

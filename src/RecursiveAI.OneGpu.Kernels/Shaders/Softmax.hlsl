@@ -6,7 +6,8 @@
 //
 // SoftmaxBlock gives a row to a workgroup: every thread folds a fixed strided slice of the row, then the 256 partial (m, d) pairs are merged.
 // Without WAVE the merge is a fixed halving tree in shared memory (deterministic); with WAVE the maxima and sums go through subgroup
-// operations. SoftmaxThread gives a row to one thread (short rows).
+// operations. SoftmaxMulti gives a row to Lanes threads (a power of two, at most 256) so that a workgroup handles 256 / Lanes rows; it merges
+// with a fixed halving tree in shared memory in every build, so it is deterministic. SoftmaxThread gives a row to one thread (very short rows).
 //
 // F16 builds read halves anywhere but write whole words, so they need Inner = 1 and even Len and offsets (the host checks).
 
@@ -27,7 +28,7 @@ struct SoftmaxParams
     uint Inner;
     uint GridX;
     uint Log;
-    uint Pad;
+    uint Lanes;
 };
 
 [[vk::push_constant]] ConstantBuffer<SoftmaxParams> SP;
@@ -192,6 +193,57 @@ void SoftmaxBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     if (live)
     {
         WriteRow(rowBase, tid, WG, rm, rd);
+    }
+}
+
+// Several rows per workgroup: thread t works on row (group * (256 / Lanes) + t / Lanes) as lane t % Lanes. The halving tree runs inside each
+// row's segment of the shared arrays; steps at or above Lanes are skipped by every thread alike, so the barriers stay uniform.
+#define MULTI_STEP(S) \
+    if ((S) < SP.Lanes && lane < (S)) \
+    { \
+        float nm, nd; \
+        Merge(gsM[tid], gsD[tid], gsM[tid + (S)], gsD[tid + (S)], nm, nd); \
+        gsM[tid] = nm; \
+        gsD[tid] = nd; \
+    } \
+    GroupMemoryBarrierWithGroupSync();
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void SoftmaxMulti(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
+{
+    uint lane = tid & (SP.Lanes - 1u);
+    uint row = (gid.y * SP.GridX + gid.x) * (WG / SP.Lanes) + tid / SP.Lanes;
+    bool live = row < SP.Rows;
+    if (!live)
+    {
+        row = 0u;
+    }
+
+    uint rowBase = RowBase(row);
+    float m = NegInf();
+    float d = 0.0;
+    for (uint i = lane; i < SP.Len; i += SP.Lanes)
+    {
+        Fold(LoadX(SP.InOff + rowBase + i * SP.Inner), m, d);
+    }
+
+    gsM[tid] = m;
+    gsD[tid] = d;
+    GroupMemoryBarrierWithGroupSync();
+    MULTI_STEP(128u)
+    MULTI_STEP(64u)
+    MULTI_STEP(32u)
+    MULTI_STEP(16u)
+    MULTI_STEP(8u)
+    MULTI_STEP(4u)
+    MULTI_STEP(2u)
+    MULTI_STEP(1u)
+
+    uint head = tid - lane;
+    if (live)
+    {
+        WriteRow(rowBase, lane, SP.Lanes, gsM[head], gsD[head]);
     }
 }
 

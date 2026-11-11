@@ -20,7 +20,9 @@ struct TransposeParams
 [[vk::binding(0, 0)]] StructuredBuffer<uint> TIn;
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> TOut;
 
-#define TSTEP(R, D, S) if (TP.Rank > R) { uint c = rem % TP.D; rem /= TP.D; off += c * TP.S; }
+#define TSTEP(R, D, S) \
+    if (TP.Rank == R + 1u) { off += rem * TP.S; } \
+    else if (TP.Rank > R) { uint c = rem % TP.D; rem /= TP.D; off += c * TP.S; }
 
 // Element index in the input of output element j (counted from the first output element).
 uint Source(uint j)

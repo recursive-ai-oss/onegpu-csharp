@@ -9,7 +9,9 @@ namespace RecursiveAI.OneGpu.Kernels;
 /// <remarks>
 /// <para>A row whose entries are all -infinity, or that holds +infinity or NaN, gives NaN for every entry of the row, as the textbook formula does;
 /// entries of -infinity in a row with finite entries give 0 (log-softmax: -infinity), so additive attention masks work.</para>
-/// <para><b>Variants.</b> Rows shorter than 64 are done by one thread each; longer rows by a 256-thread workgroup. In the workgroup form
+/// <para><b>Variants.</b> Rows shorter than 16 are done by one thread each; rows of 16 to 1024 elements by a power-of-two group of threads (about four
+/// elements per thread, so a 256-thread workgroup handles several rows), merged by a fixed halving tree in every mode; longer rows by a whole
+/// 256-thread workgroup. In the workgroup form
 /// <see cref="GpuKernelMode.Fast"/> merges the partial statistics with subgroup operations where the device has them
 /// (<see cref="Variant"/>), <see cref="GpuKernelMode.Deterministic"/> with a fixed halving tree in shared memory: each thread folds a fixed
 /// strided slice of the row in order and the tree shape is fixed, so the bits do not depend on the device's subgroup size or on scheduling.
@@ -25,6 +27,7 @@ public sealed class SoftmaxKernels : IDisposable
     readonly bool _subgroups;
     readonly KernelPipeline?[] _block = new KernelPipeline?[4];
     readonly KernelPipeline?[] _thread = new KernelPipeline?[2];
+    readonly KernelPipeline?[] _multi = new KernelPipeline?[2];
 
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
@@ -97,19 +100,34 @@ public sealed class SoftmaxKernels : IDisposable
         w[4] = (uint)inner;
         w[6] = logarithm ? 1u : 0u;
         var wave = mode == GpuKernelMode.Fast && _subgroups;
-        var block = len >= 64;
+        var block = len > 1024;
+        var multi = !block && len >= 16;
         KernelPipeline pipeline;
-        if (block)
+        uint rowsPerGroup = 1;
+        if (multi)
+        {
+            // About four elements per thread, a power of two between 4 and 256 threads.
+            var lanes = 4u;
+            while (lanes < 256 && lanes * 4 < len)
+            {
+                lanes <<= 1;
+            }
+
+            w[7] = lanes;
+            rowsPerGroup = 256 / lanes;
+            pipeline = _multi[half ? 1 : 0] ??= Create(half, false, 2);
+        }
+        else if (block)
         {
             var slot = (half ? 1 : 0) + (wave ? 2 : 0);
-            pipeline = _block[slot] ??= Create(half, wave, true);
+            pipeline = _block[slot] ??= Create(half, wave, 1);
         }
         else
         {
-            pipeline = _thread[half ? 1 : 0] ??= Create(half, false, false);
+            pipeline = _thread[half ? 1 : 0] ??= Create(half, false, 0);
         }
 
-        var (gx, gy) = block ? Grid.For(_device, rows) : Grid.For(_device, (rows + 255) / 256);
+        var (gx, gy) = block ? Grid.For(_device, rows) : Grid.For(_device, (rows + (multi ? rowsPerGroup : 256) - 1) / (multi ? rowsPerGroup : 256));
         w[5] = gx;
         pipeline.Record(encoder, w, gx, gy, input.Buffer, output.Buffer);
     }
@@ -117,7 +135,7 @@ public sealed class SoftmaxKernels : IDisposable
     /// <summary>Releases the pipelines and bind groups once the GPU has finished with them.</summary>
     public void Dispose()
     {
-        foreach (var set in new[] { _block, _thread })
+        foreach (var set in new[] { _block, _thread, _multi })
         {
             for (var i = 0; i < set.Length; i++)
             {
@@ -127,10 +145,16 @@ public sealed class SoftmaxKernels : IDisposable
         }
     }
 
-    KernelPipeline Create(bool half, bool wave, bool block)
+    // kind: 0 thread per row, 1 workgroup per row, 2 several rows per workgroup.
+    KernelPipeline Create(bool half, bool wave, int kind)
     {
         var v = Softmax.Variants.Get(new Softmax.Key(f16: half, wave: wave));
-        return block
+        if (kind == 2)
+        {
+            return new KernelPipeline(_device, KernelSources.Make(v.SoftmaxMulti.EntryPoint, v.SoftmaxMulti.SpirV, v.SoftmaxMulti.Msl, v.SoftmaxMulti.MslFunctionName, v.SoftmaxMulti.Wgsl, v.SoftmaxMulti.WgslEntryPoint, v.SoftmaxMulti.Layout), 2, Words, "softmax-multi");
+        }
+
+        return kind == 1
             ? new KernelPipeline(_device, KernelSources.Make(v.SoftmaxBlock.EntryPoint, v.SoftmaxBlock.SpirV, v.SoftmaxBlock.Msl, v.SoftmaxBlock.MslFunctionName, v.SoftmaxBlock.Wgsl, v.SoftmaxBlock.WgslEntryPoint, v.SoftmaxBlock.Layout), 2, Words, "softmax-block")
             : new KernelPipeline(_device, KernelSources.Make(v.SoftmaxThread.EntryPoint, v.SoftmaxThread.SpirV, v.SoftmaxThread.Msl, v.SoftmaxThread.MslFunctionName, v.SoftmaxThread.Wgsl, v.SoftmaxThread.WgslEntryPoint, v.SoftmaxThread.Layout), 2, Words, "softmax-thread");
     }

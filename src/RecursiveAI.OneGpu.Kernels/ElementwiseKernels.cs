@@ -23,8 +23,8 @@ public sealed class ElementwiseKernels : IDisposable
     const int CastWords = 6;
 
     readonly GpuDevice _device;
-    readonly KernelPipeline?[] _binary = new KernelPipeline?[2];
-    readonly KernelPipeline?[] _compare = new KernelPipeline?[2];
+    readonly KernelPipeline?[] _binary = new KernelPipeline?[12];
+    readonly KernelPipeline?[] _compare = new KernelPipeline?[6];
     readonly KernelPipeline?[] _unary = new KernelPipeline?[2];
     readonly KernelPipeline?[] _where = new KernelPipeline?[2];
     KernelPipeline? _cast;
@@ -91,7 +91,7 @@ public sealed class ElementwiseKernels : IDisposable
         w[3] = (uint)offsetOutput;
         w[4] = (uint)op;
         w[9] = (uint)rank;
-        Dispatch(Name, encoder, Pipeline(_binary, half, mode), w, count, offsetOutput, half, 8, a.Buffer, b.Buffer, output.Buffer);
+        Dispatch(Name, encoder, Pipeline(_binary, half, mode, activation is not null, rank), w, count, offsetOutput, half, 8, a.Buffer, b.Buffer, output.Buffer);
     }
 
     /// <summary>Records <c>output = a op b</c> as 32-bit 0 or 1 per element, with broadcasting.</summary>
@@ -131,7 +131,7 @@ public sealed class ElementwiseKernels : IDisposable
         w[9] = (uint)rank;
 
         // The result is one word per element, so the grid is per element for both input types.
-        Dispatch(Name, encoder, Pipeline(_compare, half, GpuKernelMode.Fast), w, count, offsetOutput, false, 8, a.Buffer, b.Buffer, output.Buffer);
+        Dispatch(Name, encoder, Pipeline(_compare, half, GpuKernelMode.Fast, false, rank), w, count, offsetOutput, false, 8, a.Buffer, b.Buffer, output.Buffer);
     }
 
     /// <summary>Records <c>y = f(x)</c> over <paramref name="count"/> consecutive elements.</summary>
@@ -297,10 +297,13 @@ public sealed class ElementwiseKernels : IDisposable
         pipeline.Record(encoder, words, gx, gy, b0, b1, b2, b3);
     }
 
-    KernelPipeline Pipeline(KernelPipeline?[] slots, bool half, GpuKernelMode mode)
+    // The fused activation is compiled in only when asked for: its code makes the plain binary kernel needlessly heavy on registers.
+    KernelPipeline Pipeline(KernelPipeline?[] slots, bool half, GpuKernelMode mode, bool activation = false, int rank = 0)
     {
         _ = mode;
-        var i = half ? 1 : 0;
+        // Binary and compare kernels are specialised on the merged rank: one dimension, two, or more.
+        var rankClass = rank <= 1 ? 0 : (rank == 2 ? 1 : 2);
+        var i = (half ? 1 : 0) + (activation ? 2 : 0) + ((slots.Length > 6 ? 4 : 2) * rankClass);
         if (slots[i] is { } ready)
         {
             return ready;
@@ -309,12 +312,12 @@ public sealed class ElementwiseKernels : IDisposable
         KernelPipeline created;
         if (ReferenceEquals(slots, _binary))
         {
-            var e = Binary.Variants.Get(new Binary.Key(f16: half)).BinaryOp;
+            var e = Binary.Variants.Get(new Binary.Key(f16: half, act: activation, rank: rankClass == 0 ? Binary.RankValue.R1 : (rankClass == 1 ? Binary.RankValue.R2 : Binary.RankValue.Rn))).BinaryOp;
             created = new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 3, BinaryWords, "binary");
         }
         else if (ReferenceEquals(slots, _compare))
         {
-            var e = Compare.Variants.Get(new Compare.Key(f16: half)).CompareOp;
+            var e = Compare.Variants.Get(new Compare.Key(f16: half, rank: rankClass == 0 ? Compare.RankValue.R1 : (rankClass == 1 ? Compare.RankValue.R2 : Compare.RankValue.Rn))).CompareOp;
             created = new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 3, BinaryWords, "compare");
         }
         else if (ReferenceEquals(slots, _unary))

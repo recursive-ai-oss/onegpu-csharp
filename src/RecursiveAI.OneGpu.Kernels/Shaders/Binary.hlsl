@@ -9,10 +9,12 @@ float BinaryValue(uint i)
     float a, b;
     BinaryLoad(i, a, b);
     float v = Binary(BP.Op, a, b);
+#if ACT
     if (BP.Act != 0u)
     {
         v = Unary(BP.Act - 1u, v, BP.P0, BP.P1);
     }
+#endif
 
     return v;
 }

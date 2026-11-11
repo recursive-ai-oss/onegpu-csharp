@@ -44,6 +44,7 @@ is written out in the shader because the drivers' own float-to-half conversion d
 - A buffer the kernels touch must end on a word boundary: allocate `GpuKernelBuffers.PaddedHalfLength(n)` halves. Otherwise `GpuKernelShapeException`.
 - An output may overlap an input only with the same offset and extent.
 - Softmax and normalisation write whole rows as words, so half tensors need the softmax axis last, an even row length and even element offsets.
+- Index arithmetic avoids integer division where it can (same-shape and bias-style broadcasts, a single run of reduced dimensions): on Apple GPUs a chain of divisions per element made binary add and reductions two to three times slower, so those cases are compiled as separate variants.
 - Reduction outputs are written with two integer atomic AND/OR operations on disjoint bits, so neighbouring outputs of different workgroups never clash. There are no floating-point atomics anywhere.
 
 ## Tolerances
@@ -72,7 +73,9 @@ The reductions, softmax and normalisation have both modes.
 
 - **Fast**: each output (a reduction element, a softmax row, a norm row) is computed by one 256-thread workgroup. Every thread folds a strided slice in index order (reductions add short runs of 32 first, which keeps the rounding error near that of a pairwise sum), and the 256 partial results are combined with the device's subgroup arithmetic when `GpuCapabilities.Compute` reports basic, vote and arithmetic subgroup operations and no subgroup is smaller than 4 lanes; otherwise with the shared-memory tree. `Variant` on each family says which. Constructing a family with `allowSubgroups: false` forces the shared-memory path.
 - **Deterministic**: the same slices, then a fixed halving tree in shared memory (thread *i* combines with *i + s* for *s* = 128, 64, … 1). No subgroup operation, no floating-point atomic, no dependence on occupancy, scheduling or subgroup size. Two runs on the same device and driver give identical bits, and because nothing depends on the subgroup size the result is also the same for the fast variant without subgroups.
-- A reduction with fewer than 32 elements per output, or between 32 and 255 along a non-contiguous axis with thousands of outputs, and a softmax row shorter than 64, is done by one thread per output in index order; that path is deterministic by construction and used by both modes.
+- A reduction with fewer than 32 elements per output, or between 32 and 255 along a non-contiguous axis with thousands of outputs, and a softmax row shorter than 16, is done by one thread per output in index order; that path is deterministic by construction and used by both modes.
+- A softmax row of 16 to 1024 elements gets a power-of-two group of threads (about four elements each), so one workgroup handles 256 / group rows. The statistics are merged by the fixed halving tree in both modes.
+- A reduction with fewer than 128 outputs and at least 16384 reduced elements (a sum over a whole tensor) runs in two passes: the reduced elements are cut into at most 256 contiguous chunks of at least 4096, a workgroup reduces each chunk to a partial result in a scratch buffer of 128 x 256 floats (`ReduceKernels.ScratchLength`; the family keeps its own unless the caller passes one), and one workgroup per output combines the partials in index order. The cut is a function of the shape, so the deterministic mode stays bit-identical run to run.
 - Otherwise a workgroup takes each output. The choice depends on the shape only, never on the device.
 
 ## Special values
