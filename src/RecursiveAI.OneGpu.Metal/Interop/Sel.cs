@@ -142,6 +142,13 @@ internal static class Sel
     public static readonly nint texture = Objc.sel_registerName("texture");
     public static readonly nint vertexDescriptor = Objc.sel_registerName("vertexDescriptor");
     public static readonly nint waitUntilCompleted = Objc.sel_registerName("waitUntilCompleted");
+    public static readonly nint setLanguageVersion_ = Objc.sel_registerName("setLanguageVersion:");
+    public static readonly nint threadExecutionWidth = Objc.sel_registerName("threadExecutionWidth");
+    public static readonly nint maxTotalThreadsPerThreadgroup = Objc.sel_registerName("maxTotalThreadsPerThreadgroup");
+    public static readonly nint maxThreadsPerThreadgroup = Objc.sel_registerName("maxThreadsPerThreadgroup");
+    public static readonly nint maxThreadgroupMemoryLength = Objc.sel_registerName("maxThreadgroupMemoryLength");
+    public static readonly nint maxBufferLength = Objc.sel_registerName("maxBufferLength");
+    public static readonly nint currentAllocatedSize = Objc.sel_registerName("currentAllocatedSize");
 }
 
 /// <summary>Looked-up Objective-C classes.</summary>

@@ -14,6 +14,7 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
     nint _noDepthState;
     readonly GpuAdapterInfo _info;
     GpuCapabilities _caps;
+    bool _computeQueried;
     bool _disposed;
     readonly bool _debugLayer;
     readonly List<string> _messages = [];
@@ -53,7 +54,20 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
     public override GpuAdapterInfo Adapter => _info;
 
     /// <inheritdoc />
-    public override GpuCapabilities Capabilities => _caps;
+    public override GpuCapabilities Capabilities
+    {
+        get
+        {
+            // The compute capabilities compile a few probe kernels, so they are read on first use rather than for every device that only draws.
+            if (!_computeQueried)
+            {
+                _computeQueried = true;
+                _caps = _caps with { Compute = QueryCompute() };
+            }
+
+            return _caps;
+        }
+    }
 
     /// <inheritdoc />
     public override GpuBackend Backend => GpuBackend.Metal;
@@ -461,6 +475,9 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
         {
             // Tearing down after a failed device: release what we can.
         }
+
+        _waiter?.Dispose();
+        _waiter = null;
 
         _disposed = true;
         Objc.Release(ref _noDepthState);

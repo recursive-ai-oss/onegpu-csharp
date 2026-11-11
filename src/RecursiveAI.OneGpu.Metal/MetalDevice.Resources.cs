@@ -25,7 +25,7 @@ internal sealed unsafe partial class MetalDevice
             Msg.Void(handle, Sel.setLabel_, Objc.NSString(label));
         }
 
-        return new MetalBuffer(handle, desc);
+        return new MetalBuffer(handle, desc, this);
     }
 
     /// <inheritdoc />

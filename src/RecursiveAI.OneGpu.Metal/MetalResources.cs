@@ -17,17 +17,29 @@ internal struct NSRange
 
 internal sealed class MetalBuffer : GpuBuffer
 {
+    readonly MetalDevice? _owner;
     public nint Handle;
 
-    public MetalBuffer(nint handle, in BufferDesc desc)
+    public MetalBuffer(nint handle, in BufferDesc desc, MetalDevice? owner = null)
     {
         Handle = handle;
         Size = desc.Size;
         Usage = desc.Usage;
         Label = desc.Label;
+        _owner = owner;
+        _owner?.BufferCreated(desc.Size);
     }
 
-    public override void Dispose() => Objc.Release(ref Handle);
+    public override void Dispose()
+    {
+        if (Handle == 0)
+        {
+            return;
+        }
+
+        Objc.Release(ref Handle);
+        _owner?.BufferReleased(Size);
+    }
 }
 
 internal sealed class MetalTexture : GpuTexture
