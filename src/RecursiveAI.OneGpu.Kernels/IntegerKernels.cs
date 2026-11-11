@@ -307,8 +307,8 @@ public sealed class IntegerKernels : IDisposable
         WriteGenerated(Name, encoder, output.Buffer, offset, count, 1, type, isFloat, s0, s1, d0, d1);
     }
 
-    /// <summary>How many bind groups the family has built so far; tests use it to see the cache work.</summary>
-    internal int BindGroupsCreated => (_integer?.Created ?? 0) + (_generate?.Created ?? 0);
+    /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
+    public int BindGroupsCreated => (_integer?.Created ?? 0) + (_generate?.Created ?? 0);
 
     /// <summary>
     /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.

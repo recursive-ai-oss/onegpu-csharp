@@ -135,8 +135,8 @@ public sealed class SoftmaxKernels : IDisposable
         pipeline.Record(encoder, w, gx, gy, input.Buffer, output.Buffer);
     }
 
-    /// <summary>How many bind groups the family has built so far; tests use it to see the cache work.</summary>
-    internal int BindGroupsCreated => KernelPipeline.Total(_block, _thread, _multi);
+    /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
+    public int BindGroupsCreated => KernelPipeline.Total(_block, _thread, _multi);
 
     /// <summary>
     /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.

@@ -258,8 +258,8 @@ public sealed class Gemm : IDisposable
         Encode(encoder, problem, a.Buffer, b.Buffer, c.Buffer, a.Length, b.Length, c.Length, epilogue);
     }
 
-    /// <summary>How many bind groups this instance has built so far; tests use it to see the cache work.</summary>
-    internal int BindGroupsCreated { get; private set; }
+    /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
+    public int BindGroupsCreated { get; private set; }
 
     /// <summary>Drops the cached bind groups. Call it after disposing operand buffers that will not be used again, so the groups do not keep them reachable.</summary>
     public void ReleaseBindings()
