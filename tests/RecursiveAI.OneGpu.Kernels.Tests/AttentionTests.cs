@@ -297,6 +297,7 @@ public sealed class AttentionTests
                 var runs = 0;
                 var same = 0;
                 var samples = new List<string>();
+                var differing = new List<string>();
                 foreach (var c in SelectedModelCases().Concat(EdgeCases()).Where(c => Applies(c, half)))
                 {
                     var prep = Prepare(c, half);
@@ -304,6 +305,11 @@ public sealed class AttentionTests
                     var o2 = await Run(d, k, c, prep, half, GpuKernelMode.Deterministic);
                     runs++;
                     same += o1.Hash == o2.Hash ? 1 : 0;
+                    if (o1.Hash != o2.Hash)
+                    {
+                        differing.Add(c.Name);
+                    }
+
                     if (c.Name is "bert B1 S512" or "whisper decoder self B1 cache448" or "whisper encoder B1 S1500")
                     {
                         samples.Add($"{c.Name}: {o1.Hash} / {o2.Hash}");
@@ -311,7 +317,7 @@ public sealed class AttentionTests
                 }
 
                 Rig.Row(d, "attention", half ? "f16" : "f32", $"{name} variant run twice per shape (output hashes, first / second run: " + string.Join("; ", samples) + ")", $"{same}/{runs} identical");
-                Assert.Equal(runs, same);
+                Assert.True(runs == same, $"{name} {(half ? "f16" : "f32")}: runs differ for: {string.Join(", ", differing)}");
             }
         }
     }
