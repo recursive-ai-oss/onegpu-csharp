@@ -10,7 +10,13 @@
 // The bias, the residual and the activation are applied as each element is stored, so the output is written once and nothing else touches it.
 // Each output element is a sum in an order the matrix hardware fixes; the kernel is the fast variant only.
 //
-// Grid: x = tiles of pixels, y = tiles of output channels, z = images * groups. The host pins the subgroup size to 32 and runs full subgroups.
+// Split-k: a layer whose grid is too small for the GPU (the late layers of a classifier at batch 1: a few tiles, each 4608 deep) is cut along k. The
+// z axis then runs split-major (z = split * images * groups + image * groups + group), every range sums its part of k in the same order the whole sum
+// would, and a following pass adds the planes in range order and applies the epilogue (ConvEpilogue.hlsl, SPLIT). The cut depends only on the
+// shape, so the result does not depend on how the GPU schedules the ranges.
+//
+// Grid: x = tiles of pixels, y = tiles of output channels, z = images * groups (times the number of ranges when k is split). The host pins the
+// subgroup size to 32 and runs full subgroups.
 
 #include "Functions.hlsl"
 
@@ -38,6 +44,10 @@ struct ConvGemmParams
     uint Act;       // 0 none, else the unary operation number + 1
     float P0;
     float P1;
+    uint KPerSplit; // 0: one pass over all of k. Else k is cut into ranges of this many steps (a multiple of 16); the z axis counts split-major,
+                    // and each range writes its raw sums (no bias, residual or activation) into its own plane SplitStride elements after the previous one
+    uint SplitStride;
+    uint ImageGroups; // images * groups of this dispatch, when k is split
 };
 
 [[vk::push_constant]] ConstantBuffer<ConvGemmParams> P;
@@ -130,13 +140,27 @@ void ConvCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
 {
     uint m0 = group.y * BM;
     uint n0 = group.x * BN;
-    uint image = group.z / P.Groups;
-    uint g = group.z - image * P.Groups;
+    uint split = 0;
+    uint ig = group.z;
+    uint kBegin = 0;
+    uint kEnd = P.K;
+    uint planeBase = 0;
+    if (P.KPerSplit != 0u)
+    {
+        split = ig / P.ImageGroups;
+        ig = ig - split * P.ImageGroups;
+        kBegin = split * P.KPerSplit;
+        kEnd = min(P.K, kBegin + P.KPerSplit);
+        planeBase = split * P.SplitStride;
+    }
+
+    uint image = ig / P.Groups;
+    uint g = ig - image * P.Groups;
     uint cinG = P.Cin / P.Groups;
     uint xBase = P.OffX + (image * P.Cin + g * cinG) * P.H * P.W;
     uint wBase = P.OffW + g * P.M * P.K;
     uint channel0 = g * P.M;
-    uint yBase = P.OffY + (image * P.Cout + g * P.M) * P.N;
+    uint yBase = P.OffY + planeBase + (image * P.Cout + g * P.M) * P.N;
     bool pointwise = (P.Flags & 4u) != 0u;
     uint taps = P.KH * P.KW;
 
@@ -168,12 +192,12 @@ void ConvCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     MatC acc11 = MatC::Zero();
 #endif
 
-    uint kStaged = 0;
+    uint kStaged = kBegin;
     if (pointwise && m0 + BM <= P.M && n0 + BN <= P.N)
     {
-        kStaged = P.K & ~(BK - 1u);
+        kStaged = kBegin + ((kEnd - kBegin) & ~(BK - 1u));
         uint rowA = m0 + sgRow * 32;
-        for (uint kd = 0; kd < kStaged; kd += BK)
+        for (uint kd = kBegin; kd < kStaged; kd += BK)
         {
             MatA a0;
             MatA a1;
@@ -192,7 +216,7 @@ void ConvCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
         }
     }
 
-    for (uint k0 = kStaged; k0 < P.K; k0 += BK)
+    for (uint k0 = kStaged; k0 < kEnd; k0 += BK)
     {
         [unroll] for (uint e = 0; e < (BM * BK) / THREADS; e++)
         {
@@ -202,7 +226,7 @@ void ConvCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
             uint gm = m0 + r;
             uint gk = k0 + k;
             float v = 0.0;
-            if (gm < P.M && gk < P.K)
+            if (gm < P.M && gk < kEnd)
             {
                 v = ConvW[wBase + gm * P.K + gk];
             }
@@ -226,7 +250,7 @@ void ConvCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
         [unroll] for (uint f = 0; f < (BK * BN) / THREADS; f++)
         {
             float v = 0.0;
-            if (pixelValid && gk < P.K)
+            if (pixelValid && gk < kEnd)
             {
                 if (pointwise)
                 {
