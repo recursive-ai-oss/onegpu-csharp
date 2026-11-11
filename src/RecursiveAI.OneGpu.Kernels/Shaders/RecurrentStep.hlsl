@@ -2,9 +2,9 @@
 //
 // The input projection of all steps (Xw = X * W^T, one matrix product for the whole sequence) is done beforehand; this kernel forms the
 // recurrent product Rec = H * R^T for the step and the gate arithmetic that follows, so a step is one dispatch and the dispatches are
-// ordered by the barriers between passes. A workgroup owns U hidden units of one direction (U = 8 / gates computed in the pass, so eight
-// rows of R per workgroup) and all batch rows. For each row of R, 32 lanes (consecutive k, so loads coalesce) each sum k = lane, lane + 32, ...
-// in increasing order, and the 32 partial sums are combined by a fixed halving tree in shared memory. Nothing depends on the subgroup size, the
+// ordered by the barriers between passes. A workgroup owns U hidden units of one direction (U = ROWS / gates computed in the pass, so ROWS
+// rows of R per workgroup) and all batch rows. For each row of R, LANES lanes (consecutive k, so loads coalesce) each sum k = lane, lane + LANES, ...
+// in increasing order, and the partial sums are combined by a fixed halving tree in shared memory. Nothing depends on the subgroup size, the
 // scheduling or the occupancy, and there are no atomics, so a result is bit-identical from run to run on one device.
 //
 // State lives in one float buffer: H (two copies, swapped every step so no workgroup reads what another writes), C, r*H and z of a GRU
@@ -17,6 +17,10 @@
 #include "Functions.hlsl"
 
 #define BT 8u
+// Lanes that share one row of R, and so the rows a workgroup covers (256 / LANES). Fewer lanes per row means fewer workgroups per pass, each with more
+// work, which is what hides the latency of a pass that is a few microseconds of arithmetic.
+#define LANES 4u
+#define ROWS (256u / LANES)
 
 struct StepParams
 {
@@ -165,11 +169,11 @@ void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
     uint dbh = dirs * batch * hid;
     uint ng = P.Gates & 15u;
     uint gate0 = (P.Gates >> 4) & 15u;
-    // Eight rows of R per workgroup: U hidden units times the gates formed in this pass.
-    uint U = 8u / ng;
+    // ROWS rows of R per workgroup: U hidden units times the gates formed in this pass.
+    uint U = ROWS / ng;
     uint j0 = gid.x * U;
-    uint row = tid >> 5;
-    uint lane = tid & 31u;
+    uint row = tid / LANES;
+    uint lane = tid % LANES;
     uint rowUnit = row % U;
     uint rowGate = row / U;
     bool rowLive = row < U * ng && j0 + rowUnit < hid;
@@ -198,7 +202,35 @@ void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
 
         if (rowLive)
         {
-            for (uint k = lane; k < hid; k += 32u)
+            uint vBase = vecOff + (d * batch + b0) * hid;
+            uint k = lane;
+            // Four independent loads per lane in flight at a time (the sums still go in increasing k: k, k + LANES, k + 2 LANES, k + 3 LANES, then
+            // the next block), which hides most of the memory latency that a one-load loop pays for every k.
+            for (; k + 3u * LANES < hid; k += 4u * LANES)
+            {
+                float r0 = LoadR(rRow + k);
+                float r1 = LoadR(rRow + k + LANES);
+                float r2 = LoadR(rRow + k + 2u * LANES);
+                float r3 = LoadR(rRow + k + 3u * LANES);
+                [unroll]
+                for (uint bi = 0u; bi < BT; bi++)
+                {
+                    if (bi < nb)
+                    {
+                        uint v = vBase + bi * hid + k;
+                        float h0 = State[v];
+                        float h1 = State[v + LANES];
+                        float h2 = State[v + 2u * LANES];
+                        float h3 = State[v + 3u * LANES];
+                        acc[bi] += r0 * h0;
+                        acc[bi] += r1 * h1;
+                        acc[bi] += r2 * h2;
+                        acc[bi] += r3 * h3;
+                    }
+                }
+            }
+
+            for (; k < hid; k += LANES)
             {
                 float rv = LoadR(rRow + k);
                 [unroll]
@@ -206,7 +238,7 @@ void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
                 {
                     if (bi < nb)
                     {
-                        acc[bi] += rv * State[vecOff + (d * batch + b0 + bi) * hid + k];
+                        acc[bi] += rv * State[vBase + bi * hid + k];
                     }
                 }
             }
@@ -220,7 +252,7 @@ void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
 
         GroupMemoryBarrierWithGroupSync();
         [unroll]
-        for (uint s = 16u; s > 0u; s >>= 1)
+        for (uint s = LANES / 2u; s > 0u; s >>= 1)
         {
             if (lane < s)
             {
@@ -234,135 +266,138 @@ void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
             GroupMemoryBarrierWithGroupSync();
         }
 
-        // Gate arithmetic: one thread per (unit, batch row).
-        uint bi = tid % BT;
-        uint u = tid / BT;
-        uint j = j0 + u;
-        if (u < U && bi < nb && j < hid)
+        // Gate arithmetic: one thread per (unit, batch row); a workgroup with more of them than threads loops.
+        for (uint item = tid; item < U * BT; item += 256u)
         {
-            uint b = b0 + bi;
-            uint len = hasLens ? min(Lens[P.OffLens + b], P.Seq) : P.Seq;
-            uint vi = (d * batch + b) * hid + j;
-            float hPrev = State[hIn + vi];
-            if (P.Step >= len)
+            uint bi = item % BT;
+            uint u = item / BT;
+            uint j = j0 + u;
+            if (bi < nb && j < hid)
             {
-                if (finishes)
+                uint b = b0 + bi;
+                uint len = hasLens ? min(Lens[P.OffLens + b], P.Seq) : P.Seq;
+                uint vi = (d * batch + b) * hid + j;
+                float hPrev = State[hIn + vi];
+                if (P.Step >= len)
                 {
-                    State[hOut + vi] = hPrev;
-                }
-            }
-            else
-            {
-                uint t = rev ? len - 1u - P.Step : P.Step;
-                uint xRow = layout1 ? b * P.Seq + t : t * batch + b;
-                uint xw = xBase + xRow * gh + j;
-                uint bB = P.OffBias + d * 2u * gh + j;
-                uint rB = bB + gh;
-                // Recurrent product of gate g (relative to this pass) for this unit and row.
-                #define REC(g) Sh[((g * U + u) * 32u) * BT + bi]
-                float hNew = 0.0;
-                if (cell == 2u)
-                {
-                    float pi = Xw[xw] + REC(0u);
-                    float po = Xw[xw + hid] + REC(1u);
-                    float pf = Xw[xw + 2u * hid] + REC(2u);
-                    float pc = Xw[xw + 3u * hid] + REC(3u);
-                    if (hasBias)
+                    if (finishes)
                     {
-                        pi = (pi + LoadBias(bB)) + LoadBias(rB);
-                        po = (po + LoadBias(bB + hid)) + LoadBias(rB + hid);
-                        pf = (pf + LoadBias(bB + 2u * hid)) + LoadBias(rB + 2u * hid);
-                        pc = (pc + LoadBias(bB + 3u * hid)) + LoadBias(rB + 3u * hid);
-                    }
-
-                    float cPrev = State[cOff + vi];
-                    uint pp = P.OffPeep + d * 3u * hid + j;
-                    if (hasPeep)
-                    {
-                        pi += LoadPeep(pp) * cPrev;
-                        pf += LoadPeep(pp + 2u * hid) * cPrev;
-                    }
-
-                    float gi = Act(d, 0u, ClipV(pi));
-                    float gc = Act(d, 1u, ClipV(pc));
-                    float gf = inputForget ? 1.0 - gi : Act(d, 0u, ClipV(pf));
-                    float cNew = gf * cPrev + gi * gc;
-                    if (hasPeep)
-                    {
-                        po += LoadPeep(pp + hid) * cNew;
-                    }
-
-                    float go = Act(d, 0u, ClipV(po));
-                    hNew = go * Act(d, 2u, cNew);
-                    State[cOff + vi] = cNew;
-                }
-                else if (cell == 1u)
-                {
-                    if (!phase1)
-                    {
-                        float pz = Xw[xw] + REC(0u);
-                        float pr = Xw[xw + hid] + REC(1u);
-                        if (hasBias)
-                        {
-                            pz = (pz + LoadBias(bB)) + LoadBias(rB);
-                            pr = (pr + LoadBias(bB + hid)) + LoadBias(rB + hid);
-                        }
-
-                        float gz = Act(d, 0u, ClipV(pz));
-                        float gr = Act(d, 0u, ClipV(pr));
-                        if (lbr)
-                        {
-                            // The candidate's recurrent product came from the same pass: ht = g(xw_h + r * (rec_h + Rb_h) + Wb_h).
-                            float rec = REC(2u);
-                            if (hasBias)
-                            {
-                                rec += LoadBias(rB + 2u * hid);
-                            }
-
-                            float v = Xw[xw + 2u * hid] + gr * rec;
-                            if (hasBias)
-                            {
-                                v += LoadBias(bB + 2u * hid);
-                            }
-
-                            float cand = Act(d, 1u, ClipV(v));
-                            hNew = (1.0 - gz) * cand + gz * hPrev;
-                        }
-                        else
-                        {
-                            // Keep z and r * H for the second pass, which needs r * H of every unit before it can form its product.
-                            State[zOff + vi] = gz;
-                            State[rhOff + vi] = gr * hPrev;
-                        }
-                    }
-                    else
-                    {
-                        float v = Xw[xw + 2u * hid] + REC(0u);
-                        if (hasBias)
-                        {
-                            v = (v + LoadBias(bB + 2u * hid)) + LoadBias(rB + 2u * hid);
-                        }
-
-                        float cand = Act(d, 1u, ClipV(v));
-                        float gz = State[zOff + vi];
-                        hNew = (1.0 - gz) * cand + gz * hPrev;
+                        State[hOut + vi] = hPrev;
                     }
                 }
                 else
                 {
-                    float v = Xw[xw] + REC(0u);
-                    if (hasBias)
+                    uint t = rev ? len - 1u - P.Step : P.Step;
+                    uint xRow = layout1 ? b * P.Seq + t : t * batch + b;
+                    uint xw = xBase + xRow * gh + j;
+                    uint bB = P.OffBias + d * 2u * gh + j;
+                    uint rB = bB + gh;
+                    // Recurrent product of gate g (relative to this pass) for this unit and row.
+                    #define REC(g) Sh[((g * U + u) * LANES) * BT + bi]
+                    float hNew = 0.0;
+                    if (cell == 2u)
                     {
-                        v = (v + LoadBias(bB)) + LoadBias(rB);
+                        float pi = Xw[xw] + REC(0u);
+                        float po = Xw[xw + hid] + REC(1u);
+                        float pf = Xw[xw + 2u * hid] + REC(2u);
+                        float pc = Xw[xw + 3u * hid] + REC(3u);
+                        if (hasBias)
+                        {
+                            pi = (pi + LoadBias(bB)) + LoadBias(rB);
+                            po = (po + LoadBias(bB + hid)) + LoadBias(rB + hid);
+                            pf = (pf + LoadBias(bB + 2u * hid)) + LoadBias(rB + 2u * hid);
+                            pc = (pc + LoadBias(bB + 3u * hid)) + LoadBias(rB + 3u * hid);
+                        }
+
+                        float cPrev = State[cOff + vi];
+                        uint pp = P.OffPeep + d * 3u * hid + j;
+                        if (hasPeep)
+                        {
+                            pi += LoadPeep(pp) * cPrev;
+                            pf += LoadPeep(pp + 2u * hid) * cPrev;
+                        }
+
+                        float gi = Act(d, 0u, ClipV(pi));
+                        float gc = Act(d, 1u, ClipV(pc));
+                        float gf = inputForget ? 1.0 - gi : Act(d, 0u, ClipV(pf));
+                        float cNew = gf * cPrev + gi * gc;
+                        if (hasPeep)
+                        {
+                            po += LoadPeep(pp + hid) * cNew;
+                        }
+
+                        float go = Act(d, 0u, ClipV(po));
+                        hNew = go * Act(d, 2u, cNew);
+                        State[cOff + vi] = cNew;
+                    }
+                    else if (cell == 1u)
+                    {
+                        if (!phase1)
+                        {
+                            float pz = Xw[xw] + REC(0u);
+                            float pr = Xw[xw + hid] + REC(1u);
+                            if (hasBias)
+                            {
+                                pz = (pz + LoadBias(bB)) + LoadBias(rB);
+                                pr = (pr + LoadBias(bB + hid)) + LoadBias(rB + hid);
+                            }
+
+                            float gz = Act(d, 0u, ClipV(pz));
+                            float gr = Act(d, 0u, ClipV(pr));
+                            if (lbr)
+                            {
+                                // The candidate's recurrent product came from the same pass: ht = g(xw_h + r * (rec_h + Rb_h) + Wb_h).
+                                float rec = REC(2u);
+                                if (hasBias)
+                                {
+                                    rec += LoadBias(rB + 2u * hid);
+                                }
+
+                                float v = Xw[xw + 2u * hid] + gr * rec;
+                                if (hasBias)
+                                {
+                                    v += LoadBias(bB + 2u * hid);
+                                }
+
+                                float cand = Act(d, 1u, ClipV(v));
+                                hNew = (1.0 - gz) * cand + gz * hPrev;
+                            }
+                            else
+                            {
+                                // Keep z and r * H for the second pass, which needs r * H of every unit before it can form its product.
+                                State[zOff + vi] = gz;
+                                State[rhOff + vi] = gr * hPrev;
+                            }
+                        }
+                        else
+                        {
+                            float v = Xw[xw + 2u * hid] + REC(0u);
+                            if (hasBias)
+                            {
+                                v = (v + LoadBias(bB + 2u * hid)) + LoadBias(rB + 2u * hid);
+                            }
+
+                            float cand = Act(d, 1u, ClipV(v));
+                            float gz = State[zOff + vi];
+                            hNew = (1.0 - gz) * cand + gz * hPrev;
+                        }
+                    }
+                    else
+                    {
+                        float v = Xw[xw] + REC(0u);
+                        if (hasBias)
+                        {
+                            v = (v + LoadBias(bB)) + LoadBias(rB);
+                        }
+
+                        hNew = Act(d, 0u, ClipV(v));
                     }
 
-                    hNew = Act(d, 0u, ClipV(v));
-                }
-
-                if (finishes)
-                {
-                    State[hOut + vi] = hNew;
-                    State[yOff + ((d * P.Seq + t) * batch + b) * hid + j] = hNew;
+                    if (finishes)
+                    {
+                        State[hOut + vi] = hNew;
+                        State[yOff + ((d * P.Seq + t) * batch + b) * hid + j] = hNew;
+                    }
                 }
             }
         }

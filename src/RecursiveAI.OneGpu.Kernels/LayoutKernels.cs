@@ -28,6 +28,7 @@ public sealed class LayoutKernels : IDisposable
     readonly GpuDevice _device;
     readonly int _maxBindGroups;
     readonly TransposeKernels _strided;
+    readonly Dictionary<Type, object> _expandScratch = [];
     readonly WideKernelPipeline?[] _concat = new WideKernelPipeline?[4];
 
     /// <summary>Creates the family for a device.</summary>
@@ -252,7 +253,31 @@ public sealed class LayoutKernels : IDisposable
             throw new GpuKernelShapeException(Name, nameof(shape), "an empty input cannot be expanded to a non-empty output");
         }
 
+        if (ReferenceEquals(input.Buffer, output.Buffer) && _device.Backend == GpuBackend.WebGpu)
+        {
+            // A browser refuses one buffer that is read-only and writable in the same dispatch, even for disjoint ranges: expand into a scratch buffer, then copy.
+            var tmp = ExpandScratch<T>(total, half);
+            _strided.EncodeStrided(Name, encoder, input, offsetInput, outputShape, strides[..rank], tmp, 0, total);
+            _strided.EncodeStrided(Name, encoder, tmp, 0, [(int)total], [1L], output, offsetOutput, total);
+            return;
+        }
+
         _strided.EncodeStrided(Name, encoder, input, offsetInput, outputShape, strides[..rank], output, offsetOutput, total);
+    }
+
+    GpuBuffer<T> ExpandScratch<T>(long total, bool half)
+        where T : unmanaged
+    {
+        var length = (int)(half ? GpuKernelBuffers.PaddedHalfLength((int)total) : total);
+        if (_expandScratch.TryGetValue(typeof(T), out var held) && ((GpuBuffer<T>)held).Length >= length)
+        {
+            return (GpuBuffer<T>)held;
+        }
+
+        (held as IDisposable)?.Dispose();
+        var made = _device.CreateBuffer<T>(length, label: "expand in place");
+        _expandScratch[typeof(T)] = made;
+        return made;
     }
 
     /// <summary>Records ONNX <c>Concat</c> along an axis: the inputs are laid side by side along it, in order.</summary>
@@ -383,6 +408,12 @@ public sealed class LayoutKernels : IDisposable
         }
 
         _strided.Dispose();
+        foreach (var scratch in _expandScratch.Values)
+        {
+            (scratch as IDisposable)?.Dispose();
+        }
+
+        _expandScratch.Clear();
     }
 
     // The input and the output of one pass may share a buffer, the way a memory plan places two tensors in one arena, as long as their element

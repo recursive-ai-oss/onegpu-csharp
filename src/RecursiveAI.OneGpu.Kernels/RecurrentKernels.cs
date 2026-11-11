@@ -40,6 +40,7 @@ public sealed class RecurrentKernels : IDisposable
     const int StepWords = 26;
     const int InitWords = 9;
     const int OutWords = 12;
+    const int RowsPerGroup = 64;   // 256 threads / 4 lanes per row; matches ROWS in RecurrentStep.hlsl
 
     readonly GpuDevice _device;
     readonly GpuKernelMode _mode;
@@ -387,8 +388,8 @@ public sealed class RecurrentKernels : IDisposable
 
     void RecordStep(GpuCommandEncoder encoder, KernelPipeline pipeline, Span<uint> sw, uint flags, int hid, int dirs, int gates, int firstGate)
     {
-        // Eight rows of R per workgroup: 8 / gates hidden units, each with its gates.
-        var units = 8 / gates;
+        // 256 / lanes rows of R per workgroup (the shader's ROWS): that many divided by the gates formed in the pass hidden units.
+        var units = RowsPerGroup / gates;
         sw[4] = flags;
         sw[13] = (uint)gates | ((uint)firstGate << 4);
         pipeline.Record(encoder, sw, (uint)((hid + units - 1) / units), (uint)dirs, _buffers);
