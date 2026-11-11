@@ -125,3 +125,9 @@ page, and the library then does not import a second one. `tools/ci/test-web-pack
 With the NVIDIA Vulkan driver of the 595 series on Linux, loading the validation layer first leaves too little static thread-local storage
 for the driver, and instance creation fails with "cannot allocate memory in static TLS block". Setting
 `GLIBC_TUNABLES=glibc.rtld.optional_static_tls=4096` for the process fixes it; `tools/ci/env.sh` does.
+
+With the RADV driver on a Ryzen 7000 integrated GPU (Mesa 26.0.3, kernel 7.0.0-42), a dispatch that starts after the GPU has idled for a few
+milliseconds sometimes writes one wrong value: about 3% of dispatches of a 1536-workgroup shared-memory reduction, none while another process
+keeps the GPU at its high clock. A plain Vulkan program (no library code) reproduces it with every barrier in place, and the same GPU model passes on an
+older Mesa, kernel and firmware, so it is not a synchronisation fault in this library. `tools/gpu-idle-repro` holds the program and the
+numbers. Results from that GPU on that stack are not trusted until it is updated.
