@@ -24,6 +24,7 @@ public sealed class SoftmaxKernels : IDisposable
     const int Words = 8;
 
     readonly GpuDevice _device;
+    readonly int _maxBindGroups;
     readonly bool _subgroups;
     readonly KernelPipeline?[] _block = new KernelPipeline?[4];
     readonly KernelPipeline?[] _thread = new KernelPipeline?[2];
@@ -32,10 +33,12 @@ public sealed class SoftmaxKernels : IDisposable
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
     /// <param name="allowSubgroups">False keeps the fast variant off subgroup operations even where the device has them.</param>
-    public SoftmaxKernels(GpuDevice device, bool allowSubgroups = true)
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
+    public SoftmaxKernels(GpuDevice device, bool allowSubgroups = true, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
         _subgroups = Variants.UseSubgroups(device, allowSubgroups);
     }
 
@@ -132,6 +135,24 @@ public sealed class SoftmaxKernels : IDisposable
         pipeline.Record(encoder, w, gx, gy, input.Buffer, output.Buffer);
     }
 
+    /// <summary>How many bind groups the family has built so far; tests use it to see the cache work.</summary>
+    internal int BindGroupsCreated => KernelPipeline.Total(_block, _thread, _multi);
+
+    /// <summary>
+    /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.
+    /// The pipelines stay; the next call with a set of buffers builds its group again.
+    /// </summary>
+    public void ReleaseBindings()
+    {
+        foreach (var set in new[] { _block, _thread, _multi })
+        {
+            for (var i = 0; i < set.Length; i++)
+            {
+                set[i]?.ReleaseBindings();
+            }
+        }
+    }
+
     /// <summary>Releases the pipelines and bind groups once the GPU has finished with them.</summary>
     public void Dispose()
     {
@@ -151,11 +172,11 @@ public sealed class SoftmaxKernels : IDisposable
         var v = Softmax.Variants.Get(new Softmax.Key(f16: half, wave: wave));
         if (kind == 2)
         {
-            return new KernelPipeline(_device, KernelSources.Make(v.SoftmaxMulti.EntryPoint, v.SoftmaxMulti.SpirV, v.SoftmaxMulti.Msl, v.SoftmaxMulti.MslFunctionName, v.SoftmaxMulti.Wgsl, v.SoftmaxMulti.WgslEntryPoint, v.SoftmaxMulti.Layout), 2, Words, "softmax-multi");
+            return new KernelPipeline(_device, KernelSources.Make(v.SoftmaxMulti.EntryPoint, v.SoftmaxMulti.SpirV, v.SoftmaxMulti.Msl, v.SoftmaxMulti.MslFunctionName, v.SoftmaxMulti.Wgsl, v.SoftmaxMulti.WgslEntryPoint, v.SoftmaxMulti.Layout), 2, Words, "softmax-multi", _maxBindGroups);
         }
 
         return kind == 1
-            ? new KernelPipeline(_device, KernelSources.Make(v.SoftmaxBlock.EntryPoint, v.SoftmaxBlock.SpirV, v.SoftmaxBlock.Msl, v.SoftmaxBlock.MslFunctionName, v.SoftmaxBlock.Wgsl, v.SoftmaxBlock.WgslEntryPoint, v.SoftmaxBlock.Layout), 2, Words, "softmax-block")
-            : new KernelPipeline(_device, KernelSources.Make(v.SoftmaxThread.EntryPoint, v.SoftmaxThread.SpirV, v.SoftmaxThread.Msl, v.SoftmaxThread.MslFunctionName, v.SoftmaxThread.Wgsl, v.SoftmaxThread.WgslEntryPoint, v.SoftmaxThread.Layout), 2, Words, "softmax-thread");
+            ? new KernelPipeline(_device, KernelSources.Make(v.SoftmaxBlock.EntryPoint, v.SoftmaxBlock.SpirV, v.SoftmaxBlock.Msl, v.SoftmaxBlock.MslFunctionName, v.SoftmaxBlock.Wgsl, v.SoftmaxBlock.WgslEntryPoint, v.SoftmaxBlock.Layout), 2, Words, "softmax-block", _maxBindGroups)
+            : new KernelPipeline(_device, KernelSources.Make(v.SoftmaxThread.EntryPoint, v.SoftmaxThread.SpirV, v.SoftmaxThread.Msl, v.SoftmaxThread.MslFunctionName, v.SoftmaxThread.Wgsl, v.SoftmaxThread.WgslEntryPoint, v.SoftmaxThread.Layout), 2, Words, "softmax-thread", _maxBindGroups);
     }
 }

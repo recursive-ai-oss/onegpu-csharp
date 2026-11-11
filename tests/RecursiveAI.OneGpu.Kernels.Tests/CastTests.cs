@@ -64,15 +64,43 @@ public sealed class CastTests
 
     static bool Same(float a, float b) => float.IsNaN(a) ? float.IsNaN(b) : BitConverter.SingleToUInt32Bits(a) == BitConverter.SingleToUInt32Bits(b);
 
+    static int Padded<T>(int n) => typeof(T) == typeof(Half) ? GpuKernelBuffers.PaddedHalfLength(n) : (typeof(T) == typeof(byte) ? GpuKernelBuffers.PaddedBoolLength(n) : n);
+
+    [Fact]
+    public async Task CastsToAndFromBoolMatchTheCpu()
+    {
+        using var gpu = new GpuFixture();
+        var d = gpu.Device;
+        using var k = new ElementwiseKernels(d);
+        var longs = Longs.Concat([0, 0, 1, 0, 2]).ToArray();
+        var ints = longs.Select(v => unchecked((int)v)).Concat([int.MinValue, 0, 0, 1]).ToArray();
+        var floats = Floats.Concat(Rig.Random(500, 5, -2f, 2f).Select(v => MathF.Round(v))).Concat([float.NaN, -0f, 0f, float.Epsilon, -float.Epsilon]).ToArray();
+        var halves = Enumerable.Range(0, 65536).Select(i => BitConverter.UInt16BitsToHalf((ushort)i)).ToArray();
+        var bools = Enumerable.Range(0, 1001).Select(i => (byte)((i * 7 / 3) & 1)).ToArray();
+        var checks = new int[1];
+        var bad = 0;
+        bad += await Run<long, byte>(d, k, longs, v => (byte)(v != 0 ? 1 : 0), (a, b) => a == b, checks);
+        bad += await Run<int, byte>(d, k, ints, v => (byte)(v != 0 ? 1 : 0), (a, b) => a == b, checks);
+        bad += await Run<float, byte>(d, k, floats, v => (byte)(v != 0 || float.IsNaN(v) ? 1 : 0), (a, b) => a == b, checks);
+        bad += await Run<Half, byte>(d, k, halves, v => (byte)(v != Half.Zero || Half.IsNaN(v) ? 1 : 0), (a, b) => a == b, checks);
+        bad += await Run<byte, long>(d, k, bools, v => v, (a, b) => a == b, checks);
+        bad += await Run<byte, int>(d, k, bools, v => v, (a, b) => a == b, checks);
+        bad += await Run<byte, float>(d, k, bools, v => v, (a, b) => Same(a, b), checks);
+        bad += await Run<byte, Half>(d, k, bools, v => (Half)(float)v, (a, b) => a == b, checks);
+        bad += await Run<byte, byte>(d, k, bools, v => v, (a, b) => a == b, checks);
+        Rig.Row(d, "cast", "bool", $"bool to and from i32, i64, f32, f16 (all 65536 half patterns), {checks[0]} values, odd offsets", $"mismatches {bad}");
+        Assert.Equal(0, bad);
+    }
+
     static async Task<int> Run<TFrom, TTo>(GpuDevice d, ElementwiseKernels k, TFrom[] input, Func<TFrom, TTo> convert, Func<TTo, TTo, bool> equal, int[] checks)
         where TFrom : unmanaged
         where TTo : unmanaged
     {
         const int OffS = 1, OffD = 3;
         var n = input.Length;
-        var src = new TFrom[typeof(TFrom) == typeof(Half) ? GpuKernelBuffers.PaddedHalfLength(n + OffS) : n + OffS];
+        var src = new TFrom[Padded<TFrom>(n + OffS)];
         input.CopyTo(src, OffS);
-        var dstLen = typeof(TTo) == typeof(Half) ? GpuKernelBuffers.PaddedHalfLength(n + OffD + 1) : n + OffD + 1;
+        var dstLen = Padded<TTo>(n + OffD + 1);
         using var bs = Rig.Upload(d, src);
         using var bd = d.CreateBuffer<TTo>(dstLen);
         Rig.Run(d, e => k.EncodeCast(e, bs, OffS, bd, OffD, n));

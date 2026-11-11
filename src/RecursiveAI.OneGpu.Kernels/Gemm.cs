@@ -44,17 +44,17 @@ public sealed class GemmOptions
 /// </para>
 /// <para>
 /// Operands must be storage buffers created with <see cref="GpuDevice.CreateBuffer{T}(int, BufferUsage, string?)"/>. A and B may be the
-/// same buffer; C must not overlap them. The instance caches bind groups for the buffer triples it has seen (at most 64) so recording a
+/// same buffer; C must not overlap them. The instance caches bind groups for the buffer triples it has seen (at most <c>maxCachedBindGroups</c>, 1024 by default) so recording a
 /// warm call allocates nothing; <see cref="ReleaseBindings"/> or <see cref="Dispose"/> drops them. Not thread-safe.
 /// </para>
 /// </remarks>
 public sealed class Gemm : IDisposable
 {
     const string Name = "Gemm";
-    const int MaxCachedBindGroups = 64;
 
     readonly GpuDevice _device;
     readonly GpuComputeKernel _kernel;
+    readonly int _maxBindGroups;
     readonly GpuComputePipeline _pipeline;
     readonly GpuPipelineLayout _layout;
     readonly uint _tileM;
@@ -67,11 +67,13 @@ public sealed class Gemm : IDisposable
     /// <param name="elementType">Element type of A and B.</param>
     /// <param name="mode">Fast, or the bit-reproducible variant.</param>
     /// <param name="options">Variant options; null means the defaults.</param>
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
     /// <exception cref="GpuUnsupportedException">The device cannot run the portable variant (workgroup of 256 invocations, 8.5 KB of workgroup memory, three storage buffers).</exception>
-    public Gemm(GpuDevice device, GemmElementType elementType, GpuKernelMode mode = GpuKernelMode.Fast, GemmOptions? options = null)
+    public Gemm(GpuDevice device, GemmElementType elementType, GpuKernelMode mode = GpuKernelMode.Fast, GemmOptions? options = null, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
         ElementType = elementType;
         Mode = mode;
         _tileM = 64;
@@ -248,6 +250,9 @@ public sealed class Gemm : IDisposable
         Encode(encoder, problem, a.Buffer, b.Buffer, c.Buffer, a.Length, b.Length, c.Length);
     }
 
+    /// <summary>How many bind groups this instance has built so far; tests use it to see the cache work.</summary>
+    internal int BindGroupsCreated { get; private set; }
+
     /// <summary>Drops the cached bind groups. Call it after disposing operand buffers that will not be used again, so the groups do not keep them reachable.</summary>
     public void ReleaseBindings()
     {
@@ -301,13 +306,14 @@ public sealed class Gemm : IDisposable
         var key = (a, b, c);
         if (!_bindGroups.TryGetValue(key, out var group))
         {
-            if (_bindGroups.Count >= MaxCachedBindGroups)
+            if (_bindGroups.Count >= _maxBindGroups)
             {
                 ReleaseBindings();
             }
 
             group = _device.CreateBindGroup(_layout, 0, [BindGroupEntry.ForBuffer(0, a), BindGroupEntry.ForBuffer(1, b), BindGroupEntry.ForBuffer(2, c)]);
             _bindGroups.Add(key, group);
+            BindGroupsCreated++;
         }
 
         // One dispatch unless the product carries more arithmetic than a submission should (see GemmOptions.AllowSplitting): then whole

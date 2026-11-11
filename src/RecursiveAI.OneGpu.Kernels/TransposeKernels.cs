@@ -16,14 +16,17 @@ public sealed class TransposeKernels : IDisposable
     const int Words = 17;
 
     readonly GpuDevice _device;
+    readonly int _maxBindGroups;
     readonly KernelPipeline?[] _pipelines = new KernelPipeline?[3];
 
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
-    public TransposeKernels(GpuDevice device)
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
+    public TransposeKernels(GpuDevice device, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
     }
 
     /// <summary>Records <c>output = transpose(input, perm)</c>: output dimension <c>i</c> is input dimension <c>perm[i]</c>.</summary>
@@ -225,6 +228,21 @@ public sealed class TransposeKernels : IDisposable
         where T : unmanaged =>
         Encode(encoder, input, offsetInput, [batch, heads, sequence, headDim], [0, 2, 1, 3], output, offsetOutput);
 
+    /// <summary>How many bind groups the family has built so far; tests use it to see the cache work.</summary>
+    internal int BindGroupsCreated => KernelPipeline.Total(_pipelines);
+
+    /// <summary>
+    /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.
+    /// The pipelines stay; the next call with a set of buffers builds its group again.
+    /// </summary>
+    public void ReleaseBindings()
+    {
+        for (var i = 0; i < _pipelines.Length; i++)
+        {
+            _pipelines[i]?.ReleaseBindings();
+        }
+    }
+
     /// <summary>Releases the pipelines and bind groups once the GPU has finished with them.</summary>
     public void Dispose()
     {
@@ -239,6 +257,6 @@ public sealed class TransposeKernels : IDisposable
     {
         var v = Transpose.Variants.Get(new Transpose.Key(elem: elem switch { 0 => Transpose.ElemValue.W16, 2 => Transpose.ElemValue.W64, _ => Transpose.ElemValue.W32 }));
         var e = v.TransposeOp;
-        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 2, Words, "transpose");
+        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 2, Words, "transpose", _maxBindGroups);
     }
 }

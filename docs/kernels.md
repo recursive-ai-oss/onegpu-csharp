@@ -16,7 +16,7 @@ device.Submit(encoder);
 - A family is created once; pipelines are built the first time a variant is used and kept. Calling `Encode…` records one compute pass into the
   caller's encoder. With the same buffers, a call allocates nothing (bind groups are cached by buffer identity; offsets and sizes travel in push constants).
 - Operands are a `GpuBuffer<T>`, an element offset and a shape. Tensors are dense and row-major. `T` is `float` or `Half` for arithmetic; `int`, `uint`,
-  `long` where an operation only moves or converts bits. Comparison results and conditions are one 32-bit word per element (0 or 1).
+  `long` where an operation only moves or converts bits. Comparison results and conditions are bool tensors (see below).
 - Every size, shape, axis, permutation and offset is checked in safe code before anything is recorded. A bad argument throws
   `GpuKernelShapeException`, which names the operation and the argument or dimension (`Reduce: axes: axis 3 is outside [-3, 3)`).
 - Families are not thread-safe. Disposing a family releases its pipelines once the GPU has finished with them.
@@ -27,10 +27,11 @@ device.Submit(encoder);
 
 | Family | Operations |
 |---|---|
-| `ElementwiseKernels` | binary Add, Sub, Mul, Div, Pow, Min, Max with ONNX broadcasting (up to 6 dimensions after merging, inputs up to rank 8) and an optional fused unary activation; unary Identity, Neg, Abs, Sqrt, Reciprocal, Exp, Log, Tanh, Erf, Sigmoid, Relu, Gelu (erf and tanh forms), Silu, HardSigmoid, HardSwish, Clip, LeakyRelu; Equal, Less, Greater, LessOrEqual, GreaterOrEqual; Where; Cast between float, Half, int and long |
+| `ElementwiseKernels` | binary Add, Sub, Mul, Div, Pow, Min, Max with ONNX broadcasting (up to 6 dimensions after merging, inputs up to rank 8) and an optional fused unary activation; unary Identity, Neg, Abs, Sqrt, Reciprocal, Exp, Log, Tanh, Erf, Sigmoid, Relu, Gelu (erf and tanh forms), Silu, HardSigmoid, HardSwish, Clip, LeakyRelu; Equal, Less, Greater, LessOrEqual, GreaterOrEqual over float and Half; Where over float, Half, int, uint and long; Cast between float, Half, int, long and bool |
 | `ReduceKernels` | Sum, Mean, Max, Min, Prod, L1, L2, SumSquare, LogSum over any set of axes; ArgMax and ArgMin (64-bit result) |
 | `SoftmaxKernels` | Softmax and LogSoftmax along any axis |
 | `NormKernels` | layer normalisation and RMS normalisation over the last axis, optional scale and bias |
+| `IntegerKernels` | int32 and int64 Add, Sub, Mul, Div, Mod, Fmod, Min, Max, Neg, Abs; Equal, Less, Greater, LessOrEqual, GreaterOrEqual over int32, int64 and bool; And, Or, Xor, Not on bool; Fill (`ConstantOfShape`) and Range |
 | `TransposeKernels` | N-d permutation, NCHW↔NHWC, split and merge of attention heads |
 | `AttentionKernels` | fused scaled dot-product attention with masks, key lengths, causal rule and grouped heads (see [attention.md](attention.md)) |
 
@@ -41,6 +42,29 @@ device.Submit(encoder);
 | `DynamicQuantizeKernels` | DynamicQuantizeLinear (float32 to uint8 with scale and zero point) |
 
 Adding an operation to the element-wise family is a case in `Shaders/Functions.hlsl` and an enum member: the operation is a push constant, not a pipeline.
+
+## Integer and bool tensors
+
+- **int32** is one 32-bit word per element. **int64** is two words (low, then high) handled with 32-bit arithmetic, so a device needs no 64-bit integer support;
+  every value from `long.MinValue` to `long.MaxValue` is exact, and so is division (a shift-and-subtract loop runs only when an operand does not fit 32 bits).
+- **bool** is a `GpuBuffer<byte>`: one byte per element, 0 or 1, four to a 32-bit word. It is the same layout as a CPU `bool[]`, so a model's bool tensor uploads as it is.
+  Allocate `GpuKernelBuffers.PaddedBoolLength(n)` elements; a buffer that ends inside a word throws `GpuKernelShapeException`. A thread owns whole output words, so a kernel
+  that writes a bool range at an odd offset keeps the neighbouring bytes of the words it shares, and no atomics are needed. Inputs treat any nonzero byte as true; outputs are 0 or 1.
+- Arithmetic wraps (two's complement). `Div` truncates toward zero, is 0 for a zero divisor, and the minimum value divided by -1 is itself. `Mod` takes the divisor's sign, `Fmod` the dividend's; both give 0 for a divisor of 0 or -1.
+  These are onemodel's CPU semantics, which the tests check bit for bit, as they do every operation of the family: integer, bool and cast results have no tolerance.
+- `Range` takes its start and delta as host values (a graph's `Range` inputs are known when a model's shapes are planned) and its length from `IntegerKernels.RangeLength`, which follows the ONNX formula in
+  exact integer arithmetic. The float range is `start + i * delta` as two separately rounded float32 operations.
+- `Cast` to bool is "not equal to zero" (NaN counts, negative zero does not); from bool it gives 0 or 1.
+- One variant serves `Fast` and `Deterministic`: integer arithmetic has no order to fix and no atomics are used.
+- An int64 `Where` moves two words per element and so needs one more dimension than the other types: its shapes may have one fewer dimension after merging.
+
+## Binding caches
+
+A family builds a bind group the first time it sees a set of buffers and reuses it on every later call with the same set, so a warm call allocates nothing. Every family constructor takes
+`maxCachedBindGroups` (default `GpuKernelBindings.DefaultMaxCachedBindGroups`, 1024). When a family has seen more sets than that it drops all of them and starts again, so the bound should exceed the number of
+distinct buffer sets one run records: a 72-weight transformer touches 72 sets in `Gemm` per pass, and with a bound of 64 every pass rebuilt them all (72, then 144 bind groups over two passes) where a bound of 72 or more builds
+72 once. `ReleaseBindings()` on every family (and `Gemm`) drops the cached groups immediately; call it after disposing buffers that will not be used again, or after replacing a model's buffers, so stale entries do not keep them reachable.
+The pipelines stay, and the next call with a set of buffers builds its group again.
 
 ## Half precision
 
@@ -61,7 +85,7 @@ The limits below are what the tests assert; the measured values are far inside t
 
 | Operation | f32 | f16 (f32 accumulation) |
 |---|---|---|
-| Add, Sub, Mul, Min, Max, Where, compare, Cast, Transpose, Identity, Neg, Abs, Relu, ArgMax/ArgMin | bit-exact (Cast and Transpose also for int and long) | bit-exact vs. `(Half)((float)a op (float)b)` |
+| Add, Sub, Mul, Min, Max, Where, compare, Cast, Transpose, every `IntegerKernels` operation, Fill, Range (float: bit-exact against `start + i * delta`), Identity, Neg, Abs, Relu, ArgMax/ArgMin | bit-exact (Cast and Transpose also for int and long) | bit-exact vs. `(Half)((float)a op (float)b)` |
 | Div | 1e-5 (measured 3e-8) | 2e-3 |
 | Pow, Exp, Log, Tanh, Erf, Sigmoid, Gelu, Silu, Hard*, LeakyRelu, Clip, Sqrt, Reciprocal | 1e-5 | 2e-3 |
 | Sum, Mean, L1, L2, SumSquare, LogSum | 1e-5 | 2e-3 |

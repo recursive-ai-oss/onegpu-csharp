@@ -65,6 +65,7 @@ public sealed class ReduceKernels : IDisposable
     const int ArgWords = 16;
 
     readonly GpuDevice _device;
+    readonly int _maxBindGroups;
     readonly bool _subgroups;
     readonly KernelPipeline?[] _block = new KernelPipeline?[8];
     readonly KernelPipeline?[] _thread = new KernelPipeline?[8];
@@ -77,10 +78,12 @@ public sealed class ReduceKernels : IDisposable
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
     /// <param name="allowSubgroups">False keeps the fast variant off subgroup operations even where the device has them.</param>
-    public ReduceKernels(GpuDevice device, bool allowSubgroups = true)
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
+    public ReduceKernels(GpuDevice device, bool allowSubgroups = true, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
         _subgroups = Variants.UseSubgroups(device, allowSubgroups);
     }
 
@@ -265,6 +268,24 @@ public sealed class ReduceKernels : IDisposable
         pipeline.Record(encoder, w, gx, gy, input.Buffer, output.Buffer);
     }
 
+    /// <summary>How many bind groups the family has built so far; tests use it to see the cache work.</summary>
+    internal int BindGroupsCreated => KernelPipeline.Total(_block, _thread, _argBlock, _argThread, _split, _combine);
+
+    /// <summary>
+    /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.
+    /// The pipelines stay; the next call with a set of buffers builds its group again.
+    /// </summary>
+    public void ReleaseBindings()
+    {
+        foreach (var set in new[] { _block, _thread, _argBlock, _argThread, _split, _combine })
+        {
+            for (var i = 0; i < set.Length; i++)
+            {
+                set[i]?.ReleaseBindings();
+            }
+        }
+    }
+
     /// <summary>Releases the pipelines and bind groups once the GPU has finished with them.</summary>
     public void Dispose()
     {
@@ -421,8 +442,8 @@ public sealed class ReduceKernels : IDisposable
 
         var v = Reduce.Variants.Get(new Reduce.Key(f16: half, wave: wave, rrank: slot >= 4 ? Reduce.RrankValue.R1 : Reduce.RrankValue.Rn));
         var created = block
-            ? new KernelPipeline(_device, KernelSources.Make(v.ReduceBlock.EntryPoint, v.ReduceBlock.SpirV, v.ReduceBlock.Msl, v.ReduceBlock.MslFunctionName, v.ReduceBlock.Wgsl, v.ReduceBlock.WgslEntryPoint, v.ReduceBlock.Layout), 2, ReduceWords, "reduce-block")
-            : new KernelPipeline(_device, KernelSources.Make(v.ReduceThread.EntryPoint, v.ReduceThread.SpirV, v.ReduceThread.Msl, v.ReduceThread.MslFunctionName, v.ReduceThread.Wgsl, v.ReduceThread.WgslEntryPoint, v.ReduceThread.Layout), 2, ReduceWords, "reduce-thread");
+            ? new KernelPipeline(_device, KernelSources.Make(v.ReduceBlock.EntryPoint, v.ReduceBlock.SpirV, v.ReduceBlock.Msl, v.ReduceBlock.MslFunctionName, v.ReduceBlock.Wgsl, v.ReduceBlock.WgslEntryPoint, v.ReduceBlock.Layout), 2, ReduceWords, "reduce-block", _maxBindGroups)
+            : new KernelPipeline(_device, KernelSources.Make(v.ReduceThread.EntryPoint, v.ReduceThread.SpirV, v.ReduceThread.Msl, v.ReduceThread.MslFunctionName, v.ReduceThread.Wgsl, v.ReduceThread.WgslEntryPoint, v.ReduceThread.Layout), 2, ReduceWords, "reduce-thread", _maxBindGroups);
         slots[slot] = created;
         return created;
     }
@@ -436,8 +457,8 @@ public sealed class ReduceKernels : IDisposable
 
         var v = Reduce.Variants.Get(new Reduce.Key(f16: half, wave: wave, rrank: slot >= 4 ? Reduce.RrankValue.R1 : Reduce.RrankValue.Rn));
         var created = combine
-            ? new KernelPipeline(_device, KernelSources.Make(v.ReduceCombine.EntryPoint, v.ReduceCombine.SpirV, v.ReduceCombine.Msl, v.ReduceCombine.MslFunctionName, v.ReduceCombine.Wgsl, v.ReduceCombine.WgslEntryPoint, v.ReduceCombine.Layout), 2, ReduceWords, "reduce-combine")
-            : new KernelPipeline(_device, KernelSources.Make(v.ReduceSplit.EntryPoint, v.ReduceSplit.SpirV, v.ReduceSplit.Msl, v.ReduceSplit.MslFunctionName, v.ReduceSplit.Wgsl, v.ReduceSplit.WgslEntryPoint, v.ReduceSplit.Layout), 2, ReduceWords, "reduce-split");
+            ? new KernelPipeline(_device, KernelSources.Make(v.ReduceCombine.EntryPoint, v.ReduceCombine.SpirV, v.ReduceCombine.Msl, v.ReduceCombine.MslFunctionName, v.ReduceCombine.Wgsl, v.ReduceCombine.WgslEntryPoint, v.ReduceCombine.Layout), 2, ReduceWords, "reduce-combine", _maxBindGroups)
+            : new KernelPipeline(_device, KernelSources.Make(v.ReduceSplit.EntryPoint, v.ReduceSplit.SpirV, v.ReduceSplit.Msl, v.ReduceSplit.MslFunctionName, v.ReduceSplit.Wgsl, v.ReduceSplit.WgslEntryPoint, v.ReduceSplit.Layout), 2, ReduceWords, "reduce-split", _maxBindGroups);
         slots[slot] = created;
         return created;
     }
@@ -446,7 +467,7 @@ public sealed class ReduceKernels : IDisposable
     {
         var v = ArgReduce.Variants.Get(new ArgReduce.Key(f16: half));
         return block
-            ? new KernelPipeline(_device, KernelSources.Make(v.ArgBlock.EntryPoint, v.ArgBlock.SpirV, v.ArgBlock.Msl, v.ArgBlock.MslFunctionName, v.ArgBlock.Wgsl, v.ArgBlock.WgslEntryPoint, v.ArgBlock.Layout), 2, ArgWords, "arg-block")
-            : new KernelPipeline(_device, KernelSources.Make(v.ArgThread.EntryPoint, v.ArgThread.SpirV, v.ArgThread.Msl, v.ArgThread.MslFunctionName, v.ArgThread.Wgsl, v.ArgThread.WgslEntryPoint, v.ArgThread.Layout), 2, ArgWords, "arg-thread");
+            ? new KernelPipeline(_device, KernelSources.Make(v.ArgBlock.EntryPoint, v.ArgBlock.SpirV, v.ArgBlock.Msl, v.ArgBlock.MslFunctionName, v.ArgBlock.Wgsl, v.ArgBlock.WgslEntryPoint, v.ArgBlock.Layout), 2, ArgWords, "arg-block", _maxBindGroups)
+            : new KernelPipeline(_device, KernelSources.Make(v.ArgThread.EntryPoint, v.ArgThread.SpirV, v.ArgThread.Msl, v.ArgThread.MslFunctionName, v.ArgThread.Wgsl, v.ArgThread.WgslEntryPoint, v.ArgThread.Layout), 2, ArgWords, "arg-thread", _maxBindGroups);
     }
 }

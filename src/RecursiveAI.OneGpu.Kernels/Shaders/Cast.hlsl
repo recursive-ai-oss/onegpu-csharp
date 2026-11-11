@@ -1,6 +1,6 @@
-// Converts between float32, float16, int32 and int64 without needing 64-bit integer support in the shader: an int64 is two 32-bit words
+// Converts between float32, float16, int32, int64 and bool without needing 64-bit integer support in the shader: an int64 is two 32-bit words
 // (low, high). Conversions follow IEEE 754 round to nearest even towards floats and truncate towards zero towards integers, saturating at
-// the destination's range with NaN becoming 0.
+// the destination's range with NaN becoming 0. Anything to bool is "not equal to zero" (NaN included); bool is the integer 0 or 1.
 
 #include "Common.hlsl"
 
@@ -9,7 +9,7 @@ struct CastParams
     uint Count;
     uint OffS;
     uint OffD;
-    uint Src;   // 0 f32, 1 f16, 2 i32, 3 i64
+    uint Src;   // 0 f32, 1 f16, 2 i32, 3 i64, 4 bool
     uint Dst;
     uint GridX;
 };
@@ -156,17 +156,19 @@ void CastOp(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     uint t = (gid.y * CP.GridX + gid.x) * WG + tid;
     uint first = t;
     uint last = t;
-    if (CP.Dst == 1u)
+    // Halves (two to a word) and bools (four to a word) are written by one thread per destination word.
+    bool packed = CP.Dst == 1u || CP.Dst == 4u;
+    uint shift = (CP.Dst == 4u) ? 2u : 1u;
+    if (packed)
     {
-        // One thread per 32-bit word of half-precision output.
-        if (t >= HalfWords(CP.OffD, CP.Count))
+        if (t >= (((CP.OffD + CP.Count - 1u) >> shift) - (CP.OffD >> shift) + 1u))
         {
             return;
         }
 
-        uint word = (CP.OffD >> 1) + t;
-        first = word * 2u;
-        last = first + 1u;
+        uint w0 = (CP.OffD >> shift) + t;
+        first = w0 << shift;
+        last = first + (1u << shift) - 1u;
         if (first < CP.OffD)
         {
             first = CP.OffD;
@@ -187,8 +189,8 @@ void CastOp(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
         last = first;
     }
 
-    uint word = first >> 1;
-    uint res = (CP.Dst == 1u) ? CastD[word] : 0u;
+    uint word = first >> shift;
+    uint res = packed ? CastD[word] : 0u;
     for (uint h = first; h <= last; h++)
     {
         uint i = h - CP.OffD;
@@ -210,6 +212,11 @@ void CastOp(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
             lo = CastS[CP.OffS + i];
             hi = ((lo >> 31) != 0u) ? 0xFFFFFFFFu : 0u;
         }
+        else if (CP.Src == 4u)
+        {
+            isFloat = false;
+            lo = RawB(CastS, CP.OffS + i);
+        }
         else
         {
             isFloat = false;
@@ -217,7 +224,13 @@ void CastOp(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
             hi = CastS[2u * (CP.OffS + i) + 1u];
         }
 
-        if (CP.Dst <= 1u)
+        if (CP.Dst == 4u)
+        {
+            // Not equal to zero; the float's bits are tested so that NaN counts and -0 does not, whatever the compiler assumes.
+            bool nz = isFloat ? ((asuint(f) & 0x7FFFFFFFu) != 0u) : ((lo | hi) != 0u);
+            res = WithByte(res, h & 3u, nz ? 1u : 0u);
+        }
+        else if (CP.Dst <= 1u)
         {
             float v = isFloat ? f : Int64ToFloat(lo, hi);
             if (CP.Dst == 0u)
@@ -246,7 +259,7 @@ void CastOp(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
         }
     }
 
-    if (CP.Dst == 1u)
+    if (packed)
     {
         CastD[word] = res;
     }

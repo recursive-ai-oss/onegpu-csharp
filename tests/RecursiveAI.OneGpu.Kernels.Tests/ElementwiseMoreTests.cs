@@ -305,12 +305,12 @@ public sealed class ElementwiseMoreTests
                     b[^1] = float.NaN;
                 }
 
-                var cond = Rig.Random(n, cases + 2, 0, 2).Select(v => (uint)v).ToArray();
+                var cond = Rig.Random(n, cases + 2, 0, 2).Select(v => (byte)v).ToArray();
                 var condShape = rs;
                 var ha = Rig.ToHalf(a);
                 var hb = Rig.ToHalf(b);
-                using var bcond = Rig.Upload(d, cond);
-                using var bout = d.CreateBuffer<uint>(Math.Max(1, n));
+                using var bcond = Rig.Upload(d, Rig.PadBool(cond));
+                using var bout = d.CreateBuffer<byte>(GpuKernelBuffers.PaddedBoolLength(Math.Max(1, n)));
                 foreach (var op in Enum.GetValues<GpuCompareOp>())
                 {
                     if (half)
@@ -331,7 +331,7 @@ public sealed class ElementwiseMoreTests
                     {
                         var (x, y) = (Pick(a, sa, rs, i), Pick(b, sb, rs, i));
                         var want = op switch { GpuCompareOp.Equal => x == y, GpuCompareOp.Less => x < y, GpuCompareOp.Greater => x > y, GpuCompareOp.LessOrEqual => x <= y, _ => x >= y };
-                        bad += got[i] == (want ? 1u : 0u) ? 0 : 1;
+                        bad += got[i] == (want ? 1 : 0) ? 0 : 1;
                     }
                 }
 

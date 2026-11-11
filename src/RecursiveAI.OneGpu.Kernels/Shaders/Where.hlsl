@@ -1,12 +1,10 @@
-// out = cond ? a : b with broadcasting. cond is a 32-bit word per element (0 or 1). Values are copied bit for bit.
+// out = cond ? a : b with broadcasting. cond is a bool byte per element. Values are copied bit for bit as 32-bit words (or, for halves,
+// 16-bit pairs), so floats, int32 and, as two words per element, int64 all go through the same kernel.
 
 #include "Common.hlsl"
 
-#if F16
+// Integer words, not floats: a copy must keep every bit pattern, including NaN payloads and integers that look like them.
 typedef uint Elem;
-#else
-typedef float Elem;
-#endif
 
 struct WhereParams
 {
@@ -53,7 +51,7 @@ uint Pick(uint i)
 {
     uint ic, ia, ib;
     WhereLocate(i, ic, ia, ib);
-    return (WhC[ic] != 0u) ? RawH(WhA, ia) : RawH(WhB, ib);
+    return (RawB(WhC, ic) != 0u) ? RawH(WhA, ia) : RawH(WhB, ib);
 }
 #endif
 
@@ -88,7 +86,7 @@ void WhereOp(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     {
         uint ic, ia, ib;
         WhereLocate(t, ic, ia, ib);
-        WhO[WP.OffO + t] = (WhC[ic] != 0u) ? WhA[ia] : WhB[ib];
+        WhO[WP.OffO + t] = (RawB(WhC, ic) != 0u) ? WhA[ia] : WhB[ib];
     }
 #endif
 }

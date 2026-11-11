@@ -22,6 +22,9 @@ internal static class KernelSmoke
         using var reduce = new ReduceKernels(device);
         using var elementwise = new ElementwiseKernels(device);
         using var transpose = new TransposeKernels(device);
+        using var integer = new IntegerKernels(device);
+        using var positions = device.CreateBuffer<long>(Rows);
+        using var lower = device.CreateBuffer<byte>(GpuKernelBuffers.PaddedBoolLength(Rows * Rows));
 
         // A reduction over one long axis runs in two passes through the family's scratch buffer.
         var big = new float[20000];
@@ -63,6 +66,8 @@ internal static class KernelSmoke
         elementwise.EncodeBinary(commands, GpuBinaryOp.Add, input, 0, [Rows, Len], input, 0, [Rows, Len], added, 0, new GpuActivation(GpuUnaryOp.Relu));
         transpose.Encode(commands, input, 0, [Rows, Len], [1, 0], transposed, 0);
         reduce.EncodeReduce(commands, GpuReduceOp.Sum, bigInput, 0, [big.Length], [0], bigSum, 0, GpuKernelMode.Deterministic);
+        integer.EncodeRange(commands, positions, 0, Rows, 5L, -2L);
+        integer.EncodeCompare(commands, GpuCompareOp.GreaterOrEqual, positions, 0, [Rows, 1], positions, 0, [1, Rows], lower, 0);
         device.Submit(commands);
 
         var gotSoft = new float[x.Length];
@@ -75,6 +80,10 @@ internal static class KernelSmoke
         await transposed.ReadAsync(gotT);
         var gotBig = new float[1];
         await bigSum.ReadAsync(gotBig);
+        var gotPositions = new long[Rows];
+        var gotLower = new byte[GpuKernelBuffers.PaddedBoolLength(Rows * Rows)];
+        await positions.ReadAsync(gotPositions);
+        await lower.ReadAsync(gotLower);
 
         var gotAttn = new float[aq.Length];
         await attnO.ReadAsync(gotAttn);
@@ -135,6 +144,15 @@ internal static class KernelSmoke
             }
 
             wrong += Math.Abs(gotSums[r] - sum) < 1e-3 ? 0 : 1;
+        }
+
+        for (var r = 0; r < Rows; r++)
+        {
+            wrong += gotPositions[r] == 5 - 2 * r ? 0 : 1;
+            for (var c = 0; c < Rows; c++)
+            {
+                wrong += gotLower[r * Rows + c] == (gotPositions[r] >= gotPositions[c] ? 1 : 0) ? 0 : 1;
+            }
         }
 
         wrong += Math.Abs(gotBig[0] - big.Sum(v => (double)v)) < 1e-2 ? 0 : 1;
