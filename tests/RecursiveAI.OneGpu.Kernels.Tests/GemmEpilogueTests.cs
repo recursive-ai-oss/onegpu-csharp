@@ -58,19 +58,30 @@ public sealed class GemmEpilogueTests
                 }
         }
 
-        // The separate passes, product by product, over the rows each product wrote.
+        // The separate passes, product by product, over the rows each product wrote. Each pass writes its own buffer: WebGPU refuses one
+        // buffer bound for reading and writing in the same dispatch.
+        using var added = d.CreateBuffer<float>(c0);
+        using var activated = d.CreateBuffer<float>(c0);
         for (var batch = 0; batch < p.Batch; batch++)
         {
             var at = p.OffsetC + (batch * p.StrideC);
             var count = p.M * p.N;
+            var source = cp;
             if (withBias)
             {
-                Rig.Run(d, e => ew.EncodeBinary(e, GpuBinaryOp.Add, cp, at, [p.M, p.N], bb, biasOffset, [p.N], cp, at));
+                Rig.Run(d, e => ew.EncodeBinary(e, GpuBinaryOp.Add, cp, at, [p.M, p.N], bb, biasOffset, [p.N], added, at));
+                source = added;
             }
 
             if (act != GemmActivation.None)
             {
-                Rig.Run(d, e => ew.EncodeUnary(e, Op(act), cp, at, cp, at, count));
+                Rig.Run(d, e => ew.EncodeUnary(e, Op(act), source, at, activated, at, count));
+                source = activated;
+            }
+
+            if (!ReferenceEquals(source, cp))
+            {
+                Rig.Run(d, e => e.CopyBuffer(source.Buffer, (ulong)at * 4, cp.Buffer, (ulong)at * 4, (ulong)count * 4));
             }
         }
 
@@ -283,11 +294,13 @@ public sealed class GemmEpilogueTests
 
                 var (fusedGpu, fusedWall) = Measure(d, e => Product(e, fusedEpilogue), 1);
                 var (plainGpu, plainWall) = Measure(d, e => Product(e, default), 1);
+                using var added = d.CreateBuffer<float>(m * N);
+                using var activated = d.CreateBuffer<float>(m * N);
                 var (sepGpu, sepWall) = Measure(d, e =>
                 {
                     Product(e, default);
-                    ew.EncodeBinary(e, GpuBinaryOp.Add, c, 0, [m, N], bias, 0, [N], c, 0);
-                    ew.EncodeUnary(e, GpuUnaryOp.GeluErf, c, 0, c, 0, m * N);
+                    ew.EncodeBinary(e, GpuBinaryOp.Add, c, 0, [m, N], bias, 0, [N], added, 0);
+                    ew.EncodeUnary(e, GpuUnaryOp.GeluErf, added, 0, activated, 0, m * N);
                 }, 3);
                 Rig.Row(d, "gemm epilogue timing (indicative)", type.ToString(), $"{gemm.Variant}, M={m} N={N} K={K}, bias + GeLU", $"fused {fusedGpu / 1000:F1} us gpu {fusedWall / 1000:F1} us wall; separate passes {sepGpu / 1000:F1} us gpu {sepWall / 1000:F1} us wall; product only {plainGpu / 1000:F1} us gpu {plainWall / 1000:F1} us wall; gpu ratio separate/fused {sepGpu / fusedGpu:F2}");
             }
