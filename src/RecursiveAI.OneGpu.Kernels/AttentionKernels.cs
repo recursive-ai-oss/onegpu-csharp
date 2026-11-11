@@ -380,8 +380,15 @@ public sealed class AttentionKernels : IDisposable
     KernelPipeline CreateTile(bool half, int dim)
     {
         var d = dim switch { 0 => Attention.HdValue.D32, 1 => Attention.HdValue.D64, 2 => Attention.HdValue.D128, _ => Attention.HdValue.D256 };
+        var wd = dim switch { 0 => AttentionLoops.HdValue.D32, 1 => AttentionLoops.HdValue.D64, 2 => AttentionLoops.HdValue.D128, _ => AttentionLoops.HdValue.D256 };
+        if (_device.Backend == GpuBackend.WebGpu)
+        {
+            var w = AttentionLoops.Variants.Get(new AttentionLoops.Key(f16: half, wave: _pairs, hd: wd)).AttentionTile;
+            return new KernelPipeline(_device, KernelSources.Make(w.EntryPoint, default, default, null, w.Wgsl, w.WgslEntryPoint, w.Layout), 7, TileWords, "attention-tile");
+        }
+
         var e = Attention.Variants.Get(new Attention.Key(f16: half, wave: _pairs, hd: d)).AttentionTile;
-        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 7, TileWords, "attention-tile");
+        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-tile");
     }
 
     KernelPipeline CreateCombine(bool half)

@@ -59,6 +59,11 @@ typedef float Elem;
 #define U4(F, b) F((b)) F((b) + 1u) F((b) + 2u) F((b) + 3u)
 #define U16(F, b) U4(F, (b)) U4(F, (b) + 4u) U4(F, (b) + 8u) U4(F, (b) + 12u)
 #define U64(F, b) U16(F, (b)) U16(F, (b) + 16u) U16(F, (b) + 32u) U16(F, (b) + 48u)
+#if ATTN_LOOPS
+// SwiftShader's compiler, the one browsers use for the software WebGPU adapter, does not finish compiling the unrolled form, so the WebGPU
+// target gets plain loops (AttentionLoops.hlsl); GPUs run the same statements either way.
+#define EACH_D(F) [loop] for (uint ed = 0u; ed < PD; ed++) { F(ed) }
+#else
 #if HD_D32
 #if WAVE
 #define EACH_D(F) U16(F, 0u)
@@ -82,6 +87,7 @@ typedef float Elem;
 #define EACH_D(F) U64(F, 0u) U64(F, 64u)
 #else
 #define EACH_D(F) U64(F, 0u) U64(F, 64u) U64(F, 128u) U64(F, 192u)
+#endif
 #endif
 #endif
 

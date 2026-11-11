@@ -51,7 +51,12 @@ memory. Two kernels share that structure (`AttentionKernels.Variant`, chosen onc
   picks `rows` there. `GpuAttentionVariant` forces either; `allowSubgroups: false` rules out `pairs`.
 
 The compiler keeps loops as loops and a thread-local array indexed by a loop variable can live in slow memory (Apple's compiler does that), so the
-kernel writes every access to the query and accumulator registers as a separate statement with a literal index (macros in `Attention.hlsl`).
+SPIR-V and Metal builds write every access to the query and accumulator registers as a separate statement with a literal index (macros in
+`Attention.hlsl`). The WebGPU build (`AttentionLoops.hlsl`) keeps plain loops instead: the software adapter's compiler does not finish compiling the unrolled
+form, and the browsers' real GPU back ends unroll small loops themselves.
+
+A single dispatch that keeps an Apple GPU busy for a long time (the one-thread-per-row kernel on a batch of 8 Whisper encoder inputs is the example) can be
+stopped by the system, which leaves the output half written; keep such calls to a batch entry per submission.
 
 `Fast` and `Deterministic` run the same kernel: every sum has an order the code fixes, there are no atomics and no subgroup arithmetic, and the one
 shuffle adds two numbers (which does not depend on operand order). Two runs on one device and driver give identical bits. `rows` and `pairs` add a
