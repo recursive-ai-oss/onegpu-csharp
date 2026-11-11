@@ -85,12 +85,11 @@ float ArgLoad(uint i)
 [numthreads(256, 1, 1)]
 void ArgBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
-    // No early return before the barriers (see ReduceBlock).
+    // A surplus workgroup of the rounded-up grid leaves before any barrier (see ReduceBlock).
     uint o = gid.y * AP.GridX + gid.x;
-    bool live = o < AP.NumOut;
-    if (!live)
+    if (o >= AP.NumOut)
     {
-        o = 0u;
+        return;
     }
 
     uint baseOff = ArgKeptOffset(o);
@@ -118,7 +117,7 @@ void ArgBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     ARG_STEP(2u)
     ARG_STEP(1u)
 
-    if (tid == 0u && live)
+    if (tid == 0u)
     {
         uint idx = (gsI[0] == 0xFFFFFFFFu) ? 0u : gsI[0];
         AOut[2u * (AP.OutOff + o)] = idx;

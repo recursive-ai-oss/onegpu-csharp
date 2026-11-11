@@ -134,13 +134,11 @@ void StoreOut(uint o, float v)
 [numthreads(256, 1, 1)]
 void ReduceBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
-    // No early return: a barrier after a return that depends on the workgroup id is rejected by WGSL's uniformity analysis, so a
-    // surplus workgroup does the work of output 0 and only skips the store.
+    // A surplus workgroup of the rounded-up grid leaves before any barrier; the workgroup id is uniform, so the barriers stay valid.
     uint o = gid.y * RP.GridX + gid.x;
-    bool live = o < RP.NumOut;
-    if (!live)
+    if (o >= RP.NumOut)
     {
-        o = 0u;
+        return;
     }
 
     uint kind = KindOf(RP.Op);
@@ -165,7 +163,7 @@ void ReduceBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     acc = Combine(kind, acc, run);
 
     float total = BlockReduce(kind, acc, tid);
-    if (tid == 0u && live)
+    if (tid == 0u)
     {
         StoreOut(o, Finalize(RP.Op, total, RP.R));
     }
@@ -219,10 +217,9 @@ void ReduceSplit(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     uint g = gid.y * RP.GridX + gid.x;
     uint o = g / RP.Split;
     uint s = g - o * RP.Split;
-    bool live = o < RP.NumOut;
-    if (!live)
+    if (o >= RP.NumOut)
     {
-        o = 0u;
+        return;
     }
 
     uint kind = KindOf(RP.Op);
@@ -247,7 +244,7 @@ void ReduceSplit(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     acc = Combine(kind, acc, run);
 
     float total = BlockReduce(kind, acc, tid);
-    if (tid == 0u && live)
+    if (tid == 0u)
     {
 #if F16
         ROut[g] = asuint(total);
@@ -262,10 +259,9 @@ void ReduceSplit(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 void ReduceCombine(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
     uint o = gid.y * RP.GridX + gid.x;
-    bool live = o < RP.NumOut;
-    if (!live)
+    if (o >= RP.NumOut)
     {
-        o = 0u;
+        return;
     }
 
     uint kind = KindOf(RP.Op);
@@ -276,7 +272,7 @@ void ReduceCombine(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     }
 
     float total = BlockReduce(kind, v, tid);
-    if (tid == 0u && live)
+    if (tid == 0u)
     {
         StoreOut(o, Finalize(RP.Op, total, RP.TotalR));
     }

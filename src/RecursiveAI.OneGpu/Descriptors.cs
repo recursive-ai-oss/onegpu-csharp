@@ -237,6 +237,23 @@ public sealed class ComputePipelineDesc
     /// <summary>Compute shader.</summary>
     public required GpuShader Compute { get; init; }
 
+    /// <summary>
+    /// Every subgroup (SIMD group, warp) of every workgroup is full: the workgroup size is a multiple of the subgroup size, so no lane is
+    /// switched off. Cooperative-matrix kernels need this below SPIR-V 1.6. Needs <see cref="GpuComputeCapabilities.FullSubgroups"/>;
+    /// <see cref="GpuDevice.CreateComputePipeline"/> throws <see cref="GpuUnsupportedException"/> naming <c>FullSubgroups</c> without it.
+    /// Metal always runs a threadgroup that is a multiple of the SIMD-group width as full SIMD groups, so the request is accepted there
+    /// and needs no extra step; the WebGPU backend has no such control and rejects it.
+    /// </summary>
+    public bool RequireFullSubgroups { get; init; }
+
+    /// <summary>
+    /// Runs the pipeline with exactly this subgroup size in lanes, for kernels written for one width; 0 leaves the choice to the driver. The size must
+    /// lie in <see cref="GpuComputeCapabilities.SubgroupMinSize"/> to <see cref="GpuComputeCapabilities.SubgroupMaxSize"/>, and a device that
+    /// lets pipelines choose among several sizes (<see cref="GpuComputeCapabilities.SubgroupSizeControl"/>) is needed unless the range is one size.
+    /// Otherwise <see cref="GpuDevice.CreateComputePipeline"/> throws <see cref="GpuUnsupportedException"/> naming <c>RequiredSubgroupSize</c>.
+    /// </summary>
+    public uint RequiredSubgroupSize { get; init; }
+
     /// <summary>Optional name shown in debugging tools.</summary>
     public string? Label { get; init; }
 }

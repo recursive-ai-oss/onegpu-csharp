@@ -36,16 +36,16 @@
     <OneShader Include="Shaders/GemmF32.hlsl" />
     <OneShader Include="Shaders/GemmF16.hlsl" />
     <OneShader Include="Shaders/GemmBF16.hlsl" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- Kernels the shader compiler cannot express yet, written as SPIR-V (tools/kernels) or Metal Shading Language (Raw/). -->
-    <EmbeddedResource Include="Raw/*.spv" LogicalName="%(Filename)%(Extension)" />
-    <EmbeddedResource Include="Raw/*.metal" LogicalName="%(Filename)%(Extension)" />
+    <OneShader Include="Shaders/GemmCoopF32.hlsl" Targets="Msl" />
+    <OneShader Include="Shaders/GemmCoopF16.hlsl" Targets="SpirV;Msl" Enable16BitTypes="true" />
+    <OneShader Include="Shaders/GemmCoopBF16.hlsl" Targets="SpirV;Msl" Enable16BitTypes="true" />
+    <OneShader Include="Shaders/GemmCoopWideF16.hlsl" Targets="SpirV;Msl" Enable16BitTypes="true" />
+    <OneShader Include="Shaders/GemmCoopWideBF16.hlsl" Targets="SpirV;Msl" Enable16BitTypes="true" />
   </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="RecursiveAI.OneGpu.Kernels.Tests" />
+    <InternalsVisibleTo Include="RecursiveAI.OneGpu.WebRunner" />
   </ItemGroup>
 
 </Project>

@@ -559,6 +559,7 @@ internal sealed unsafe partial class MetalDevice
     /// <inheritdoc />
     public override GpuComputePipeline CreateComputePipeline(ComputePipelineDesc desc)
     {
+        CheckSubgroupRequirements(desc);
         var layout = desc.Layout as MetalPipelineLayout ?? throw new ArgumentException("layout belongs to another backend", nameof(desc));
         var cs = desc.Compute as MetalShader ?? throw new ArgumentException("shader belongs to another backend", nameof(desc));
         if (cs.Stage != ShaderStage.Compute)

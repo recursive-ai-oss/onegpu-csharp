@@ -16,6 +16,8 @@ never from the vendor name or the API version. Zero means the API did not report
 | Packed int8 dot product | `shaderIntegerDotProduct` | no (Metal has no packed dot instruction) | WGSL language feature `packed_4x8_integer_dot_product` |
 | bfloat16 | `VK_KHR_shader_bfloat16` | a `bfloat` kernel compiles (Metal Shading Language 3.1) | no |
 | Cooperative matrices | `VK_KHR_cooperative_matrix` properties, subgroup scope | `simdgroup_matrix` 8×8×8 combinations whose probe kernel compiles | none |
+| Full subgroups (`FullSubgroups`) | Vulkan 1.3 `computeFullSubgroups` | yes (a threadgroup that is a multiple of the SIMD-group width runs whole SIMD groups) | no |
+| Selectable subgroup size (`SubgroupSizeControl`) | Vulkan 1.3 `subgroupSizeControl` and the compute stage in `requiredSubgroupSizeStages` | no (fixed at 32 on Apple GPUs) | no |
 | Workgroup size, invocations, count, memory | `VkPhysicalDeviceLimits` | `maxThreadsPerThreadgroup`, `maxTotalThreadsPerThreadgroup` of the probe, `maxThreadgroupMemoryLength` | `maxCompute*` limits of the device |
 | Buffer limits | `maxStorageBufferRange`, `maxMemoryAllocationSize` | `maxBufferLength` | `maxStorageBufferBindingSize`, `maxBufferSize` |
 
@@ -33,6 +35,16 @@ reflection. Before it creates anything it checks the kernel against the device a
 capability (`Capability`, `Expected`, `Actual`): the workgroup size against the per-axis and total limits, the required scalar types
 against `ShaderFeatures`, the subgroup operations against `SubgroupOperations`. The bindings and push-constant block come from the
 reflection, so the host cannot declare a layout that differs from the shader's.
+
+**Subgroup requirements.** `ComputePipelineDesc.RequireFullSubgroups` makes every subgroup of every workgroup full (the workgroup size must
+be a multiple of the subgroup size) and `RequiredSubgroupSize` pins the width. Cooperative-matrix kernels need the first below SPIR-V 1.6,
+so `CreateComputeKernel` sets it for any kernel whose reflection lists `CooperativeMatrix`, and takes an optional `requiredSubgroupSize` for
+kernels written for one width. Vulkan passes `VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT` and chains
+`VkPipelineShaderStageRequiredSubgroupSizeCreateInfo` (Vulkan 1.3 core, `VK_EXT_subgroup_size_control`). A request the device cannot meet
+throws `GpuUnsupportedException` whose `Capability` is `FullSubgroups` or `RequiredSubgroupSize`, before anything is created, on every
+backend: a device with one fixed subgroup size accepts that size and no other; Metal accepts full subgroups (its SIMD groups are whole when the
+threadgroup is a multiple of the SIMD width, which `CreateComputeKernel` checks against the workgroup size of a cooperative-matrix kernel); WebGPU has no control over either and
+rejects full subgroups and any pinned size unless the adapter reports a single size.
 
 Push constants work on every backend. On WebGPU they are a uniform buffer in the shader's highest bind group, written into a ring and
 bound with a dynamic offset; a bind group that the application makes for that group carries the binding.

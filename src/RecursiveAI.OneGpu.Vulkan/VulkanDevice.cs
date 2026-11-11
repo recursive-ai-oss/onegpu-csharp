@@ -351,7 +351,7 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
             props.limits.maxImageDimension3D,
             props.limits.maxImageArrayLayers,
             Math.Min(512u, Math.Min(props.limits.maxPerStageDescriptorSampledImages, props.limits.maxPerStageDescriptorStorageBuffers)));
-        _caps = _caps with { Compute = QueryCompute(info, props.limits, f2.features, f11, f12, f13, nonUniform, useCoopMatrix, useBFloat16) };
+        _caps = _caps with { Compute = QueryCompute(info, props.limits, f2.features, f11, f12, f13, nonUniform, useCoopMatrix, useBFloat16, useBFloat16 && fbf.shaderBFloat16CooperativeMatrix != 0) };
         _maxPushConstants = Math.Min(props.limits.maxPushConstantsSize, MaxPushConstantBytes);
         VkPhysicalDeviceMemoryProperties mem;
         _instanceFns.vkGetPhysicalDeviceMemoryProperties(_physical, &mem);

@@ -4,8 +4,8 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- The one* family: the only packages that may ship. -->
-    <PackageVersion Include="RecursiveAI.OneShader" Version="1.4.1" />
-    <PackageVersion Include="RecursiveAI.OneShader.Build" Version="1.4.1" />
+    <PackageVersion Include="RecursiveAI.OneShader" Version="1.5.0" />
+    <PackageVersion Include="RecursiveAI.OneShader.Build" Version="1.5.0" />
   </ItemGroup>
   <ItemGroup>
     <!-- Test projects only. -->

@@ -131,12 +131,11 @@ void WriteRow(uint rowBase, uint first, uint step, float m, float d)
 [numthreads(256, 1, 1)]
 void SoftmaxBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
-    // No early return before the barriers (see ReduceBlock): a surplus workgroup recomputes row 0 and skips the writes.
+    // A surplus workgroup of the rounded-up grid leaves before any barrier (see ReduceBlock).
     uint row = gid.y * SP.GridX + gid.x;
-    bool live = row < SP.Rows;
-    if (!live)
+    if (row >= SP.Rows)
     {
-        row = 0u;
+        return;
     }
 
     uint rowBase = RowBase(row);
@@ -190,10 +189,7 @@ void SoftmaxBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     float rm = gsM[0];
     float rd = gsD[0];
 #endif
-    if (live)
-    {
-        WriteRow(rowBase, tid, WG, rm, rd);
-    }
+    WriteRow(rowBase, tid, WG, rm, rd);
 }
 
 // Several rows per workgroup: thread t works on row (group * (256 / Lanes) + t / Lanes) as lane t % Lanes. The halving tree runs inside each

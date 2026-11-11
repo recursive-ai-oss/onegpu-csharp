@@ -97,6 +97,19 @@ public sealed record GpuComputeCapabilities
     /// <summary>Largest subgroup size the device can run a compute shader with, in lanes; 0 when unknown.</summary>
     public uint SubgroupMaxSize { get; init; }
 
+    /// <summary>
+    /// Compute pipelines can be created with every subgroup full (<see cref="ComputePipelineDesc.RequireFullSubgroups"/>). True on Vulkan 1.3
+    /// devices with the <c>computeFullSubgroups</c> feature and on Metal; false on WebGPU.
+    /// </summary>
+    public bool FullSubgroups { get; init; }
+
+    /// <summary>
+    /// A pipeline can pick its subgroup size within <see cref="SubgroupMinSize"/> to <see cref="SubgroupMaxSize"/>
+    /// (<see cref="ComputePipelineDesc.RequiredSubgroupSize"/>). True on Vulkan devices with <c>subgroupSizeControl</c> that list the compute stage;
+    /// false where the size is fixed or chosen by the driver.
+    /// </summary>
+    public bool SubgroupSizeControl { get; init; }
+
     /// <summary>Subgroup operation classes compute shaders may use.</summary>
     public GpuSubgroupOperations SubgroupOperations { get; init; }
 
