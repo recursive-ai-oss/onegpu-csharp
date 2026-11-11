@@ -4,7 +4,7 @@ namespace RecursiveAI.OneGpu.Kernels.Tests;
 
 /// <summary>
 /// Time of the convolution layers of the vision models, from GPU timestamps (the passes of one layer summed, median over runs) and from the host
-/// clock (a command buffer of repeated runs between submit and idle). Runs only with ONEGPU_CONV_BENCH=1; the numbers are indicative.
+/// clock (a command buffer of repeated runs between submit and idle). Runs only with ONEGPU_CONV_BENCH=1 (ONEGPU_CONV_BENCH_MODE=deterministic for the deterministic mode); the numbers are indicative.
 /// A model's total counts each distinct shape as often as the model uses it.
 /// </summary>
 public sealed class ConvThroughput
@@ -20,11 +20,12 @@ public sealed class ConvThroughput
         using var gpu = new GpuFixture();
         var d = gpu.Device;
         var verbose = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_LAYERS") == "1";
+        var deterministic = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_MODE") == "deterministic";
         var noHardware = Environment.GetEnvironmentVariable("ONEGPU_GEMM_NO_HARDWARE") == "1";
         var batches = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_BATCHES") is { Length: > 0 } b ? b.Split(',').Select(int.Parse).ToArray() : [1, 8];
         foreach (var half in new[] { false, true })
         {
-            using var k = ConvTests.Make(d, GpuKernelMode.Fast, !noHardware);
+            using var k = ConvTests.Make(d, deterministic ? GpuKernelMode.Deterministic : GpuKernelMode.Fast, !noHardware);
             foreach (var batch in batches)
             {
                 foreach (var (model, layers) in new (string, List<ConvTests.Layer>)[] { ("ResNet-50", ConvTests.ResNet50(batch, 224)), ("MobileNetV3-large", ConvTests.MobileNetV3(batch, 224)), ("DBNet 512", ConvTests.DbNet(batch, 512)) })
@@ -53,7 +54,7 @@ public sealed class ConvThroughput
                     }
 
                     var split = string.Join(", ", byVariant.Select(v => $"{v.Key} {v.Value / 1e6:F2} ms"));
-                    Rig.Row(d, "conv-bench-sum", half ? "f16" : "f32", $"{model} {(noHardware ? "portable" : "fast")} b{batch}", $"{gpuTotal / 1e6:F2} ms gpu, {wallTotal / 1e6:F2} ms wall, {flops / gpuTotal / 1e3:F2} TFLOP/s gpu, {flops / wallTotal / 1e3:F2} TFLOP/s wall; {split}");
+                    Rig.Row(d, "conv-bench-sum", half ? "f16" : "f32", $"{model} {(deterministic ? "deterministic" : noHardware ? "portable" : "fast")} b{batch}", $"{gpuTotal / 1e6:F2} ms gpu, {wallTotal / 1e6:F2} ms wall, {flops / gpuTotal / 1e3:F2} TFLOP/s gpu, {flops / wallTotal / 1e3:F2} TFLOP/s wall; {split}");
                 }
             }
         }

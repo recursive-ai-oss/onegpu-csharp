@@ -14,8 +14,11 @@
   checked with `checked` arithmetic and the device's limits before anything is recorded.
 - Fused into the last pass, in this order, each step rounded in float32: sum, bias, residual addition, activation. Activations fused into the matrix kernel: identity, tanh, sigmoid,
   relu, silu, hard-sigmoid, hard-swish, clip, leaky-relu; any other `GpuUnaryOp` runs as one extra element-wise pass.
-- Scratch (the column matrix of the im2col path and, for half, float32 accumulators) is supplied by the caller or kept by the instance up to 64 MiB; a smaller buffer makes the
-  batch run in chunks of whole images, which changes no bit of the result.
+- Scratch (the column matrix of the unfold variants and, for half, float32 accumulators) is supplied by the caller as a buffer **and an element offset** (`columns`/`columnsOffset`,
+  `accumulators`/`accumulatorsOffset`, `EncodeTranspose` likewise) or kept by the instance up to 64 MiB. `ConvKernels.Scratch(problem, half)` says how much this device needs for a shape
+  (nothing for the variants that gather windows while they multiply), for the whole batch and for one image; a smaller buffer makes the batch run in chunks of whole images, which changes
+  no bit of the result. The scratch may live in the buffer that holds the operands (an arena) as long as its range overlaps no operand's (`GpuKernelShapeException` otherwise). A browser
+  cannot read and write one buffer in a dispatch, so there the scratch needs a buffer of its own, and so do the output and the inputs.
 
 ## Variants
 
@@ -25,8 +28,9 @@
 |---|---|
 | depthwise (one input channel per group, any channel multiplier) | direct kernel, one thread per output element, window order fixed |
 | every other convolution on the portable matrix kernel (float32 everywhere; half on devices without matrix hardware) | **implicit GEMM**: a 64x64x16 tile kernel that gathers the input window while it loads the tile; float32 fuses bias, residual and activation into the store, half writes float32 accumulators and an epilogue pass finishes |
-| 1x1, stride 1, no padding, with matrix hardware | `Gemm` on the input as it lies (no unfolding) |
-| any other shape with matrix hardware (half; float32 on Metal) | im2col (Chellapilla et al., 2006) into the column scratch, then `Gemm` (cooperative or simdgroup matrices) and the epilogue pass; groups loop |
+| float32 on Metal (simdgroup matrices) | **implicit GEMM on matrix hardware** (`ConvCoopF32.hlsl`): the 4-subgroup 64x64x16 simdgroup tile of `Gemm`, the window gathered while the input tile is staged (no column matrix), the bias, residual and activation applied as the result is stored, so the output is written once. A pointwise convolution (1x1, stride 1, no padding) whose tile lies inside the output reads weights and input straight from memory with no staging. Grids under 40 workgroups use a 64x32 tile. Fast mode only |
+| 1x1, stride 1, no padding, with matrix hardware (half) | `Gemm` on the input as it lies (no unfolding) |
+| any other shape with matrix hardware (half) | im2col (Chellapilla et al., 2006) into the column scratch, then `Gemm` (cooperative or simdgroup matrices) and the epilogue pass; groups loop |
 | transposed convolution | `Gemm` of the transposed weights with the input, then a gathering col2im (one thread per output element, no atomics) with the same epilogue |
 
 Variants are chosen once per instance from `GpuCapabilities.Compute`; a device without cooperative matrices (lavapipe, a forced-off run) runs the portable kernel, and the tests
@@ -42,6 +46,21 @@ run every layer set in four configurations (fast, fast with matrix hardware off,
   half direct 2.4 ms, floor 1.0 ms.** The floor leaves room (the transforms run as three irregular passes, realistically 1.5x the copy floor, and half Winograd carries
   larger rounding error through the transformed data than the 2e-3 half tolerance leaves comfortably), but it is a speed-up for one model's 3x3 layers only, MobileNetV3 and DBNet
   have almost none. Left for the speed milestone if ResNet-50 misses the bar; the variant would be a fourth `ConvVariant` behind the same `Encode`.
+
+### Apple M2, float32 (indicative, host clock, 10 calls per command buffer; Metal has no timestamp queries)
+
+Convolution layers summed over the model's layer list, before and after the matrix-hardware implicit kernel (and the direct-load 4-subgroup `Gemm` it shares):
+
+| Model | batch | im2col + `Gemm` + epilogue pass | implicit simdgroup kernel |
+|---|---|---|---|
+| ResNet-50 | 1 | 26.0 ms | 24.4 ms |
+| ResNet-50 | 8 | 117.8 ms | 89.9 ms |
+| MobileNetV3-large | 1 | 5.8 ms | 4.3 ms |
+| DBNet 512 | 1 | 9.9 ms | 7.2 ms |
+
+Float16 and the deterministic mode are unchanged by this kernel. The late layers of a classifier at batch 1 (14 x 14 and 7 x 7 images, 4608 deep) run at 130-300 GFLOP/s: the grid has too few
+workgroups and each runs its 16-wide k steps one after another; split-k (a second pass or atomics) or folding the batch into the pixel axis would help and are not built. A version that
+prefetched the next tile into registers ran 40 % slower (register pressure), and wider narrow-tile thresholds ran slower at batch 8.
 
 ## Pooling and resize
 

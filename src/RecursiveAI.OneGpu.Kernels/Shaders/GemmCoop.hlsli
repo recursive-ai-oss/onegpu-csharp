@@ -131,7 +131,46 @@ void GemmCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     MatC acc11 = MatC::Zero();
 #endif
 
-    for (uint k0 = 0; k0 < P.K; k0 += BK)
+    uint kStaged = 0;
+#if defined(GEMM_DIRECT)
+    // A tile that lies inside C reads its fragments straight from the operand buffers for every whole 16-step of k (the cache serves the
+    // rows the neighbouring fragments share); the staged loop below then does only the ragged k tail and the edge tiles.
+    if (m0 + BM <= P.M && n0 + BN <= P.N)
+    {
+        kStaged = P.K & ~(BK - 1u);
+        uint rowA = m0 + sgRow * 32;
+        for (uint kd = 0; kd < kStaged; kd += BK)
+        {
+            MatA a0;
+            MatA a1;
+            MatB b0;
+            if (transA)
+            {
+                a0.Load(A, baseA + kd * P.Lda + rowA, P.Lda, MatrixLayout::ColumnMajor);
+                a1.Load(A, baseA + kd * P.Lda + rowA + 16, P.Lda, MatrixLayout::ColumnMajor);
+            }
+            else
+            {
+                a0.Load(A, baseA + rowA * P.Lda + kd, P.Lda, MatrixLayout::RowMajor);
+                a1.Load(A, baseA + (rowA + 16) * P.Lda + kd, P.Lda, MatrixLayout::RowMajor);
+            }
+
+            if (transB) { b0.Load(B, baseB + (n0 + colTile) * P.Ldb + kd, P.Ldb, MatrixLayout::ColumnMajor); }
+            else { b0.Load(B, baseB + kd * P.Ldb + n0 + colTile, P.Ldb, MatrixLayout::RowMajor); }
+            acc00 = MatC::MulAdd(a0, b0, acc00);
+            acc10 = MatC::MulAdd(a1, b0, acc10);
+#if !defined(GEMM_WIDE)
+            MatB b1;
+            if (transB) { b1.Load(B, baseB + (n0 + colTile + 16) * P.Ldb + kd, P.Ldb, MatrixLayout::ColumnMajor); }
+            else { b1.Load(B, baseB + kd * P.Ldb + n0 + colTile + 16, P.Ldb, MatrixLayout::RowMajor); }
+            acc01 = MatC::MulAdd(a0, b1, acc01);
+            acc11 = MatC::MulAdd(a1, b1, acc11);
+#endif
+        }
+    }
+#endif
+
+    for (uint k0 = kStaged; k0 < P.K; k0 += BK)
     {
         // Stage the A tile (BM x BK) and the B tile (BK x BN); the thread-to-element map follows the memory layout so a subgroup reads
         // consecutive addresses in either orientation.

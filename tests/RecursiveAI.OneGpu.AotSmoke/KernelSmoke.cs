@@ -479,6 +479,32 @@ internal static class KernelSmoke
             }
         }
 
+        // The same convolution in float16 with its scratch placed by the caller: the column matrix at an odd offset of a half buffer, the accumulators at an offset
+        // of a float buffer, both sized by the instance for this device. Halves round the operands, so the check is loose.
+        var halfProblem = problem;
+        var need = conv.Scratch(halfProblem, true);
+        var xh = new Half[GpuKernelBuffers.PaddedHalfLength(x.Length + 1)];
+        var wh = new Half[GpuKernelBuffers.PaddedHalfLength(w.Length + 1)];
+        var bh = new Half[GpuKernelBuffers.PaddedHalfLength(bias.Length + 1)];
+        for (var i = 0; i < x.Length; i++) { xh[i] = (Half)x[i]; }
+        for (var i = 0; i < w.Length; i++) { wh[i] = (Half)w[i]; }
+        for (var i = 0; i < bias.Length; i++) { bh[i] = (Half)bias[i]; }
+        using var xhb = device.CreateBuffer<Half>(xh);
+        using var whb = device.CreateBuffer<Half>(wh);
+        using var bhb = device.CreateBuffer<Half>(bh);
+        using var yhb = device.CreateBuffer<Half>(GpuKernelBuffers.PaddedHalfLength((Cout * H * W) + 1));
+        using var colsh = device.CreateBuffer<Half>(GpuKernelBuffers.PaddedHalfLength((int)need.ColumnElements + 8));
+        using var acch = device.CreateBuffer<float>((int)need.AccumulatorElements + 8);
+        var halfCommands = device.BeginCommands();
+        conv.Encode(halfCommands, halfProblem, xhb, whb, bhb, null, yhb, colsh, acch, 3, 5);
+        device.Submit(halfCommands);
+        var yh = new Half[GpuKernelBuffers.PaddedHalfLength((Cout * H * W) + 1)];
+        await yhb.ReadAsync(yh);
+        for (var i = 0; i < Cout * H * W; i++)
+        {
+            wrong += Math.Abs((float)yh[i] - y[i]) < 2e-2 ? 0 : 1;
+        }
+
         return wrong;
     }
 
