@@ -6,6 +6,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ONEGPU_ARTIFACTS="${ONEGPU_ARTIFACTS:-$ROOT/artifacts}"
 export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 MSBUILDDISABLENODEREUSE=1
 export ONEGPU_REQUIRE_DEVICE=1
+# Linux: the NVIDIA Vulkan driver (595 series) needs more static thread-local storage than glibc reserves once the validation layer is
+# loaded; without this its first instance creations fail with "cannot allocate memory in static TLS block".
+export GLIBC_TUNABLES="${GLIBC_TUNABLES:-glibc.rtld.optional_static_tls=4096}"
 # Metal: API and shader validation make any misuse fatal.
 export MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert MTL_SHADER_VALIDATION=1
 # Vulkan: the test fixture turns the layer on and fails a test that reports anything; this makes it the Khronos one when several exist.
