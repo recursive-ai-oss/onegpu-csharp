@@ -9,7 +9,8 @@ linked, copied or bundled.
 
 `src/RecursiveAI.OneGpu.Vulkan/Interop/VulkanApi.g.cs` is generated from the Khronos Vulkan API registry (`vk.xml`), which is
 Copyright 2015-2025 The Khronos Group Inc. and licensed under Apache-2.0. The generated declarations of types, enums and
-function names follow it.
+function names follow it. `tools/RecursiveAI.OneGpu.VkBindGen` produces it from the registry release named in `tools/fetch-vkxml.sh`
+(a pinned tag, checked by hash); `tools/gen-vulkan-bindings.sh` runs it.
 
 ## Test-time tools
 
