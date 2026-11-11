@@ -234,4 +234,115 @@ public sealed class GemmEpilogueTests
         d.Submit(enc);
         await Task.Yield();
     }
+
+    // Indicative timing of a feed-forward up-projection with bias and GELU: one fused dispatch against the product followed by the element-wise add and GELU.
+    // GPU time is the sum of the passes' timestamp durations per iteration (median); wall time is submit to idle per iteration. Runs only with ONEGPU_GEMM_BENCH=1.
+    [Fact]
+    public void FusedAgainstSeparatePassesTiming()
+    {
+        if (Environment.GetEnvironmentVariable("ONEGPU_GEMM_BENCH") != "1")
+        {
+            Assert.Skip("set ONEGPU_GEMM_BENCH=1 to time the fused epilogue");
+        }
+
+        using var gpu = new GpuFixture();
+        var d = gpu.Device;
+        using var ew = new ElementwiseKernels(d);
+        foreach (var type in new[] { GemmElementType.F32, GemmElementType.F16, GemmElementType.BF16 })
+        {
+            using var gemm = new Gemm(d, type);
+            foreach (var m in new[] { 1024, 128 })
+            {
+                const int N = 3072, K = 768;
+                var p = new GemmProblem(m, N, K);
+                using var c = d.CreateBuffer<float>(m * N);
+                using var bias = d.CreateBuffer<float>(N);
+                using var a32 = type == GemmElementType.F32 ? d.CreateBuffer<float>(m * K) : null;
+                using var b32 = type == GemmElementType.F32 ? d.CreateBuffer<float>(K * N) : null;
+                using var a16 = type == GemmElementType.F16 ? d.CreateBuffer<Half>(m * K) : null;
+                using var b16 = type == GemmElementType.F16 ? d.CreateBuffer<Half>(K * N) : null;
+                using var aB = type == GemmElementType.BF16 ? d.CreateBuffer<ushort>(m * K) : null;
+                using var bB = type == GemmElementType.BF16 ? d.CreateBuffer<ushort>(K * N) : null;
+                var fusedEpilogue = new GemmEpilogue(bias, 0, GemmActivation.GeluErf);
+
+                void Product(GpuCommandEncoder e, GemmEpilogue epilogue)
+                {
+                    if (type == GemmElementType.F32)
+                    {
+                        gemm.Encode(e, p, a32!, b32!, c, epilogue);
+                    }
+                    else if (type == GemmElementType.F16)
+                    {
+                        gemm.Encode(e, p, a16!, b16!, c, epilogue);
+                    }
+                    else
+                    {
+                        gemm.EncodeBFloat16(e, p, aB!, bB!, c, epilogue);
+                    }
+                }
+
+                var (fusedGpu, fusedWall) = Measure(d, e => Product(e, fusedEpilogue), 1);
+                var (plainGpu, plainWall) = Measure(d, e => Product(e, default), 1);
+                var (sepGpu, sepWall) = Measure(d, e =>
+                {
+                    Product(e, default);
+                    ew.EncodeBinary(e, GpuBinaryOp.Add, c, 0, [m, N], bias, 0, [N], c, 0);
+                    ew.EncodeUnary(e, GpuUnaryOp.GeluErf, c, 0, c, 0, m * N);
+                }, 3);
+                Console.WriteLine($"EPILOGUE-TIMING\t{d.Adapter.Name}\t{gemm.Variant}\t{type}\tM={m} N={N} K={K}\tfused {fusedGpu / 1000:F1} us gpu {fusedWall / 1000:F1} us wall\tseparate {sepGpu / 1000:F1} us gpu {sepWall / 1000:F1} us wall\tproduct only {plainGpu / 1000:F1} us gpu {plainWall / 1000:F1} us wall\tgpu ratio separate/fused {sepGpu / fusedGpu:F2}");
+            }
+        }
+    }
+
+    static (double Gpu, double Wall) Measure(GpuDevice d, Action<GpuCommandEncoder> record, int passes)
+    {
+        const int Warm = 3, Iterations = 30;
+        var timestamps = d.Capabilities.Timestamps;
+        using var set = timestamps ? d.CreateTimestampSet(2 * passes * Iterations) : null;
+        for (var i = 0; i < Warm; i++)
+        {
+            Rig.Run(d, record);
+        }
+
+        d.WaitIdle();
+        var enc = d.BeginCommands();
+        if (set is not null)
+        {
+            enc.BeginPassTiming(new PassTiming(set, 0, (uint)(passes * Iterations)));
+        }
+
+        for (var i = 0; i < Iterations; i++)
+        {
+            record(enc);
+        }
+
+        if (set is not null)
+        {
+            Assert.Equal((uint)(passes * Iterations), enc.EndPassTiming());
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        d.Submit(enc);
+        d.WaitIdle();
+        var wall = sw.Elapsed.TotalMilliseconds * 1e6 / Iterations;
+        if (set is null)
+        {
+            return (wall, wall);
+        }
+
+        var t = new ulong[2 * passes * Iterations];
+        Assert.True(d.TryReadTimestamps(set, 0, t));
+        var sums = new double[Iterations];
+        for (var i = 0; i < Iterations; i++)
+        {
+            for (var q = 0; q < passes; q++)
+            {
+                var at = 2 * (i * passes + q);
+                sums[i] += t[at + 1] - t[at];
+            }
+        }
+
+        Array.Sort(sums);
+        return (sums[Iterations / 2], wall);
+    }
 }
