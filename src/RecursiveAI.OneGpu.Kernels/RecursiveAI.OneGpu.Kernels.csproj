@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Compute kernels for GPU inference: matrix multiplication and its relatives, written in HLSL and compiled at build time.</Description>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../RecursiveAI.OneGpu/RecursiveAI.OneGpu.csproj" />
+    <!-- Compiles the HLSL files to SPIR-V, Metal and WGSL at build time and generates their C# bindings. Not a runtime dependency. -->
+    <PackageReference Include="RecursiveAI.OneShader.Build" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Kernels the shader compiler cannot express yet, written as SPIR-V (tools/kernels) or Metal Shading Language (Raw/). -->
+    <EmbeddedResource Include="Raw/*.spv" LogicalName="%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Raw/*.metal" LogicalName="%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RecursiveAI.OneGpu.Kernels.Tests" />
+  </ItemGroup>
+
+</Project>
