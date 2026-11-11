@@ -56,8 +56,26 @@ internal static class KernelSmoke
         using var attention = new AttentionKernels(device);
         var attnProblem = new AttentionProblem(1, AH, ASq, ASk, AD) { Causal = true };
 
+        // The same attention with half tensors (the matrix-hardware kernel where the device has one), compared with the float32 reference below.
+        Half[] ToHalf(float[] v)
+        {
+            var h = new Half[GpuKernelBuffers.PaddedHalfLength(v.Length)];
+            for (var i = 0; i < v.Length; i++)
+            {
+                h[i] = (Half)v[i];
+            }
+
+            return h;
+        }
+
+        using var attnQh = device.CreateBuffer<Half>(ToHalf(aq));
+        using var attnKh = device.CreateBuffer<Half>(ToHalf(ak));
+        using var attnVh = device.CreateBuffer<Half>(ToHalf(av));
+        using var attnOh = device.CreateBuffer<Half>(GpuKernelBuffers.PaddedHalfLength(aq.Length));
+
         var commands = device.BeginCommands();
         attention.Encode(commands, attnProblem, attnQ, attnK, attnV, attnO, mode: GpuKernelMode.Deterministic);
+        attention.Encode(commands, attnProblem, attnQh, attnKh, attnVh, attnOh, mode: GpuKernelMode.Deterministic);
         softmax.Encode(commands, input, 0, [Rows, Len], 1, soft, 0, mode: GpuKernelMode.Deterministic);
         reduce.EncodeReduce(commands, GpuReduceOp.Sum, input, 0, [Rows, Len], [1], sums, 0);
         elementwise.EncodeBinary(commands, GpuBinaryOp.Add, input, 0, [Rows, Len], input, 0, [Rows, Len], added, 0, new GpuActivation(GpuUnaryOp.Relu));
@@ -78,6 +96,8 @@ internal static class KernelSmoke
 
         var gotAttn = new float[aq.Length];
         await attnO.ReadAsync(gotAttn);
+        var gotAttnHalf = new Half[GpuKernelBuffers.PaddedHalfLength(aq.Length)];
+        await attnOh.ReadAsync(gotAttnHalf);
 
         var wrong = 0;
         for (var h = 0; h < AH; h++)
@@ -109,6 +129,7 @@ internal static class KernelSmoke
                     }
 
                     wrong += Math.Abs(gotAttn[(((h * ASq) + i) * AD) + e] - (acc / norm)) < 1e-5 ? 0 : 1;
+                    wrong += Math.Abs((double)gotAttnHalf[(((h * ASq) + i) * AD) + e] - (acc / norm)) < 5e-3 ? 0 : 1;
                 }
             }
         }

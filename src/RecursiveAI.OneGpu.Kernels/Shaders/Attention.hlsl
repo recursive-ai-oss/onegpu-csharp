@@ -163,9 +163,11 @@ float LoadE(StructuredBuffer<Elem> buf, uint i)
 void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
     uint lin = AP.GroupBase + gid.y * AP.GridX + gid.x;
+    // A grid that overshoots the problem repeats the first workgroup, which writes the same values again. An early return here made the
+    // NVIDIA 595 driver produce wrong output for padded head dimensions.
     if (lin >= AP.GroupLimit)
     {
-        return;
+        lin = 0u;
     }
 
     uint nQB = (AP.QLen + BR - 1u) / BR;

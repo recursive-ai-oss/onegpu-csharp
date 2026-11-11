@@ -24,7 +24,7 @@ device.Submit(encoder);
 
 | | |
 |---|---|
-| Element types | float32; `Half` Q, K, V and O with float32 accumulation (the mask is always float32) |
+| Element types | float32; `Half` Q, K, V and O with float32 accumulation; bfloat16 (`ushort` bit patterns, `EncodeBFloat16`) on matrix hardware only, head dimension up to 128 (the mask is always float32) |
 | Layouts | any `GpuAttentionLayout` (offset, batch, head and row strides; elements of a row contiguous): head-first, position-first, slices of a packed QKV projection |
 | Lengths | query and key/value lengths differ (cross-attention, decoder steps with a key/value cache) |
 | Heads | equal query and key/value heads, or fewer key/value heads (grouped and multi-query attention) |
@@ -55,8 +55,14 @@ SPIR-V and Metal builds write every access to the query and accumulator register
 `Attention.hlsl`). The WebGPU build (`AttentionLoops.hlsl`) keeps plain loops instead: the software adapter's compiler does not finish compiling the unrolled
 form, and the browsers' real GPU back ends unroll small loops themselves.
 
-A single dispatch that keeps an Apple GPU busy for a long time (the one-thread-per-row kernel on a batch of 8 Whisper encoder inputs is the example) can be
-stopped by the system, which leaves the output half written; keep such calls to a batch entry per submission.
+### Long calls
+
+A single submission that keeps an Apple GPU busy for a long time (the one-thread-per-row kernel on a batch of 8 Whisper encoder inputs was the example) is
+stopped by the system and leaves the output half written. `Encode` therefore cuts a call whose estimated work exceeds the device's `SubmissionWorkBudget`
+(`submissionWorkBudget` in the constructor overrides it; 0 never cuts) into dispatches of whole workgroups and tells the encoder the work after each
+(`ReportWork`), so the encoder can end the submission between them. Every workgroup computes its own rows from the same inputs in the same order, so a cut
+call equals the whole call bit for bit; the tests compare them on every device. The estimate is `4 · batch · heads · QLen · KLen · HeadDim` operations,
+times 1.5 for the matrix kernel (it multiplies `Q Kᵀ` twice) and times 4 for the scalar kernels (several times slower per operation, measured on the M2).
 
 `Fast` and `Deterministic` run the same kernel: every sum has an order the code fixes, there are no atomics and no subgroup arithmetic, and the one
 shuffle adds two numbers (which does not depend on operand order). Two runs on one device and driver give identical bits. `rows` and `pairs` add a
@@ -67,13 +73,31 @@ each, enough ranges for about 256 workgroups); each range stores its partial (ma
 in range order. The cut depends only on the shape. `ScratchLength(problem)` says how many floats are needed (0 without a cut); pass a
 buffer as `scratch`, or leave it null and the family keeps one of its own and releases it on `Dispose`.
 
-A cooperative-matrix variant (`Q Kᵀ` and `P V` on matrix hardware) would be chosen next to these in the constructor when the device reports the shapes;
-it waits for matrix types in the shader compiler. On Apple GPUs, where the GEMM family already uses simdgroup matrices, the unfused path
-(GEMM, add, softmax, GEMM) is currently faster than the fused kernel for 64-wide heads; see the timings in the project notes.
+### Matrix hardware (`cooperative-matrix`)
+
+For half and bfloat16 tensors with a head dimension up to 128, `Auto` picks a kernel that runs `Q Kᵀ` and `P V` as 16 x 16 x 16 cooperative matrices
+(`VK_KHR_cooperative_matrix` on Vulkan, simdgroup matrices on Metal), when the device lists such matrices of the element type with a float32 accumulator,
+runs 32-wide subgroups (pinned where the device can run several widths) with full subgroups, and offers the kernel's shader features. Everything else (float32,
+head dimensions 129 to 256, devices without matrix hardware such as lavapipe and the RADV iGPU, WebGPU) keeps `rows` or `pairs`; `GpuAttentionVariant.Cooperative`
+forces the matrix kernel (and throws where it cannot run) and `allowMatrixHardware: false` rules it out. `Variant` names the kernel used for half tensors,
+`FloatVariant` the one for float32.
+
+A workgroup owns 64 query rows as four subgroups of 16 rows and visits the keys in tiles of 32 (16 for 128-wide heads), staged through workgroup memory
+(at most 12.8 KB, so it also fits a Metal limit that shader validation counts twice). The elements of a cooperative matrix have no specified layout, so an
+accumulator cannot be scaled per row without a round trip through workgroup memory; the kernel avoids the rescaling of the online normaliser instead. A first pass over the
+keys computes only the scores and finds the exact maximum of every row; a second pass recomputes them, forms `p = exp(score − max)` and accumulates `P V` in
+matrix registers. The price is a second `Q Kᵀ`, 1.5x the matrix work. The probabilities are rounded to the element type before the product with `V`, and
+the normaliser sums the rounded values, so numerator and denominator see the same `p`. Scores and probabilities pass between the matrix units and the
+lanes through workgroup memory, where lane `l` of a subgroup owns row `l & 15` and every other column of each 16-wide block; the two lanes of a row meet once per pass in a
+shuffle that maximises or adds two numbers (operand order does not matter). The key-range split and the merge pass are those of the scalar kernels.
+
+This kernel serves `Fast` and `Deterministic` alike: every order is fixed by the code (tiles in increasing key order, the hardware's matrix product depends only on
+its operands), there are no atomics and no subgroup arithmetic, and two runs on one device and driver give identical bits (checked per device by the tests). Devices differ
+from each other in the last bits, and so do the matrix and scalar kernels.
 
 ## Tolerances
 
 Scaled error (max |gpu − reference| / max |reference| per output, reference in double on the CPU, inputs rounded to half first for half rows): float32
-≤ 1e-5, half with float32 accumulation ≤ 2e-3. The tests assert these on the shapes of the reference models (MiniLM, BERT-base, Whisper-small encoder,
+≤ 1e-5, half with float32 accumulation ≤ 2e-3, bfloat16 with float32 accumulation ≤ 8e-3 (the probabilities and the output are rounded to bfloat16's eight bits of precision, which costs about 4e-3). The tests assert these on the shapes of the reference models (MiniLM, BERT-base, Whisper-small encoder,
 decoder self- and cross-attention) and on tile edges, remainders, size 1, non-power-of-two sizes, masks with `-∞`, fully masked rows, key lengths of 0,
 grouped heads and odd head dimensions; they also compare the fused kernel with GEMM + add + softmax + GEMM.
