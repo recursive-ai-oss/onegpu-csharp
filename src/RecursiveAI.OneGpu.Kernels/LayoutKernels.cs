@@ -16,7 +16,7 @@ public readonly record struct GpuConcatInput<T>(GpuBuffer<T> Buffer, int Offset,
 /// </summary>
 /// <remarks>
 /// Payload types are <see cref="float"/>, <see cref="int"/>, <see cref="uint"/> (4 bytes), <see cref="Half"/> (2 bytes; buffers must end on a
-/// 32-bit word, see <see cref="GpuKernelBuffers.PaddedHalfLength"/>) and <see cref="long"/> (8 bytes). The output must not overlap an input.
+/// 32-bit word, see <see cref="GpuKernelBuffers.PaddedHalfLength"/>) and <see cref="long"/> (8 bytes). The output must not overlap an input (Expand alone accepts one buffer with disjoint ranges).
 /// Slice and Expand share the strided copy of <see cref="TransposeKernels"/> and need at most six dimensions after neighbours that stay
 /// neighbours are merged. Not thread-safe.
 /// </remarks>
@@ -191,6 +191,8 @@ public sealed class LayoutKernels : IDisposable
 
     /// <summary>
     /// Records ONNX <c>Expand</c>: broadcasts the input to <paramref name="outputShape"/> (right-aligned, size-1 dimensions repeat).
+    /// The input and the output may be the same buffer (a planned arena) when their element ranges are disjoint; for <see cref="Half"/> the ranges must not
+    /// share a 32-bit word. Overlapping ranges throw <see cref="GpuKernelShapeException"/>. The other operations here still need separate buffers.
     /// </summary>
     /// <typeparam name="T">A payload type: <see cref="float"/>, <see cref="Half"/>, <see cref="int"/>, <see cref="uint"/> or <see cref="long"/>.</typeparam>
     /// <param name="encoder">The encoder to record into.</param>
@@ -200,7 +202,7 @@ public sealed class LayoutKernels : IDisposable
     /// <param name="outputShape">The broadcast result's shape: each input dimension, aligned to the right, is equal to it or 1.</param>
     /// <param name="output">Receives the broadcast tensor.</param>
     /// <param name="offsetOutput">Element offset of the result.</param>
-    /// <exception cref="GpuKernelShapeException">The shapes do not broadcast, or a range is invalid.</exception>
+    /// <exception cref="GpuKernelShapeException">The shapes do not broadcast, a range is invalid, or the input and output are the same buffer with overlapping element ranges.</exception>
     public void EncodeExpand<T>(GpuCommandEncoder encoder, GpuBuffer<T> input, int offsetInput, ReadOnlySpan<int> shape, ReadOnlySpan<int> outputShape, GpuBuffer<T> output, int offsetOutput)
         where T : unmanaged
     {
@@ -218,7 +220,7 @@ public sealed class LayoutKernels : IDisposable
         var inCount = Check.Product(Name, nameof(shape), shape);
         var total = Check.Product(Name, nameof(outputShape), outputShape);
         Check.Range(Name, nameof(input), input.Length, offsetInput, inCount, half);
-        RequireDistinct(Name, input.Buffer, output.Buffer);
+        RequireDisjoint(Name, input.Buffer, offsetInput, inCount, output.Buffer, offsetOutput, total, half);
         Span<long> inStride = stackalloc long[32];
         IndexSupport.RowMajorStrides(shape, inStride);
         Span<long> strides = stackalloc long[32];
@@ -357,7 +359,8 @@ public sealed class LayoutKernels : IDisposable
         }
     }
 
-    internal int BindGroupsCreated => WideKernelPipeline.Total(_concat) + _strided.BindGroupsCreated;
+    /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
+    public int BindGroupsCreated => WideKernelPipeline.Total(_concat) + _strided.BindGroupsCreated;
 
     /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
     public void ReleaseBindings()
@@ -380,6 +383,31 @@ public sealed class LayoutKernels : IDisposable
         }
 
         _strided.Dispose();
+    }
+
+    // The input and the output of one pass may share a buffer, the way a memory plan places two tensors in one arena, as long as their element
+    // ranges do not overlap: a thread that writes an output element would otherwise overwrite an input another thread still has to read.
+    // Half elements share 32-bit words in pairs, so for halves the ranges are compared in whole words.
+    static void RequireDisjoint(string name, GpuBuffer input, long offsetInput, long inputCount, GpuBuffer output, long offsetOutput, long outputCount, bool half)
+    {
+        if (!ReferenceEquals(input, output) || inputCount == 0 || outputCount == 0)
+        {
+            return;
+        }
+
+        long a0 = offsetInput, a1 = offsetInput + inputCount, b0 = offsetOutput, b1 = offsetOutput + outputCount;
+        if (half)
+        {
+            a0 >>= 1;
+            b0 >>= 1;
+            a1 = (a1 + 1) >> 1;
+            b1 = (b1 + 1) >> 1;
+        }
+
+        if (a0 < b1 && b0 < a1)
+        {
+            throw new GpuKernelShapeException(name, "output", $"the output elements {offsetOutput}..{offsetOutput + outputCount} overlap the input elements {offsetInput}..{offsetInput + inputCount} of the same buffer; an in-place call needs disjoint ranges");
+        }
     }
 
     static void RequireDistinct(string name, GpuBuffer input, GpuBuffer output)
