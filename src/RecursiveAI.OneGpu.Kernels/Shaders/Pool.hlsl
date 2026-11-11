@@ -55,7 +55,9 @@ float PoolValue(uint e)
 #if F16
     float best = -65504.0;
 #else
-    float best = -asfloat(0x7f7fffffu);
+    // The lowest finite float, from its bits with a term that is zero at run time (Average is 0 or 1): the shader compiler prints a folded constant as 3.4028235e38, which WGSL rejects as
+    // not representable.
+    float best = asfloat(0xff7fffffu | (CP.Average >> 8));
 #endif
     float nanValue = 0.0;
     float sum = 0.0;

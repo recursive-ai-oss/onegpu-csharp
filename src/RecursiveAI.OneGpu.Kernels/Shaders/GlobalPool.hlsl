@@ -37,7 +37,9 @@ float PlaneResult(uint plane, uint tid)
 #if F16
     float v = CP.Average != 0u ? 0.0 : -65504.0;
 #else
-    float v = CP.Average != 0u ? 0.0 : -asfloat(0x7f7fffffu);
+    // The lowest finite float, from its bits with a term that is zero at run time (Average is 0 or 1): the shader compiler prints a folded constant as 3.4028235e38, which WGSL rejects as
+    // not representable.
+    float v = CP.Average != 0u ? 0.0 : asfloat(0xff7fffffu | (CP.Average >> 8));
 #endif
     for (uint i = tid; i < CP.Plane; i += WG)
     {
