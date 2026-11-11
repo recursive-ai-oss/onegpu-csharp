@@ -81,6 +81,13 @@ The Vulkan backend shares one instance per process (one more when validation is 
 device is its own logical device on it. Some drivers refuse new instances after a few dozen create and destroy pairs in one process
 (NVIDIA 595 stopped after about 80), and a long-running tool or test run must not hit that.
 
+## Adapter order
+
+The Vulkan backend keeps adapters in one total order, whatever order the drivers are enumerated in: kind (discrete, integrated, virtual,
+software, other), then PCI vendor id, device id, name, API version (newest first) and the driver's pipeline-cache UUID. The default is the
+first adapter in that order, and `GpuDeviceOptions.Adapter` or `ONEGPU_ADAPTER` (a name substring or a kind) picks the first match in it,
+so a multi-GPU machine chooses the same adapter every run.
+
 ## Validation messages
 
 `GpuDevice.TakeValidationMessages` returns what the layer said about this device. Devices share one instance and one message callback, so
