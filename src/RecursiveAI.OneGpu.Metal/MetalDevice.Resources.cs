@@ -283,14 +283,6 @@ internal sealed unsafe partial class MetalDevice
     }
 
     /// <inheritdoc />
-    public override GpuTimestampSet CreateTimestampSet(uint count) =>
-        throw new GpuUnsupportedException($"{Adapter.Name} cannot time passes through this backend yet (GpuCapabilities.Timestamps is false)");
-
-    /// <inheritdoc />
-    public override bool TryReadTimestamps(GpuTimestampSet timestamps, uint first, Span<ulong> nanoseconds) =>
-        throw new GpuUnsupportedException("timestamps are not supported by the Metal backend yet");
-
-    /// <inheritdoc />
     public override GpuBindGroup CreateBindGroup(GpuPipelineLayout layout, uint setIndex, ReadOnlySpan<BindGroupEntry> entries)
     {
         var pl = layout as MetalPipelineLayout ?? throw new ArgumentException("layout belongs to another backend", nameof(layout));

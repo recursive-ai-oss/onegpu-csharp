@@ -11,7 +11,7 @@ public static class VulkanGpu
     /// <summary>Lists the adapters that can run the backend (Vulkan 1.3 with a graphics and compute queue).</summary>
     public static IReadOnlyList<GpuAdapterInfo> EnumerateAdapters()
     {
-        var inst = VulkanInstance.Create(new GpuDeviceOptions());
+        var inst = VulkanInstance.Acquire(new GpuDeviceOptions());
         try
         {
             return inst.Adapters.Select(a => a.Info).ToArray();
@@ -30,7 +30,7 @@ public static class VulkanGpu
     public static GpuDevice CreateDevice(GpuDeviceOptions? options = null)
     {
         options ??= new GpuDeviceOptions();
-        var inst = VulkanInstance.Create(options);
+        var inst = VulkanInstance.Acquire(options);
         try
         {
             return VulkanDevice.Create(options, inst, inst.Pick(options.Adapter));

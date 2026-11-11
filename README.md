@@ -23,6 +23,7 @@ dotnet build OneGpu.slnx
 tools/ci/test-vulkan.sh      # Vulkan, validation on
 tools/ci/test-metal.sh       # macOS
 tools/ci/test-web.sh         # headless Chrome on WebGPU
+tools/ci/test-web-package.sh # a browser app consuming the packed WebGPU backend, in headless Chrome
 ```
 
 Output goes to `artifacts/` at the repository root, or to `$ONEGPU_ARTIFACTS` when set. Device tests skip, and print why, when no

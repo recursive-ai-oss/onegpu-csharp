@@ -3,6 +3,9 @@
 // Objects live in a table indexed by the handle numbers the managed side allocates.
 // References: W3C WebGPU (https://www.w3.org/TR/webgpu/) and WGSL (https://www.w3.org/TR/WGSL/).
 
+// Tells the managed side that a page already loaded this script and registered it, so the library does not import a second copy.
+globalThis.__onegpuLoaded = true;
+
 const O = [];            // handle -> WebGPU object (or a small record around one)
 const M = [];            // handle -> metadata of textures
 let device = null, queue = null, adapterInfo = null;

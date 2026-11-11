@@ -149,11 +149,31 @@ internal static class Sel
     public static readonly nint maxThreadgroupMemoryLength = Objc.sel_registerName("maxThreadgroupMemoryLength");
     public static readonly nint maxBufferLength = Objc.sel_registerName("maxBufferLength");
     public static readonly nint currentAllocatedSize = Objc.sel_registerName("currentAllocatedSize");
+
+    // Counter sampling (GPU timestamps).
+    public static readonly nint bytes = Objc.sel_registerName("bytes");
+    public static readonly nint computeCommandEncoderWithDescriptor_ = Objc.sel_registerName("computeCommandEncoderWithDescriptor:");
+    public static readonly nint computePassDescriptor = Objc.sel_registerName("computePassDescriptor");
+    public static readonly nint counterSets = Objc.sel_registerName("counterSets");
+    public static readonly nint length = Objc.sel_registerName("length");
+    public static readonly nint newCounterSampleBufferWithDescriptor_error_ = Objc.sel_registerName("newCounterSampleBufferWithDescriptor:error:");
+    public static readonly nint resolveCounterRange_ = Objc.sel_registerName("resolveCounterRange:");
+    public static readonly nint sampleBufferAttachments = Objc.sel_registerName("sampleBufferAttachments");
+    public static readonly nint sampleTimestamps_gpuTimestamp_ = Objc.sel_registerName("sampleTimestamps:gpuTimestamp:");
+    public static readonly nint setCounterSet_ = Objc.sel_registerName("setCounterSet:");
+    public static readonly nint setEndOfEncoderSampleIndex_ = Objc.sel_registerName("setEndOfEncoderSampleIndex:");
+    public static readonly nint setEndOfFragmentSampleIndex_ = Objc.sel_registerName("setEndOfFragmentSampleIndex:");
+    public static readonly nint setSampleBuffer_ = Objc.sel_registerName("setSampleBuffer:");
+    public static readonly nint setStartOfEncoderSampleIndex_ = Objc.sel_registerName("setStartOfEncoderSampleIndex:");
+    public static readonly nint setStartOfVertexSampleIndex_ = Objc.sel_registerName("setStartOfVertexSampleIndex:");
+    public static readonly nint supportsCounterSampling_ = Objc.sel_registerName("supportsCounterSampling:");
 }
 
 /// <summary>Looked-up Objective-C classes.</summary>
 internal static class Cls
 {
+    public static readonly nint MTLComputePassDescriptor = Objc.objc_getClass("MTLComputePassDescriptor");
+    public static readonly nint MTLCounterSampleBufferDescriptor = Objc.objc_getClass("MTLCounterSampleBufferDescriptor");
     public static readonly nint CAMetalLayer = Objc.objc_getClass("CAMetalLayer");
     public static readonly nint MTLCompileOptions = Objc.objc_getClass("MTLCompileOptions");
     public static readonly nint MTLDepthStencilDescriptor = Objc.objc_getClass("MTLDepthStencilDescriptor");

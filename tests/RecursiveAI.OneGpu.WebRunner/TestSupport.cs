@@ -73,6 +73,7 @@ public static partial class Runner
     // Tests the browser backend cannot run, with the reason.
     private static readonly Dictionary<string, string> Skipped = new(StringComparer.Ordinal)
     {
+        ["ComputePassTimingIsOrderedAndMatchesTheWallClock"] = "timestamp queries cannot be read without blocking",
         ["PassTimingWritesStartAndEndTimes"] = "timestamp queries cannot be read without blocking",
         ["SteadyStateFramesAllocateNothing"] = "allocation counts of the native backends",
         ["PooledEncodersThatRecordedLessEarlierDoNotAllocateOnABusyFrame"] = "allocation counts of the native backends",

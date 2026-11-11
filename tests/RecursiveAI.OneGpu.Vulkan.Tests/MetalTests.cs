@@ -51,4 +51,18 @@ public sealed class MetalTests
         using var gpu = new GpuFixture();
         Assert.True(MetalGpu.IsValidationActive(gpu.Device));
     }
+
+    /// <summary>The GPU clock ticks at a rate the device reports; a tick is the finest step a timestamp can show.</summary>
+    [Fact]
+    public void TimestampClockTicksAtAPlausibleRate()
+    {
+        Assert.SkipUnless(GpuBackends.Selected == GpuBackend.Metal && GpuBackends.IsAvailable, "needs the Metal backend");
+        using var gpu = new GpuFixture();
+        var d = (MetalDevice)gpu.Device;
+        Assert.True(d.Capabilities.Timestamps);
+        using var set = d.CreateTimestampSet(2);
+        var tick = d.NanosecondsPerTick;
+        Console.WriteLine($"timestamp resolution on {d.Adapter.Name}: one GPU tick = {tick:F4} ns");
+        Assert.InRange(tick, 0.5, 100.0);
+    }
 }

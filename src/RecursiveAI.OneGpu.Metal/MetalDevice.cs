@@ -86,7 +86,7 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
 
         // Metal 3 limits for Apple silicon; the largest 2D texture is 16384 texels on every GPU family this backend runs on.
         return new GpuCapabilities(
-            Timestamps: false,
+            Timestamps: FindTimestampCounterSet(),
             MultiDrawIndirect: false,
             IndirectFirstInstance: true,
             DepthClamp: true,
@@ -176,6 +176,12 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
         var cb = enc.Finish();
         FlushUploads();
         Commit(cb, frame: true);
+        foreach (var timed in enc.TimedSets)
+        {
+            timed.PendingSerial = _serial;
+        }
+
+        enc.TimedSets.Clear();
         _freeEncoders.Push(enc);
 
         // Throttle: at most MaxFramesInFlight submissions run ahead of the CPU.
@@ -481,6 +487,7 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
 
         _disposed = true;
         Objc.Release(ref _noDepthState);
+        Objc.Release(ref _timestampCounterSet);
         Objc.Release(ref _queue);
         Objc.Release(ref _device);
     }

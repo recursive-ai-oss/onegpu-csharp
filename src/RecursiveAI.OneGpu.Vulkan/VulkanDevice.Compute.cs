@@ -23,8 +23,8 @@ internal sealed unsafe partial class VulkanDevice
         var p2 = new VkPhysicalDeviceProperties2 { pNext = &m3 };
         _instanceFns.vkGetPhysicalDeviceProperties2(_physical, &p2);
 
-        // Subgroup operations count for compute only when the adapter lists the compute stage (bit 0x20) as supporting them.
-        var ops = (sub.supportedStages & 0x20) != 0 ? (GpuSubgroupOperations)(sub.supportedOperations & 0xFF) : GpuSubgroupOperations.None;
+        // Subgroup operations count for compute only when the adapter lists the compute stage as supporting them.
+        var ops = (sub.supportedStages & VkShaderStageFlagBits.Compute) != 0 ? (GpuSubgroupOperations)((uint)sub.supportedOperations & 0xFF) : GpuSubgroupOperations.None;
 
         var shader = DeviceFeatures.None;
         if (f12.shaderFloat16 != 0)
@@ -70,7 +70,7 @@ internal sealed unsafe partial class VulkanDevice
         var matrices = new List<GpuCooperativeMatrixShape>();
         if (cooperativeMatrix)
         {
-            var fns = VkComputeFns.Load(_instance.Value);
+            var fns = _instanceFns;
             uint n = 0;
             if (fns.vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR != null && fns.vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(_physical, &n, null) >= 0 && n > 0)
             {
@@ -86,11 +86,11 @@ internal sealed unsafe partial class VulkanDevice
                     {
                         for (var i = 0; i < n; i++)
                         {
-                            // Scope 3 is subgroup: the matrices a compute shader's subgroup multiplies cooperatively.
-                            if (lp[i].scope == 3)
+                            // Subgroup scope: the matrices a compute shader's subgroup multiplies cooperatively.
+                            if (lp[i].scope == VkScopeKHR.Subgroup)
                             {
-                                matrices.Add(new GpuCooperativeMatrixShape(lp[i].MSize, lp[i].NSize, lp[i].KSize, (GpuScalarType)lp[i].AType, (GpuScalarType)lp[i].BType,
-                                    (GpuScalarType)lp[i].CType, (GpuScalarType)lp[i].ResultType, lp[i].saturatingAccumulation != 0));
+                                matrices.Add(new GpuCooperativeMatrixShape(lp[i].MSize, lp[i].NSize, lp[i].KSize, (GpuScalarType)(int)lp[i].AType, (GpuScalarType)(int)lp[i].BType,
+                                    (GpuScalarType)(int)lp[i].CType, (GpuScalarType)(int)lp[i].ResultType, lp[i].saturatingAccumulation != 0));
                             }
                         }
                     }
