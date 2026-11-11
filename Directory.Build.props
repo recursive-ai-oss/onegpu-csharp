@@ -1,0 +1,79 @@
+<Project>
+
+  <PropertyGroup Label="Roots">
+    <_SrcRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', 'src'))</_SrcRoot>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Name">
+    <!-- Package IDs equal project names, which all start with this prefix. The prefix is written here only. -->
+    <PackagePrefix>RecursiveAI.OneGpu</PackagePrefix>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Output">
+    <!-- Build output stays out of the source folders. Set ONEGPU_ARTIFACTS to choose where; the default is artifacts/ at the
+         repository root, which .gitignore covers. -->
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    <ArtifactsPath Condition="'$(ONEGPU_ARTIFACTS)' != ''">$(ONEGPU_ARTIFACTS)</ArtifactsPath>
+    <ArtifactsPath Condition="'$(ONEGPU_ARTIFACTS)' == ''">$(MSBuildThisFileDirectory)artifacts</ArtifactsPath>
+  </PropertyGroup>
+
+  <!-- Every shader is compiled for each backend: SPIR-V for Vulkan, Metal Shading Language for Metal, WGSL for WebGPU. -->
+  <PropertyGroup Label="Shader targets">
+    <OneShaderTargets>SpirV;Msl;Wgsl</OneShaderTargets>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Language and analysis">
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <Deterministic>true</Deterministic>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Package metadata">
+    <Authors>Recursive AI, LLC</Authors>
+    <Company>Recursive AI, LLC</Company>
+    <Copyright>Copyright (c) Recursive AI, LLC</Copyright>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+    <PackageId Condition="'$(PackageId)' == ''">$(MSBuildProjectName)</PackageId>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/recursive-ai-oss/onegpu-csharp</RepositoryUrl>
+    <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>gpu;compute;vulkan;metal;webgpu;nativeaot;trimmable</PackageTags>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+  <!-- Only the libraries under src/ are packages. Tests, tools and benchmarks are built, not published. -->
+  <PropertyGroup Condition="!$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)').StartsWith('$(_SrcRoot)'))">
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" Visible="false" />
+  </ItemGroup>
+
+  <!-- "Ships" means the code goes into a consumer's program: everything under src/. Those projects get the package guard
+       (build/PackageGuard.targets) and the AOT and trim analyzers. Tests and tools may use any package. -->
+  <PropertyGroup Label="Shipping code">
+    <_ProjectDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)'))</_ProjectDir>
+    <OneGpuShips Condition="'$(OneGpuShips)' == '' and $(_ProjectDir.StartsWith('$(_SrcRoot)'))">true</OneGpuShips>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(OneGpuShips)' == 'true'">
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+  </PropertyGroup>
+
+</Project>

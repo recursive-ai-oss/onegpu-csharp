@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The one* family: the only packages that may ship. -->
+    <PackageVersion Include="RecursiveAI.OneShader" Version="1.4.0" />
+    <PackageVersion Include="RecursiveAI.OneShader.Build" Version="1.4.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Test projects only. -->
+    <PackageVersion Include="xunit.v3" Version="4.0.2" />
+    <PackageVersion Include="xunit.v3.assert" Version="4.0.2" />
+    <PackageVersion Include="xunit.v3.extensibility.core" Version="4.0.2" />
+  </ItemGroup>
+</Project>

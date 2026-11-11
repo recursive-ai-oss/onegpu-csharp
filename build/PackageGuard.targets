@@ -1,0 +1,18 @@
+<Project>
+
+  <!-- Only our code ships. A project that ships (OneGpuShips=true: everything under src/) may reference the one* family and
+       nothing else. Test, tool and benchmark projects are not restricted. A reference marked PrivateAssets="all" is a build-time
+       tool that never reaches a consumer and is allowed. The check runs at restore and at build, before any package is downloaded. -->
+  <Target Name="OneGpuCheckPackages" BeforeTargets="CollectPackageReferences" Condition="'$(OneGpuShips)' == 'true'">
+    <ItemGroup>
+      <!-- Packages the SDK adds itself (NETStandard.Library, the ILLink tasks) are build tooling, not something the project chose. -->
+      <_OgPackage Include="@(PackageReference)" Condition="'%(PackageReference.IsImplicitlyDefined)' != 'true'" />
+      <_OgAllowed Include="@(_OgPackage)"
+                  Condition="$([System.String]::Copy('%(_OgPackage.Identity)').StartsWith('RecursiveAI.One')) or '%(_OgPackage.PrivateAssets)' == 'all'" />
+      <_OgForbidden Include="@(_OgPackage)" Exclude="@(_OgAllowed)" />
+    </ItemGroup>
+    <Error Condition="'@(_OgForbidden)' != ''" Code="OGPU001"
+           Text="$(MSBuildProjectName) references '@(_OgForbidden, ', ')'. Shipping projects may reference only the one* family (RecursiveAI.One*) or build-time tools marked PrivateAssets=&quot;all&quot;." />
+  </Target>
+
+</Project>
