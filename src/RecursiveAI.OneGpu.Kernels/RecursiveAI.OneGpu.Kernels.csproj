@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Compute kernels for machine-learning inference, written in HLSL and compiled for Vulkan, Metal and WebGPU.</Description>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OneShaderNamespace>RecursiveAI.OneGpu.Kernels.Shaders</OneShaderNamespace>
+    <EnableDefaultOneShaderItems>false</EnableDefaultOneShaderItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Build-time only: the compiler and the binding generator never reach a consumer. -->
+    <PackageReference Include="RecursiveAI.OneShader.Build" PrivateAssets="all" />
+    <ProjectReference Include="../RecursiveAI.OneGpu/RecursiveAI.OneGpu.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <OneShader Include="Shaders/Binary.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Cast.hlsl" />
+    <OneShader Include="Shaders/Compare.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Unary.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Where.hlsl" Axes="F16" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RecursiveAI.OneGpu.Kernels.Tests" />
+  </ItemGroup>
+
+</Project>
