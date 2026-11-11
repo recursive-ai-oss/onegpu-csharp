@@ -289,7 +289,7 @@ public sealed class GemmEpilogueTests
                     ew.EncodeBinary(e, GpuBinaryOp.Add, c, 0, [m, N], bias, 0, [N], c, 0);
                     ew.EncodeUnary(e, GpuUnaryOp.GeluErf, c, 0, c, 0, m * N);
                 }, 3);
-                Console.WriteLine($"EPILOGUE-TIMING\t{d.Adapter.Name}\t{gemm.Variant}\t{type}\tM={m} N={N} K={K}\tfused {fusedGpu / 1000:F1} us gpu {fusedWall / 1000:F1} us wall\tseparate {sepGpu / 1000:F1} us gpu {sepWall / 1000:F1} us wall\tproduct only {plainGpu / 1000:F1} us gpu {plainWall / 1000:F1} us wall\tgpu ratio separate/fused {sepGpu / fusedGpu:F2}");
+                Rig.Row(d, "gemm epilogue timing (indicative)", type.ToString(), $"{gemm.Variant}, M={m} N={N} K={K}, bias + GeLU", $"fused {fusedGpu / 1000:F1} us gpu {fusedWall / 1000:F1} us wall; separate passes {sepGpu / 1000:F1} us gpu {sepWall / 1000:F1} us wall; product only {plainGpu / 1000:F1} us gpu {plainWall / 1000:F1} us wall; gpu ratio separate/fused {sepGpu / fusedGpu:F2}");
             }
         }
     }
