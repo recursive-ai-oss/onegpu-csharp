@@ -34,6 +34,9 @@ device.Submit(encoder);
 | `IntegerKernels` | int32 and int64 Add, Sub, Mul, Div, Mod, Fmod, Min, Max, Neg, Abs; Equal, Less, Greater, LessOrEqual, GreaterOrEqual over int32, int64 and bool; And, Or, Xor, Not on bool; Fill (`ConstantOfShape`) and Range |
 | `TransposeKernels` | N-d permutation, NCHW↔NHWC, split and merge of attention heads |
 | `AttentionKernels` | fused scaled dot-product attention with masks, key lengths, causal rule and grouped heads (see [attention.md](attention.md)) |
+| `ConvKernels` | Conv and ConvTranspose (groups, dilation, padding, depthwise, fused bias, residual and activation; float32 and half), see [conv.md](conv.md) |
+| `PoolKernels` | MaxPool, AveragePool (ceil mode, count_include_pad), GlobalAveragePool, GlobalMaxPool |
+| `ResizeKernels` | Resize, nearest and linear, five coordinate transformations |
 
 | `GatherKernels` | ONNX Gather (any axis, negative indices, int32 or int64 indices; the embedding lookup), GatherElements, GatherND (with batch dimensions), over 8-, 16-, 32- and 64-bit payloads |
 | `ScatterKernels` | ScatterND and ScatterElements with reduction none, add, mul, min or max |

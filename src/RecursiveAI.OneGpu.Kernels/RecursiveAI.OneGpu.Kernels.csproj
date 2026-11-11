@@ -21,6 +21,14 @@
     <OneShader Include="Shaders/AttentionCombine.hlsl" Axes="F16;BF16" />
     <OneShader Include="Shaders/Binary.hlsl" Axes="F16;ACT;RANK=R1|R2|RN" />
     <OneShader Include="Shaders/Cast.hlsl" />
+    <OneShader Include="Shaders/Col2Im.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/ConvEpilogue.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/ConvGemm.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/DepthwiseConv.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/GlobalPool.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Im2Col.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Pool.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Resize.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Concat.hlsl" Axes="ELEM=W16|W32|W64" />
     <OneShader Include="Shaders/Generate.hlsl" />
     <OneShader Include="Shaders/Integer.hlsl" />
