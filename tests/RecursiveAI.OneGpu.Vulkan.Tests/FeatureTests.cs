@@ -778,7 +778,7 @@ public sealed class FeatureTests
         Assert.True(d.TryReadTimestamps(set, 0, t));
         for (var i = 0; i < 3; i++)
         {
-            Assert.True(t[i * 2 + 1] >= t[i * 2], $"pass {i} ended before it began");
+            Assert.True(t[i * 2 + 1] >= t[i * 2], $"pass {i} ended before it began: " + string.Join(" ", t));
         }
 
         Assert.True(t[2] >= t[1] && t[4] >= t[3], "passes run in order");

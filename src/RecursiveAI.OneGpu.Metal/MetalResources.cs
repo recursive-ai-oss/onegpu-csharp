@@ -304,9 +304,45 @@ internal sealed class MetalComputePipeline : GpuComputePipeline
     public override void Dispose() => Objc.Release(ref State);
 }
 
+/// <summary>A counter sample buffer holding GPU timestamps, plus what the host needs to know about them: which are written and when the writer finishes.</summary>
 internal sealed class MetalTimestampSet : GpuTimestampSet
 {
-    public override void Dispose()
+    nint _buffer;
+    readonly ulong[] _written;
+    readonly ulong[] _pairStart;
+
+    internal MetalTimestampSet(nint buffer, uint count)
     {
+        _buffer = buffer;
+        Count = count;
+        _written = new ulong[(count + 63) / 64];
+        _pairStart = new ulong[(count + 63) / 64];
     }
+
+    /// <summary>The MTLCounterSampleBuffer.</summary>
+    internal nint Buffer => _buffer;
+
+    /// <summary>Serial of the latest submission that records into the set; its results are readable once that submission has completed.</summary>
+    internal ulong PendingSerial;
+
+    /// <summary>One past the highest slot any pass has been given.</summary>
+    internal uint Extent;
+
+    /// <summary>Notes that a pass writes slots <paramref name="start"/> (its beginning) and <paramref name="start"/> + 1 (its end).</summary>
+    internal void MarkPair(uint start)
+    {
+        _written[start >> 6] |= 1UL << (int)(start & 63);
+        var end = start + 1;
+        _written[end >> 6] |= 1UL << (int)(end & 63);
+        _pairStart[start >> 6] |= 1UL << (int)(start & 63);
+        _pairStart[end >> 6] &= ~(1UL << (int)(end & 63));
+        Extent = Math.Max(Extent, end + 1);
+    }
+
+    internal bool IsWritten(uint query) => (_written[query >> 6] & (1UL << (int)(query & 63))) != 0;
+
+    /// <summary>The slot recorded together with <paramref name="query"/>: the end of the pass for a beginning, the beginning for an end.</summary>
+    internal uint PartnerOf(uint query) => (_pairStart[query >> 6] & (1UL << (int)(query & 63))) != 0 ? query + 1 : query - 1;
+
+    public override void Dispose() => Objc.Release(ref _buffer);
 }

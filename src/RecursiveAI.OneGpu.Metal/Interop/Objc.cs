@@ -146,6 +146,19 @@ internal struct MTLViewport
     public double OriginX, OriginY, Width, Height, ZNear, ZFar;
 }
 
+/// <summary>NSRange: a location and a length.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct NSRange
+{
+    public nuint Location, Length;
+
+    public NSRange(nuint location, nuint length)
+    {
+        Location = location;
+        Length = length;
+    }
+}
+
 /// <summary>MTLScissorRect.</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct MTLScissorRect
@@ -183,6 +196,12 @@ internal static class MT
 
     // MTLResourceOptions (storage mode lives in bits 4..7)
     public const nuint StorageShared = 0, StoragePrivate = 2 << 4;
+
+    // MTLCounterSamplingPoint
+    public const nuint SamplingAtStageBoundary = 0;
+
+    // The value a counter sample holds when it could not be taken (MTLCounterErrorValue).
+    public const ulong CounterErrorValue = ulong.MaxValue;
 
     // MTLStorageMode
     public const nuint StorageModePrivate = 2;

@@ -13,6 +13,15 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
     MetalRenderPass? _renderPass;
     MetalComputePass? _computePass;
 
+    // Pass timing: which sample buffer the passes write into, and which of its slots are next.
+    MetalTimestampSet? _timingSet;
+    uint _timingFirst;
+    uint _timingMax;
+    uint _timingUsed;
+
+    /// <summary>Timestamp sets this recording writes into; the device marks them pending on the submission that carries it.</summary>
+    internal readonly List<MetalTimestampSet> TimedSets = new(2);
+
     internal MetalEncoder(MetalDevice dev)
     {
         _dev = dev;
@@ -26,6 +35,9 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
         _blit = 0;
         _inPass = false;
         _finished = false;
+        _timingSet = null;
+        _timingUsed = 0;
+        TimedSets.Clear();
     }
 
     internal MetalDevice Device => _dev;
@@ -174,6 +186,16 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
             }
         }
 
+        var timed = TakeTiming();
+        if (timed >= 0)
+        {
+            // The pass is bracketed by its first vertex work and its last fragment work, the widest span stage-boundary sampling offers.
+            var a = Msg.Obj(Msg.Obj(rpd, Sel.sampleBufferAttachments), Sel.objectAtIndexedSubscript_, (nuint)0);
+            Msg.Void(a, Sel.setSampleBuffer_, _timingSet!.Buffer);
+            Msg.Void(a, Sel.setStartOfVertexSampleIndex_, (nuint)timed);
+            Msg.Void(a, Sel.setEndOfFragmentSampleIndex_, (nuint)timed + 1);
+        }
+
         var enc = Msg.Obj(_cb, Sel.renderCommandEncoderWithDescriptor_, rpd);
         if (enc == 0)
         {
@@ -192,7 +214,22 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
         EnsureOpen();
         EndBlit();
         using var pool = new Pool();
-        var enc = Msg.Obj(_cb, Sel.computeCommandEncoder);
+        var timed = TakeTiming();
+        nint enc;
+        if (timed >= 0)
+        {
+            var pd = Msg.Obj(Cls.MTLComputePassDescriptor, Sel.computePassDescriptor);
+            var a = Msg.Obj(Msg.Obj(pd, Sel.sampleBufferAttachments), Sel.objectAtIndexedSubscript_, (nuint)0);
+            Msg.Void(a, Sel.setSampleBuffer_, _timingSet!.Buffer);
+            Msg.Void(a, Sel.setStartOfEncoderSampleIndex_, (nuint)timed);
+            Msg.Void(a, Sel.setEndOfEncoderSampleIndex_, (nuint)timed + 1);
+            enc = Msg.Obj(_cb, Sel.computeCommandEncoderWithDescriptor_, pd);
+        }
+        else
+        {
+            enc = Msg.Obj(_cb, Sel.computeCommandEncoder);
+        }
+
         if (enc == 0)
         {
             throw new GpuException("Metal could not begin a compute pass");
@@ -339,11 +376,51 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
     }
 
     /// <inheritdoc />
-    public override void BeginPassTiming(in PassTiming timing) =>
-        throw new GpuUnsupportedException("pass timing is not supported by the Metal backend yet (GpuCapabilities.Timestamps is false)");
+    public override void BeginPassTiming(in PassTiming timing)
+    {
+        EnsureOpen();
+        var set = timing.Set as MetalTimestampSet ?? throw new ArgumentException("timestamp set belongs to another backend", nameof(timing));
+        if ((ulong)timing.First + (ulong)timing.MaxPasses * 2 > set.Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timing), "timing range extends past the end of the timestamp set");
+        }
+
+        _timingSet = set;
+        _timingFirst = timing.First;
+        _timingMax = timing.MaxPasses;
+        _timingUsed = 0;
+    }
 
     /// <inheritdoc />
-    public override uint EndPassTiming() => 0;
+    public override uint EndPassTiming()
+    {
+        EnsureOpen();
+        var n = _timingUsed;
+        _timingSet = null;
+        _timingUsed = 0;
+        return n;
+    }
+
+    /// <summary>The first of the two slots the next pass writes, or -1 when timing is off or its passes are used up.</summary>
+    int TakeTiming()
+    {
+        if (_timingSet is null || _timingUsed >= _timingMax)
+        {
+            return -1;
+        }
+
+        var query = _timingFirst + (_timingUsed * 2);
+        _timingUsed++;
+        _timingSet.MarkPair(query);
+        // Not readable until a submission carrying this recording completes; the device replaces the marker when it submits.
+        _timingSet.PendingSerial = ulong.MaxValue;
+        if (!TimedSets.Contains(_timingSet))
+        {
+            TimedSets.Add(_timingSet);
+        }
+
+        return (int)query;
+    }
 }
 
 /// <summary>State shared by render and compute passes: the bound groups and which still need to be written to the encoder.</summary>

@@ -93,6 +93,116 @@ public sealed class ComputeTests
         }
     }
 
+    /// <summary>
+    /// GPU time of a compute pass is in nanoseconds and within the wall time of the run that contained it. The work grows until the run is long
+    /// enough (tens of milliseconds) that submission overhead is small next to it, so a wrong tick rate shows as a wrong ratio.
+    /// </summary>
+    [Fact]
+    public void ComputePassTimingIsOrderedAndMatchesTheWallClock()
+    {
+        using var gpu = new GpuFixture();
+        var d = gpu.Device;
+        if (!d.Capabilities.Timestamps)
+        {
+            return;
+        }
+
+        using var kernel = d.CreateComputeKernel(new ShaderSource(ShaderStage.Compute, Spin.Burn.EntryPoint) { SpirV = Spin.Burn.SpirV, Wgsl = Spin.Burn.Wgsl, WgslEntryPoint = Spin.Burn.WgslEntryPoint, Msl = Spin.Burn.Msl, MslFunctionName = Spin.Burn.MslFunctionName, Layout = Spin.Burn.Layout });
+        const uint Threads = 1 << 16;
+        using var result = d.CreateBuffer<float>((int)Threads);
+        using var group = kernel.CreateBindGroup(d, 0, [BindGroupEntry.ForBuffer(0, result.Buffer)]);
+        using var set = d.CreateTimestampSet(4);
+        var (gx, gy, gz) = kernel.GroupsFor(Threads);
+
+        void Record(GpuCommandEncoder enc, uint iterations)
+        {
+            var pass = enc.BeginComputePass();
+            pass.SetPipeline(kernel.Pipeline);
+            pass.SetBindGroup(0, group);
+            pass.SetPushConstants(0, BitConverter.GetBytes(iterations));
+            pass.Dispatch(gx, gy, gz);
+            pass.EndPass();
+        }
+
+        var t = new ulong[4];
+        uint iterations = 1 << 10;
+        double wallNs = 0;
+        for (var attempt = 0; attempt < 14; attempt++, iterations *= 2)
+        {
+            var enc = d.BeginCommands();
+            enc.BeginPassTiming(new PassTiming(set, 0, 2));
+            Record(enc, iterations);
+            Record(enc, iterations * 2);
+            Assert.Equal(2u, enc.EndPassTiming());
+            d.WaitIdle();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            d.Submit(enc);
+            d.WaitIdle();
+            wallNs = clock.Elapsed.TotalMilliseconds * 1e6;
+            Assert.True(d.TryReadTimestamps(set, 0, t), "the timestamps of a finished submission are readable");
+            if (wallNs > 60e6)
+            {
+                break;
+            }
+        }
+
+        var first = (double)(t[1] - t[0]);
+        var second = (double)(t[3] - t[2]);
+        Assert.True(t[1] > t[0] && t[3] > t[2], "each pass ends after it begins");
+        Assert.True(t[2] >= t[1], "passes run in order");
+
+        // The pair of passes fits inside the wall time of the submit-and-wait, and (the wall time being mostly GPU work) fills most of it.
+        var total = first + second;
+        Assert.True(total <= wallNs * 1.02, $"GPU time {total / 1e6:F2} ms exceeds wall time {wallNs / 1e6:F2} ms");
+        Assert.True(total >= wallNs * 0.3, $"GPU time {total / 1e6:F2} ms is far below wall time {wallNs / 1e6:F2} ms");
+
+        // The second pass does twice the work of the first.
+        Assert.InRange(second / first, 1.4, 2.8);
+        Console.WriteLine($"compute pass timing on {d.Adapter.Name}: {first / 1e6:F3} ms and {second / 1e6:F3} ms of {wallNs / 1e6:F3} ms wall (iterations {iterations})");
+    }
+
+    /// <summary>Many timed passes in one command buffer give timestamps that never go backwards.</summary>
+    [Fact]
+    public void ManyTimedPassesStayInOrder()
+    {
+        using var gpu = new GpuFixture();
+        var d = gpu.Device;
+        if (!d.Capabilities.Timestamps)
+        {
+            return;
+        }
+
+        using var kernel = d.CreateComputeKernel(new ShaderSource(ShaderStage.Compute, Spin.Burn.EntryPoint) { SpirV = Spin.Burn.SpirV, Wgsl = Spin.Burn.Wgsl, WgslEntryPoint = Spin.Burn.WgslEntryPoint, Msl = Spin.Burn.Msl, MslFunctionName = Spin.Burn.MslFunctionName, Layout = Spin.Burn.Layout });
+        using var result = d.CreateBuffer<float>(64);
+        using var group = kernel.CreateBindGroup(d, 0, [BindGroupEntry.ForBuffer(0, result.Buffer)]);
+        const uint Passes = 256;
+        using var set = d.CreateTimestampSet(Passes * 2);
+        var enc = d.BeginCommands();
+        enc.BeginPassTiming(new PassTiming(set, 0, Passes));
+        for (var i = 0; i < Passes; i++)
+        {
+            var pass = enc.BeginComputePass();
+            pass.SetPipeline(kernel.Pipeline);
+            pass.SetBindGroup(0, group);
+            pass.SetPushConstants(0, BitConverter.GetBytes(1u));
+            pass.Dispatch(1, 1, 1);
+            pass.EndPass();
+        }
+
+        Assert.Equal(Passes, enc.EndPassTiming());
+        d.Submit(enc);
+        d.WaitIdle();
+        var t = new ulong[Passes * 2];
+        Assert.True(d.TryReadTimestamps(set, 0, t));
+        for (var i = 1; i < t.Length; i++)
+        {
+            Assert.True(t[i] >= t[i - 1], $"timestamp {i} is earlier than timestamp {i - 1}");
+        }
+
+        Assert.True(t[^1] > t[0], "the passes took time");
+        Console.WriteLine($"{Passes} one-group passes on {d.Adapter.Name} spanned {t[^1] - t[0]} ns");
+    }
+
     [Fact]
     public async Task FillWritesOnlyTheRequestedRange()
     {
