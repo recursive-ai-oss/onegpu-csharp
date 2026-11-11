@@ -137,7 +137,7 @@ public sealed class ConvTests
         var res = hasResidual ? Rounded(Rig.Random(ny, seed + 3, -1f, 1f), half) : null;
         var want = ConvReference.Conv(problem, x, w, bias, res);
         var pad = new double[1];
-        var perImageColumns = ConvKernels.ColumnElements(problem) / p.Batch;
+        var perImageColumns = Math.Max(ConvKernels.ColumnElements(problem) / p.Batch, k.Scratch(problem, half).ColumnElementsPerImage);
         if (half)
         {
             using var bx = Upload<Half>(d, x, p.OffsetX, 0.25f);
@@ -213,6 +213,14 @@ public sealed class ConvTests
         yield return ("1d stride 2", ConvProblem.Conv1D(1, 4, 33, 6, 3, stride: 2, padBegin: 1, padEnd: 1));
         yield return ("1d depthwise", ConvProblem.Conv1D(2, 12, 40, 12, 7, padBegin: 3, padEnd: 3, groups: 12));
         yield return ("larger", P(2, 64, 28, 28, 96, 3, 3, pad: 1));
+
+        // Small grids and deep k: the matrix-hardware kernel cuts k into ranges (whole 16-wide steps, the last one ragged) and a second pass adds them.
+        yield return ("split k 3x3", P(1, 128, 7, 7, 64, 3, 3, pad: 1));
+        yield return ("split k 3x3 ragged k", P(2, 100, 7, 7, 96, 3, 3, pad: 1));
+        yield return ("split k 1x1", P(1, 1024, 7, 7, 64, 1, 1));
+        yield return ("split k 1x1 odd depth", P(1, 997, 5, 5, 33, 1, 1));
+        yield return ("split k groups 2", P(1, 256, 7, 7, 128, 3, 3, pad: 1, groups: 2));
+        yield return ("split k stride 2", P(1, 256, 14, 14, 256, 3, 3, stride: 2, pad: 1));
     }
 
     [Fact]
@@ -261,7 +269,7 @@ public sealed class ConvTests
         using var gpu = new GpuFixture();
         var d = gpu.Device;
         using var k = Make(d, GpuKernelMode.Deterministic, true);
-        var layers = new[] { P(2, 16, 14, 14, 32, 3, 3, pad: 1), P(2, 32, 14, 14, 64, 1, 1), P(2, 24, 15, 15, 24, 3, 3, pad: 1, groups: 24), P(1, 3, 40, 40, 16, 7, 7, stride: 2, pad: 3), P(1, 8, 9, 9, 12, 3, 3, pad: 1, groups: 2) };
+        var layers = new[] { P(2, 16, 14, 14, 32, 3, 3, pad: 1), P(2, 32, 14, 14, 64, 1, 1), P(2, 24, 15, 15, 24, 3, 3, pad: 1, groups: 24), P(1, 3, 40, 40, 16, 7, 7, stride: 2, pad: 3), P(1, 8, 9, 9, 12, 3, 3, pad: 1, groups: 2), P(1, 512, 7, 7, 512, 3, 3, pad: 1), P(1, 1024, 7, 7, 128, 1, 1) };
         foreach (var half in new[] { false, true })
         {
             var differ = 0;
@@ -279,7 +287,7 @@ public sealed class ConvTests
                 hashes.Add(a.Hash[..6]);
             }
 
-            Rig.Row(d, "conv", half ? "f16" : "f32", "deterministic: two runs of 5 layer shapes", $"runs with different hashes {differ}; hashes {string.Join(" ", hashes)}");
+            Rig.Row(d, "conv", half ? "f16" : "f32", "deterministic: two runs of 7 layer shapes (the last two with split k)", $"runs with different hashes {differ}; hashes {string.Join(" ", hashes)}");
             Assert.Equal(0, differ);
         }
     }
@@ -290,17 +298,20 @@ public sealed class ConvTests
         using var gpu = new GpuFixture();
         var d = gpu.Device;
         using var k = Make(d, GpuKernelMode.Deterministic, true);
-        var p = P(5, 8, 12, 12, 16, 3, 3, pad: 1) with { Activation = new GpuActivation(GpuUnaryOp.Relu) };
-        foreach (var half in new[] { false, true })
+        // The second shape has a grid small enough for k to be split: the ranges, and so the order of the sums, must not depend on how the batch is chunked.
+        foreach (var p in new[] { P(5, 8, 12, 12, 16, 3, 3, pad: 1) with { Activation = new GpuActivation(GpuUnaryOp.Relu) }, P(3, 192, 7, 7, 96, 3, 3, pad: 1) with { Activation = new GpuActivation(GpuUnaryOp.Relu) } })
         {
-            var whole = await RunConv(d, k, p, half, true, false, 5, false);
-            foreach (var images in new[] { 1, 2 })
+            foreach (var half in new[] { false, true })
             {
-                var chunked = await RunConv(d, k, p, half, true, false, 5, false, chunkImages: images);
-                Assert.Equal(whole.Hash, chunked.Hash);
-            }
+                var whole = await RunConv(d, k, p, half, true, false, 5, false);
+                foreach (var images in new[] { 1, 2 })
+                {
+                    var chunked = await RunConv(d, k, p, half, true, false, 5, false, chunkImages: images);
+                    Assert.Equal(whole.Hash, chunked.Hash);
+                }
 
-            Rig.Row(d, "conv", half ? "f16" : "f32", "batch of 5 in chunks of 5, 2 and 1 images with caller-supplied scratch", "hashes equal");
+                Rig.Row(d, "conv", half ? "f16" : "f32", $"batch of {p.Batch} ({p.InChannels}->{p.OutChannels} {p.Height}x{p.Width}) in chunks of {p.Batch}, 2 and 1 images with caller-supplied scratch", "hashes equal");
+            }
         }
     }
 

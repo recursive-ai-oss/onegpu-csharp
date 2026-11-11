@@ -28,7 +28,7 @@
 |---|---|
 | depthwise (one input channel per group, any channel multiplier) | direct kernel, one thread per output element, window order fixed |
 | every other convolution on the portable matrix kernel (float32 everywhere; half on devices without matrix hardware) | **implicit GEMM**: a 64x64x16 tile kernel that gathers the input window while it loads the tile; float32 fuses bias, residual and activation into the store, half writes float32 accumulators and an epilogue pass finishes |
-| float32 on Metal (simdgroup matrices) | **implicit GEMM on matrix hardware** (`ConvCoopF32.hlsl`): the 4-subgroup 64x64x16 simdgroup tile of `Gemm`, the window gathered while the input tile is staged (no column matrix), the bias, residual and activation applied as the result is stored, so the output is written once. A pointwise convolution (1x1, stride 1, no padding) whose tile lies inside the output reads weights and input straight from memory with no staging. Grids under 40 workgroups use a 64x32 tile. Fast mode only |
+| float32 on Metal (simdgroup matrices) | **implicit GEMM on matrix hardware** (`ConvCoopF32.hlsl`): the 4-subgroup 64x64x16 simdgroup tile of `Gemm`, the window gathered while the input tile is staged (no column matrix), the bias, residual and activation applied as the result is stored, so the output is written once. A pointwise convolution (1x1, stride 1, no padding) whose tile lies inside the output reads weights and input straight from memory with no staging. Grids under 40 workgroups use a 64x32 tile. Both modes (see Determinism) |
 | 1x1, stride 1, no padding, with matrix hardware (half) | `Gemm` on the input as it lies (no unfolding) |
 | any other shape with matrix hardware (half) | im2col (Chellapilla et al., 2006) into the column scratch, then `Gemm` (cooperative or simdgroup matrices) and the epilogue pass; groups loop |
 | transposed convolution | `Gemm` of the transposed weights with the input, then a gathering col2im (one thread per output element, no atomics) with the same epilogue |
@@ -58,9 +58,22 @@ Convolution layers summed over the model's layer list, before and after the matr
 | MobileNetV3-large | 1 | 5.8 ms | 4.3 ms |
 | DBNet 512 | 1 | 9.9 ms | 7.2 ms |
 
-Float16 and the deterministic mode are unchanged by this kernel. The late layers of a classifier at batch 1 (14 x 14 and 7 x 7 images, 4608 deep) run at 130-300 GFLOP/s: the grid has too few
-workgroups and each runs its 16-wide k steps one after another; split-k (a second pass or atomics) or folding the batch into the pixel axis would help and are not built. A version that
-prefetched the next tile into registers ran 40 % slower (register pressure), and wider narrow-tile thresholds ran slower at batch 8.
+The late layers of a classifier at batch 1 (14 x 14 and 7 x 7 images, 4608 deep) ran at 130-300 GFLOP/s: the grid had too few workgroups and each ran its 16-wide k steps one after another.
+They now **split k**: when the grid has fewer than 128 workgroups and k has at least 32 steps of 16, k is cut into up to 8 equal ranges (at least 16 steps each; the cut depends only on the shape).
+Each range writes a raw partial plane to the scratch, and the epilogue pass adds the planes in range order, then bias, residual and activation (so any activation works). No atomics. `Scratch()` reports
+the planes. Batch is part of the shape, so chunking an oversized batch does not change a bit.
+
+| Model (float32, fast, indicative) | batch | split-k off | split-k on |
+|---|---|---|---|
+| ResNet-50 | 1 | 24-26 ms | 20.3-22.3 ms (earlier session: 19 to 16.9) |
+| MobileNetV3-large | 1 | 4.24 ms | 3.50 ms |
+| DBNet 512 | 1 | no layer splits (k under 32 steps) | no layer splits; sums differ by run order on the shared GPU clock, not by kernel |
+| ResNet-50 | 8 | 90.0 ms | 90.4 ms |
+| MobileNetV3-large | 8 | 17.9 ms | 17.6 ms |
+
+The M2's clock state moves ResNet-50 b1 by about 20 % between sessions, so the table pairs runs made alternately in one session (five pairs; split-k won every one). Deterministic mode, ResNet-50 b1 20.4 ms, b8 90.5 ms.
+
+A version that prefetched the next tile into registers ran 40 % slower (register pressure), and wider narrow-tile thresholds ran slower at batch 8.
 
 ## Pooling and resize
 
@@ -84,6 +97,8 @@ prefetched the next tile into registers ran 40 % slower (register pressure), and
 
 ## Determinism
 
-No kernel here uses an atomic, a subgroup operation or a split of the accumulation: each output is summed in an order fixed by the shape (the matrix kernel's, or the window order of
-the direct kernels). `GpuKernelMode.Deterministic` selects the portable matrix kernel, so results are bit-identical run to run on one device and driver; fast mode may use matrix
-hardware, whose summation order is the hardware's. The tests run two passes of five layer shapes per element type and compare hashes.
+No kernel here uses an atomic or a subgroup operation. Each output is summed in an order fixed by the shape: the matrix kernel's, the window order of the direct kernels, or, for split-k, shape-determined
+ranges of k added in range order. On Apple GPUs `GpuKernelMode.Deterministic` runs the float32 simdgroup implicit kernel too (a simdgroup matrix product is a fixed function of its operands, and each
+output tile is summed by one simdgroup in k order), which is 1.6-1.7x faster than the scalar tile it used before (ResNet-50 b1 27-29 ms to 16.4-17.1 ms, b8 145 to 90 ms, MobileNetV3 b1 5.2 to 3.8 ms); elsewhere it selects the portable
+matrix kernel. Results are bit-identical run to run on one device and driver in that mode; `Fast` may use matrix hardware on other devices, whose summation order is the hardware's. The tests run two passes of seven layer shapes
+(two split) per element type and compare hashes.

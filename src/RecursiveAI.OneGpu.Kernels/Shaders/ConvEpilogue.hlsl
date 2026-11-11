@@ -3,6 +3,10 @@
 // F32 works in place: the matrix product wrote the accumulators into y and this pass rewrites them. F16 reads float32 accumulators from a
 // scratch buffer and writes halves (the bias and the residual are halves too). The order is the one of the graph the operator fuses: bias
 // first, then the residual, then the activation, each rounded in float32.
+//
+// SPLIT (float32) is the end of a convolution whose k axis was cut into ranges (ConvCoopF32.hlsl): the accumulator of an element is the sum of its
+// Splits planes of partial sums, added in range order, one float32 addition at a time, so the result does not depend on scheduling. The planes
+// are in a scratch buffer, SplitStride elements apart, and y is only written.
 
 #include "Functions.hlsl"
 
@@ -21,6 +25,8 @@ struct EpilogueParams
     uint Act;       // 0 none, else the unary operation number + 1
     float P0;
     float P1;
+    uint Splits;
+    uint SplitStride;
 };
 
 [[vk::push_constant]] ConstantBuffer<EpilogueParams> CP;
@@ -34,7 +40,7 @@ typedef float Elem;
 [[vk::binding(0, 0)]] RWStructuredBuffer<Elem> EpY;
 [[vk::binding(1, 0)]] StructuredBuffer<Elem> EpBias;
 [[vk::binding(2, 0)]] StructuredBuffer<Elem> EpRes;
-#if F16
+#if F16 || SPLIT
 [[vk::binding(3, 0)]] StructuredBuffer<float> EpAcc;
 #endif
 
@@ -42,6 +48,12 @@ float EpilogueValue(uint i)
 {
 #if F16
     float v = EpAcc[CP.OffAcc + i];
+#elif SPLIT
+    float v = EpAcc[CP.OffAcc + i];
+    for (uint s = 1u; s < CP.Splits; s++)
+    {
+        v += EpAcc[CP.OffAcc + s * CP.SplitStride + i];
+    }
 #else
     float v = EpY[CP.OffY + i];
 #endif

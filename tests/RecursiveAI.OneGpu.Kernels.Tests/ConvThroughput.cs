@@ -26,6 +26,8 @@ public sealed class ConvThroughput
         foreach (var half in new[] { false, true })
         {
             using var k = ConvTests.Make(d, deterministic ? GpuKernelMode.Deterministic : GpuKernelMode.Fast, !noHardware);
+            k.AllowKSplit = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_NOSPLIT") != "1";
+            k.AllowCoopImplicit = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_NOCOOP") != "1";
             foreach (var batch in batches)
             {
                 foreach (var (model, layers) in new (string, List<ConvTests.Layer>)[] { ("ResNet-50", ConvTests.ResNet50(batch, 224)), ("MobileNetV3-large", ConvTests.MobileNetV3(batch, 224)), ("DBNet 512", ConvTests.DbNet(batch, 512)) })

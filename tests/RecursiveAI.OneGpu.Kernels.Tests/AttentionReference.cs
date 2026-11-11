@@ -11,14 +11,15 @@ internal static class AttentionReference
     }
 
     internal sealed record Case(string Name, int B, int H, int Hkv, int Sq, int Sk, int D, bool Causal = false, int? CausalOff = null, int Mask = 0, bool Lens = false,
-        int Layouts = 0, GpuAttentionMaskedRows Policy = GpuAttentionMaskedRows.Nan);
+        int Layouts = 0, GpuAttentionMaskedRows Policy = GpuAttentionMaskedRows.Nan, float ScaleMul = 1f);
 
     // Mask kinds: 0 none; 1 additive [1,1,Sq,Sk] random with some -inf; 2 additive [B,H,Sq,Sk]; 3 key padding [B,1,1,Sk] with -inf at the tail;
-    // 4 [1,1,Sq,Sk] in which every third row is entirely -inf; 5 one NaN in the [1,1,Sq,Sk] mask.
+    // 4 [1,1,Sq,Sk] in which every third row is entirely -inf; 5 one NaN in the [1,1,Sq,Sk] mask; 6 [1,1,Sq,Sk] rising by 0.3 per key, so the running maximum
+    // of every row rises with every few blocks of keys.
     internal static int[] MaskShape(Case c) => c.Mask switch
     {
         0 => [],
-        1 or 4 or 5 => [1, 1, c.Sq, c.Sk],
+        1 or 4 or 5 or 6 => [1, 1, c.Sq, c.Sk],
         2 => [c.B, c.H, c.Sq, c.Sk],
         _ => [c.B, 1, 1, c.Sk],
     };
@@ -42,6 +43,13 @@ internal static class AttentionReference
         var m = Rig.Random(n, c.Sq + 3 * c.Sk, -1f, 1f);
         switch (c.Mask)
         {
+            case 6:
+                for (var i = 0; i < n; i++)
+                {
+                    m[i] += 0.3f * (i % c.Sk);
+                }
+
+                break;
             case 1:
                 for (var i = 0; i < n; i++)
                 {

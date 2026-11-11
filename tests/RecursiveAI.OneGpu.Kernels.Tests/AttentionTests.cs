@@ -69,6 +69,14 @@ public sealed class AttentionTests
             yield return new Case($"head dim {d}", 2, 2, 2, 37, 45, d, Mask: 1, Layouts: d % 8 == 0 ? 1 : 0);
         }
 
+        // Scores spread widely, and rising with the key index, so the running maximum of the matrix kernel rises often and it rescales its accumulators.
+        yield return new Case("wide scores d64", 2, 4, 4, 70, 600, 64, Mask: 1, ScaleMul: 4f);
+        yield return new Case("wide scores d32 causal", 1, 3, 3, 130, 130, 32, Causal: true, ScaleMul: 4f);
+        yield return new Case("wide scores d48", 1, 2, 2, 20, 300, 48, ScaleMul: 4f);
+        yield return new Case("wide scores, one query", 2, 3, 3, 1, 700, 64, ScaleMul: 4f);
+        yield return new Case("rising scores d64", 1, 2, 2, 50, 500, 64, Mask: 6);
+        yield return new Case("rising scores d32, 17 queries", 1, 2, 2, 17, 301, 32, Mask: 6);
+        yield return new Case("rising scores d64, 15 queries", 1, 2, 2, 15, 301, 64, Mask: 6);
         yield return new Case("head dim 128 split", 1, 2, 2, 2, 600, 128, Causal: true);
         yield return new Case("head dim 256 split", 1, 2, 2, 2, 600, 256);
     }
@@ -102,7 +110,7 @@ public sealed class AttentionTests
             V = R(Rig.Random(c.B * c.Hkv * c.Sk * c.D, c.Sk + 37, -1f, 1f)),
             Mask = MakeMask(c),
             Lens = c.Lens ? MakeLens(c) : null,
-            Scale = 1f / MathF.Sqrt(c.D),
+            Scale = c.ScaleMul / MathF.Sqrt(c.D),
         };
         (p.Rows, p.Want) = Compute(c, p.Scale, p.Q, p.K, p.V, p.Mask, p.Lens);
         return p;
@@ -253,7 +261,7 @@ public sealed class AttentionTests
         {
             yield return ("auto fast", Auto, GpuKernelMode.Fast);
             yield return ("auto deterministic", Auto, GpuKernelMode.Deterministic);
-            if (Coop is not null && half)
+            if (Coop is not null && (half || Coop.FloatVariant == "cooperative-matrix"))
             {
                 yield return ("matrix hardware deterministic", Coop, GpuKernelMode.Deterministic);
                 yield return ("matrix hardware ruled out deterministic", NoCoop, GpuKernelMode.Deterministic);
@@ -574,10 +582,13 @@ public sealed class AttentionTests
         using var kernels = new Kernels(d);
         using var gemm = new Gemm(d, GemmElementType.F32);
         using var soft = new SoftmaxKernels(d);
-        foreach (var (name, b, h, sq, sk, dd, causal) in new[]
+        // The last two rows use a scale of 1, which spreads the scores over a standard deviation of about 11 so that the running maximum of a row rises
+        // often: the cost of the kernels that rescale their accumulators when it does.
+        foreach (var (name, b, h, sq, sk, dd, causal, scale) in new[]
         {
-            ("bert B1 S512", 1, 12, 512, 512, 64, false), ("bert B8 S512", 8, 12, 512, 512, 64, false), ("minilm B8 S128", 8, 12, 128, 128, 32, false),
-            ("whisper encoder S1500", 1, 12, 1500, 1500, 64, false), ("whisper decoder cache448", 1, 12, 1, 448, 64, true), ("whisper cross 1 query", 1, 12, 1, 1500, 64, false),
+            ("bert B1 S512", 1, 12, 512, 512, 64, false, 0f), ("bert B8 S512", 8, 12, 512, 512, 64, false, 0f), ("minilm B8 S128", 8, 12, 128, 128, 32, false, 0f),
+            ("whisper encoder S1500", 1, 12, 1500, 1500, 64, false, 0f), ("whisper decoder cache448", 1, 12, 1, 448, 64, true, 0f), ("whisper cross 1 query", 1, 12, 1, 1500, 64, false, 0f),
+            ("bert B8 S512 wide scores", 8, 12, 512, 512, 64, false, 1f), ("whisper encoder S1500 wide scores", 1, 12, 1500, 1500, 64, false, 1f),
         })
         {
             var bh = b * h;
@@ -591,6 +602,11 @@ public sealed class AttentionTests
             var s = new GemmProblem(sq, sk, dd) { Batch = bh, TransposeB = true, Alpha = 1f / MathF.Sqrt(dd), Lda = dd, Ldb = dd, Ldc = sk, StrideA = sq * dd, StrideB = sk * dd, StrideC = sq * sk };
             var pv = new GemmProblem(sq, dd, sk) { Batch = bh, Lda = sk, Ldb = dd, Ldc = dd, StrideA = sq * sk, StrideB = sk * dd, StrideC = sq * dd };
             var prob = new AttentionProblem(b, h, sq, sk, dd) { Causal = causal };
+            if (scale != 0f)
+            {
+                prob.Scale = scale;
+            }
+
             var unfusedGpu = Time(d, timestamps, e =>
             {
                 gemm.Encode(e, s, q, k, scores);
@@ -615,10 +631,10 @@ public sealed class AttentionTests
 #endif
             }
 
-            foreach (var (vname, fk) in new[] { ("rows", kernels.Rows), ("pairs", kernels.Pairs) }.Where(x => x.Item2 is not null))
+            foreach (var (vname, fk) in new[] { ("rows", kernels.Rows), ("pairs", kernels.Pairs), ("matrix hardware", kernels.Coop?.FloatVariant == "cooperative-matrix" ? kernels.Coop : null) }.Where(x => x.Item2 is not null))
             {
                 var fusedGpu = Time(d, timestamps, e => fk!.Encode(e, prob, q, k, v, o1), out var fusedWall);
-                var auto = fk!.Variant == kernels.Auto.Variant ? " (auto)" : string.Empty;
+                var auto = fk!.FloatVariant == kernels.Auto.FloatVariant ? " (auto)" : string.Empty;
                 var line = $"THROUGHPUT\t{d.Adapter.Name}\t{name}\t{vname}{auto}: fused {fusedGpu / 1000:F1} us gpu {fusedWall / 1000:F1} us wall {flops / fusedGpu:F0} GFLOP/s\tunfused {unfusedGpu / 1000:F1} us gpu {unfusedWall / 1000:F1} us wall\tspeed-up {unfusedGpu / fusedGpu:F2}x gpu";
                 Console.WriteLine(line);
 #if !WEB_BACKEND

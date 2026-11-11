@@ -47,8 +47,9 @@ public enum GpuAttentionVariant
 /// a GPU, the keys are cut into up to 16 contiguous ranges of a multiple of 32 keys (the cut depends only on the shape) whose partial results a second pass
 /// merges in range order through a scratch buffer (<see cref="ScratchLength"/>). There are no atomics and no subgroup arithmetic, and every order is fixed by
 /// the code, so <see cref="GpuKernelMode.Fast"/> and <see cref="GpuKernelMode.Deterministic"/> run the same kernel and give identical bits on one device and
-/// driver; <c>pairs</c> and <c>rows</c> may differ from each other in the last bits, and so may devices. A cooperative-matrix variant would plug in beside
-/// these, chosen in the constructor from the device capabilities.</para>
+/// driver; <c>pairs</c> and <c>rows</c> may differ from each other in the last bits, and so may devices. On matrix hardware (cooperative matrices on Vulkan, simdgroup matrices on Apple GPUs, where
+/// float32 too) a matrix kernel replaces them, chosen in the constructor from the device capabilities; its matrix products are fixed functions of their operands and it keeps the same
+/// guarantees (see <see cref="Variant"/> and <see cref="FloatVariant"/>).</para>
 /// <para>Not thread-safe. Q, K and V may share one buffer; O must not overlap them.</para>
 /// </remarks>
 public sealed class AttentionKernels : IDisposable
@@ -59,6 +60,12 @@ public sealed class AttentionKernels : IDisposable
     /// <summary>The largest head dimension the matrix-hardware kernel covers; larger heads of half tensors use the scalar kernels.</summary>
     public const int CoopHeadDimLimit = 128;
 
+    /// <summary>The largest head dimension the float32 matrix-hardware kernel covers (Apple GPUs); larger heads of float32 tensors use the scalar kernels.</summary>
+    public const int CoopF32HeadDimLimit = 64;
+
+    const int CoopBlockRows = 64;   // query rows per workgroup of the cooperative-matrix kernel on Vulkan
+    const int SimdBlockRows = 64;   // ... of the Apple kernel with its Q fragments read from the tensor (AttentionSimd.hlsl, QD)
+    const int SimdShortBlockRows = 16;   // ... of the Apple kernel with the Q fragments in registers: one simdgroup
     const int MaxSplit = 16;
     const int SplitGranule = 32;
     const int MinKeysPerSplit = 128;
@@ -74,11 +81,12 @@ public sealed class AttentionKernels : IDisposable
 
     readonly GpuDevice _device;
     readonly KernelPipeline?[] _tile = new KernelPipeline?[32];
-    readonly KernelPipeline?[] _coopTile = new KernelPipeline?[6];
+    readonly KernelPipeline?[] _coopTile = new KernelPipeline?[18];
     readonly int _maxBindGroups;
     readonly bool _pairs;
     readonly bool _coop;
     readonly bool _coopBf16;
+    readonly bool _coopF32;
     readonly ulong _budget;
     readonly KernelPipeline?[] _combine = new KernelPipeline?[3];
     GpuBuffer<float>? _scratch;
@@ -119,6 +127,8 @@ public sealed class AttentionKernels : IDisposable
 
         _coop = matrices;
         _coopBf16 = matrices && CoopFits(device, bfloat16: true);
+        // Float32 fragments exist on Apple GPUs only. The family wants them whenever the device offers them, whatever 16-bit support it has.
+        _coopF32 = allowMatrixHardware && (variant is GpuAttentionVariant.Auto or GpuAttentionVariant.Cooperative) && CoopFitsFloat32(device);
         // The scalar kernels still serve float32 tensors and large heads, so they are chosen even when the matrix kernel is.
         _pairs = variant == GpuAttentionVariant.Pairs || ((variant is GpuAttentionVariant.Auto or GpuAttentionVariant.Cooperative) && shuffles && device.Adapter.VendorId == AppleVendorId);
         if (device.Capabilities.Compute.MaxStorageBuffersPerStage is > 0 and < 7)
@@ -131,13 +141,15 @@ public sealed class AttentionKernels : IDisposable
     /// The variant <see cref="GpuKernelMode.Fast"/> and <see cref="GpuKernelMode.Deterministic"/> both use for <see cref="Half"/> tensors with a head dimension up to 128:
     /// <c>cooperative-matrix</c> when the device has matrix hardware for them, otherwise what <see cref="FloatVariant"/> says.
     /// </summary>
-    public string Variant => _coop ? "cooperative-matrix" : FloatVariant;
+    public string Variant => _coop ? "cooperative-matrix" : ScalarVariant;
 
     /// <summary>
     /// The variant used for float32 tensors, and for half tensors when <see cref="Variant"/> is not the matrix kernel: <c>pairs</c> when chosen (two threads
     /// share a query row, each holding half of the head dimension; Apple GPUs), otherwise <c>rows</c> (one thread per query row).
     /// </summary>
-    public string FloatVariant => _pairs ? "pairs" : "rows";
+    public string FloatVariant => _coopF32 ? "cooperative-matrix" : ScalarVariant;
+
+    string ScalarVariant => _pairs ? "pairs" : "rows";
 
     /// <summary>
     /// Floats of scratch the problem needs: 0 when the keys are not split, otherwise one (maximum, sum, accumulator) record of <c>HeadDim + 2</c>
@@ -149,8 +161,8 @@ public sealed class AttentionKernels : IDisposable
     public long ScratchLength(in AttentionProblem problem)
     {
         CheckSizes(problem);
-        var (a, _) = Split(problem, _pairs);
-        var (c, _) = _coop && problem.HeadDim <= CoopHeadDimLimit ? Split(problem, false) : (1, 0);
+        var (a, _) = Split(problem, _pairs ? 32 : 64);
+        var (c, _) = (_coop || _coopF32) && problem.HeadDim <= CoopHeadDimLimit ? Split(problem, CoopRows(problem)) : (1, 0);
         var splits = Math.Max(a, c);
         return splits == 1 ? 0 : checked((long)problem.Batch * problem.Heads * problem.QLen * splits * (problem.HeadDim + 2));
     }
@@ -240,10 +252,10 @@ public sealed class AttentionKernels : IDisposable
             return;
         }
 
-        var coop = half && (bfloat16 ? _coopBf16 : _coop) && p.HeadDim <= CoopHeadDimLimit;
+        var coop = half ? (bfloat16 ? _coopBf16 : _coop) && p.HeadDim <= CoopHeadDimLimit : _coopF32 && p.HeadDim <= CoopF32HeadDimLimit;
         var pairs = _pairs && !coop;
-        var (splits, perSplit) = Split(p, pairs);
-        var blockRows = pairs ? 32 : 64;
+        var (splits, perSplit) = Split(p, coop ? CoopRows(p) : (pairs ? 32 : 64));
+        var blockRows = coop ? CoopRows(p) : (pairs ? 32 : 64);
         var groups = checked((long)p.Batch * p.Heads * ((p.QLen + blockRows - 1) / blockRows) * splits);
         if (groups > int.MaxValue)
         {
@@ -306,7 +318,7 @@ public sealed class AttentionKernels : IDisposable
         w[30] = (uint)perSplit;
 
         var dim = p.HeadDim <= 32 ? 0 : (p.HeadDim <= 64 ? 1 : (p.HeadDim <= 128 ? 2 : 3));
-        var tile = coop ? _coopTile[dim + (bfloat16 ? 3 : 0)] ??= CreateCoopTile(dim, bfloat16) : _tile[dim + (half ? 4 : 0) + (pairs ? 8 : 0) + (perSplit >= BlockwiseSumKeys ? 16 : 0)] ??= CreateTile(half, dim, perSplit >= BlockwiseSumKeys);
+        var tile = coop ? _coopTile[dim + (bfloat16 ? 3 : (half ? 0 : 6)) + (QueryDirect(p) ? 9 : 0)] ??= CreateCoopTile(dim, bfloat16, !half, QueryDirect(p)) : _tile[dim + (half ? 4 : 0) + (pairs ? 8 : 0) + (perSplit >= BlockwiseSumKeys ? 16 : 0)] ??= CreateTile(half, dim, perSplit >= BlockwiseSumKeys);
         Span<GpuBuffer> bound =
         [
             q.Buffer,
@@ -410,14 +422,13 @@ public sealed class AttentionKernels : IDisposable
     }
 
     // How many key ranges, and how many keys in each. Depends only on the shape, so both modes and every device cut alike.
-    static (int Splits, int PerSplit) Split(in AttentionProblem p, bool pairs)
+    static (int Splits, int PerSplit) Split(in AttentionProblem p, int blockRows)
     {
         if (p.Batch == 0 || p.Heads == 0 || p.QLen == 0 || p.KLen < 2 * MinKeysPerSplit)
         {
             return (1, Math.Max(p.KLen, 1));
         }
 
-        var blockRows = pairs ? 32 : 64;
         var blocks = (long)p.Batch * p.Heads * ((p.QLen + blockRows - 1) / blockRows);
         var want = (int)Math.Min(MaxSplit, (TargetGroups + blocks - 1) / blocks);
         var splits = Math.Min(want, p.KLen / MinKeysPerSplit);
@@ -430,6 +441,12 @@ public sealed class AttentionKernels : IDisposable
         per = (per + SplitGranule - 1) / SplitGranule * SplitGranule;
         return ((p.KLen + per - 1) / per, per);
     }
+
+    // The Apple kernel reads its Q fragments from the tensor when the head dimension fills whole fragments and a block of 16 rows fits inside the queries
+    // (it slides the last block back to end at the last row); its workgroup is then four simdgroups. Otherwise it is one simdgroup holding Q in registers.
+    bool QueryDirect(in AttentionProblem p) => _device.Backend == GpuBackend.Metal && p.QLen >= 16 && p.HeadDim is 32 or 64 or 128;
+
+    int CoopRows(in AttentionProblem p) => _device.Backend != GpuBackend.Metal ? CoopBlockRows : (QueryDirect(p) ? SimdBlockRows : SimdShortBlockRows);
 
     static void CheckSizes(in AttentionProblem p)
     {
@@ -539,7 +556,10 @@ public sealed class AttentionKernels : IDisposable
             return false;
         }
 
-        if ((Shaders.AttentionCoop.Variants.Get(new Shaders.AttentionCoop.Key(bf16: bfloat16, hd: Shaders.AttentionCoop.HdValue.D64)).AttnCoop.Layout.RequiredFeatures & ~cc.ShaderFeatures) != DeviceFeatures.None)
+        var required = device.Backend == GpuBackend.Metal
+            ? Shaders.AttentionSimd.Variants.Get(new Shaders.AttentionSimd.Key(elem: bfloat16 ? Shaders.AttentionSimd.ElemValue.Bf16 : Shaders.AttentionSimd.ElemValue.F16, hd: Shaders.AttentionSimd.HdValue.D64, qd: false)).AttnSimd.Layout.RequiredFeatures
+            : Shaders.AttentionCoop.Variants.Get(new Shaders.AttentionCoop.Key(bf16: bfloat16, hd: Shaders.AttentionCoop.HdValue.D64)).AttnCoop.Layout.RequiredFeatures;
+        if ((required & ~cc.ShaderFeatures) != DeviceFeatures.None)
         {
             return false;
         }
@@ -558,14 +578,58 @@ public sealed class AttentionKernels : IDisposable
         return false;
     }
 
+    // Float32 simdgroup matrices (8x8x8) with a float32 accumulator, 32-wide simdgroups; the kernel's tiles are 16 keys, so a head dimension of 64
+    // keeps its workgroup memory (about 13 KB) under half of Metal's limit, which shader validation counts twice.
+    static bool CoopFitsFloat32(GpuDevice device)
+    {
+        const uint Invocations = 128;
+        const uint WorkgroupBytes = (16 * (64 + 8) * 4) + (4 * 256 * 4) + (4 * 16 * 16 * 4);
+        if (device.Backend != GpuBackend.Metal)
+        {
+            return false;
+        }
+
+        var cc = device.Capabilities.Compute;
+        if (cc.SubgroupMinSize > 32 || cc.SubgroupMaxSize < 32 || !cc.FullSubgroups || cc.MaxWorkgroupInvocations < Invocations || cc.MaxWorkgroupSizeX < Invocations
+            || cc.MaxWorkgroupMemoryBytes < 2 * WorkgroupBytes || (cc.SubgroupOperations & GpuSubgroupOperations.Shuffle) == 0)
+        {
+            return false;
+        }
+
+        if ((Shaders.AttentionSimd.Variants.Get(new Shaders.AttentionSimd.Key(elem: Shaders.AttentionSimd.ElemValue.F32, hd: Shaders.AttentionSimd.HdValue.D64, qd: false)).AttnSimd.Layout.RequiredFeatures & ~cc.ShaderFeatures) != DeviceFeatures.None)
+        {
+            return false;
+        }
+
+        foreach (var shape in cc.CooperativeMatrices)
+        {
+            if (shape is { AType: GpuScalarType.F32, BType: GpuScalarType.F32, CType: GpuScalarType.F32, ResultType: GpuScalarType.F32, Saturating: false, M: 8, N: 8, K: 8 })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>True when <see cref="EncodeBFloat16"/> can run: the device offers bfloat16 matrices with a float32 accumulator and the family may use matrix hardware.</summary>
     public bool BFloat16Available => _coopBf16;
 
-    KernelPipeline CreateCoopTile(int dim, bool bfloat16)
+    KernelPipeline CreateCoopTile(int dim, bool bfloat16, bool float32, bool queryDirect)
     {
+        if (_device.Backend == GpuBackend.Metal)
+        {
+            // Apple GPUs run their own matrix kernel, which reads its fragments straight from the tensors and keeps a reference maximum
+            // per row instead of an exact one (AttentionSimd.hlsl).
+            var sd = dim switch { 0 => Shaders.AttentionSimd.HdValue.D32, 1 => Shaders.AttentionSimd.HdValue.D64, _ => Shaders.AttentionSimd.HdValue.D128 };
+            var se = float32 ? Shaders.AttentionSimd.ElemValue.F32 : (bfloat16 ? Shaders.AttentionSimd.ElemValue.Bf16 : Shaders.AttentionSimd.ElemValue.F16);
+            var x = Shaders.AttentionSimd.Variants.Get(new Shaders.AttentionSimd.Key(elem: se, hd: sd, qd: queryDirect)).AttnSimd;
+            return new KernelPipeline(_device, KernelSources.Make(x.EntryPoint, default, x.Msl, x.MslFunctionName, default, null, x.Layout), 7, TileWords, "attention-simd-tile", _maxBindGroups, requiredSubgroupSize: 32);
+        }
+
         var d = dim switch { 0 => Shaders.AttentionCoop.HdValue.D32, 1 => Shaders.AttentionCoop.HdValue.D64, _ => Shaders.AttentionCoop.HdValue.D128 };
         var e = Shaders.AttentionCoop.Variants.Get(new Shaders.AttentionCoop.Key(bf16: bfloat16, hd: d)).AttnCoop;
-        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-coop-tile", _maxBindGroups, requiredSubgroupSize: 32);
+        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, default, null, default, null, e.Layout), 7, TileWords, "attention-coop-tile", _maxBindGroups, requiredSubgroupSize: 32);
     }
 
     KernelPipeline CreateCombine(bool half, bool bfloat16)
