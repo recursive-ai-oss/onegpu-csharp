@@ -20,7 +20,7 @@ Outputs that are null are not written. `Half` tensors follow the usual packing r
 
 1. **Input projection** of every step and both directions: one batched `Gemm` (`Xw = X · Wᵀ`, `Batch` = directions, W through the transposed-B form). The family creates the `Gemm` for its mode, so `Fast` may use matrix hardware for `Half` and `Deterministic` uses the portable tile.
 2. **State setup**: one pass that writes the first hidden state and the cell state from `InitialH`/`InitialC` or zeros.
-3. **One pass per step** (two for a GRU with `linear_before_reset = 0`, because the candidate's product needs `r ⊙ H` of every unit). A pass covers both directions and all batch rows. A workgroup owns eight rows of R (hidden units × gates of the pass) and, for each, 32 lanes
+3. **One pass per step** (two for a GRU with `linear_before_reset = 0`, because the candidate's product needs `r ⊙ H` of every unit). A pass covers both directions and all batch rows. A workgroup owns 32 rows of R (hidden units × gates of the pass) and, for each, 8 lanes
    sum `k = lane, lane + 32, …` in increasing order; the 32 partial sums are combined by a halving tree in shared memory; then one thread per (unit, batch row) does the gate arithmetic. The hidden state is two buffers that swap every step, so no workgroup reads what another writes
    in the same pass; the barrier between passes orders the steps. Rows whose sequence has ended copy their state through.
 4. **One pass per requested output** (Y, Y_h, Y_c): layout, zeroing past the sequence length, rounding to `Half`.

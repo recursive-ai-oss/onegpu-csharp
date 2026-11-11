@@ -19,7 +19,7 @@
 #define BT 8u
 // Lanes that share one row of R, and so the rows a workgroup covers (256 / LANES). Fewer lanes per row means fewer workgroups per pass, each with more
 // work, which is what hides the latency of a pass that is a few microseconds of arithmetic.
-#define LANES 4u
+#define LANES 8u
 #define ROWS (256u / LANES)
 
 struct StepParams

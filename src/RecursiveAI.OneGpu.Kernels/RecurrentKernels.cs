@@ -12,14 +12,14 @@ namespace RecursiveAI.OneGpu.Kernels;
 /// A layer is recorded as: one batched matrix product for the input projection of every step and both directions (<see cref="Gemm"/>, W used as stored
 /// through its transposed-operand form), one pass that sets up the state, one pass per step (two for a GRU whose reset gate is applied before the product,
 /// because the candidate's product needs <c>r * H</c> of every unit), and one pass per requested output. A step pass runs both directions of a bidirectional
-/// layer side by side, all batch rows, and walks each row of R with 32 lanes whose partial sums are combined by a fixed halving tree. The recurrent
+/// layer side by side, all batch rows, and walks each row of R with 8 lanes whose partial sums are combined by a fixed halving tree. The recurrent
 /// state is a hidden-state pair that swaps every step, so a workgroup never reads what another writes in the same pass; ordering between steps comes from the
 /// barriers between passes. A persistent kernel that loops over the steps inside one dispatch would need a barrier across workgroups, which neither Vulkan, Metal
 /// nor WebGPU guarantee to be safe (workgroups of one dispatch may not all be resident), so the step is the unit of dispatch.
 /// </para>
 /// <para>
 /// The order of arithmetic is fixed by the shapes: the input projection is the matrix product of <see cref="Gemm"/> (its order for the mode this family was created for),
-/// each recurrent dot product sums k in four-byte strides of 32 lanes in increasing order and then a halving tree, and the gate arithmetic is ONNX's
+/// each recurrent dot product sums k in strides of 8 lanes in increasing order and then a halving tree, and the gate arithmetic is ONNX's
 /// <c>((xw + rec) + Wb) + Rb</c> followed by the peephole terms, the clip and the activation. There are no atomics and no subgroup arithmetic, so one variant serves
 /// both <see cref="GpuKernelMode"/> values and results are bit-identical from run to run on one device and driver. (Which instructions a compiler fuses into multiply-adds
 /// is the device's, so results differ in the last bits between devices.)
@@ -40,7 +40,7 @@ public sealed class RecurrentKernels : IDisposable
     const int StepWords = 26;
     const int InitWords = 9;
     const int OutWords = 12;
-    const int RowsPerGroup = 64;   // 256 threads / 4 lanes per row; matches ROWS in RecurrentStep.hlsl
+    const int RowsPerGroup = 32;   // 256 threads / 8 lanes per row; matches ROWS in RecurrentStep.hlsl
 
     readonly GpuDevice _device;
     readonly GpuKernelMode _mode;
