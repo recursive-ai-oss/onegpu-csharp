@@ -29,7 +29,6 @@
     <Compile Include="$(Shared)FeatureTests.cs;$(Shared)ComputeTests.cs;$(Shared)RenderTests.cs;$(Shared)Png.cs;$(Shared)ReadHelpers.cs" />
     <OneShader Include="$(Shared)Shaders/*.hlsl" Exclude="$(Shared)Shaders/TextureArray.hlsl" Targets="SpirV;Msl;Wgsl" />
     <EmbeddedResource Include="../../testdata/gpu/*.png" LogicalName="golden/%(Filename)%(Extension)" />
-    <Content Include="../../src/RecursiveAI.OneGpu.WebGpu/wwwroot/onegpu.js" Link="wwwroot/onegpu.js" />
   </ItemGroup>
 
   <ItemGroup>

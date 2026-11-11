@@ -1,5 +1,6 @@
 import { dotnet } from './_framework/dotnet.js';
-import * as gpu from './onegpu.js';
+// The script comes from the WebGpu package's static web asset; registering it here is what a page that manages its own copy does.
+import * as gpu from './_content/RecursiveAI.OneGpu.WebGpu/onegpu.js';
 
 const log = document.getElementById('log');
 try {
