@@ -298,7 +298,7 @@ public sealed class GemmEpilogueTests
     {
         const int Warm = 3, Iterations = 30;
         var timestamps = d.Capabilities.Timestamps;
-        using var set = timestamps ? d.CreateTimestampSet(2 * passes * Iterations) : null;
+        using var set = timestamps ? d.CreateTimestampSet((uint)(2 * passes * Iterations)) : null;
         for (var i = 0; i < Warm; i++)
         {
             Rig.Run(d, record);
