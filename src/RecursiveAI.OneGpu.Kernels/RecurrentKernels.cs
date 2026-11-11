@@ -15,7 +15,8 @@ namespace RecursiveAI.OneGpu.Kernels;
 /// layer side by side, all batch rows, and walks each row of R with 8 lanes whose partial sums are combined by a fixed halving tree. The recurrent
 /// state is a hidden-state pair that swaps every step, so a workgroup never reads what another writes in the same pass; ordering between steps comes from the
 /// barriers between passes. A persistent kernel that loops over the steps inside one dispatch would need a barrier across workgroups, which neither Vulkan, Metal
-/// nor WebGPU guarantee to be safe (workgroups of one dispatch may not all be resident), so the step is the unit of dispatch.
+/// nor WebGPU guarantee to be safe (workgroups of one dispatch may not all be resident), and one workgroup per direction looping over the steps was measured several
+/// times slower than the pass per step on an Apple M2 and an RTX 4070 (one compute unit reads every step's weights), so the step is the unit of dispatch.
 /// </para>
 /// <para>
 /// The order of arithmetic is fixed by the shapes: the input projection is the matrix product of <see cref="Gemm"/> (its order for the mode this family was created for),
@@ -46,7 +47,7 @@ public sealed class RecurrentKernels : IDisposable
     readonly GpuKernelMode _mode;
     readonly GemmOptions? _gemmOptions;
     readonly int _maxBindGroups;
-    readonly KernelPipeline?[] _step = new KernelPipeline?[2];
+    readonly KernelPipeline?[] _step = new KernelPipeline?[24];
     readonly KernelPipeline?[] _init = new KernelPipeline?[2];
     readonly KernelPipeline?[] _outputs = new KernelPipeline?[2];
     readonly Gemm?[] _gemm = new Gemm?[2];
@@ -270,7 +271,10 @@ public sealed class RecurrentKernels : IDisposable
         }
 
         // 3. The steps.
-        var stepPipeline = StepPipeline(half);
+        var small = batch == 1;
+        var forwardActs = problem.Activations ?? GpuRecurrentActivations.Default(problem.Cell);
+        var std = IsDefault(problem.Cell, forwardActs) && IsDefault(problem.Cell, problem.ReverseActivations ?? forwardActs);
+        var stepPipeline = StepPipeline(half, small, std, problem.Cell);
         var flags = problem.Cell switch { GpuRecurrentCell.Lstm => 2u, GpuRecurrentCell.Gru => 1u, _ => 0u };
         flags |= problem.LinearBeforeReset ? 4u : 0u;
         flags |= problem.InputForget ? 8u : 0u;
@@ -452,16 +456,30 @@ public sealed class RecurrentKernels : IDisposable
         return _init[i] = new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 3, InitWords, "recurrent init", _maxBindGroups);
     }
 
-    KernelPipeline StepPipeline(bool half)
+    KernelPipeline StepPipeline(bool half, bool small, bool std, GpuRecurrentCell cell)
     {
-        var i = half ? 1 : 0;
+        var i = (half ? 1 : 0) + (small ? 2 : 0) + (std ? 4 : 0) + (8 * (int)cell);
         if (_step[i] is { } ready)
         {
             return ready;
         }
 
-        var e = RecurrentStep.Variants.Get(new RecurrentStep.Key(f16: half)).StepOp;
+        var e = RecurrentStep.Variants.Get(new RecurrentStep.Key(f16: half, small: small, std: std, cell: CellValue(cell))).StepOp;
         return _step[i] = new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 6, StepWords, "recurrent step", _maxBindGroups);
+    }
+
+    static RecurrentStep.CellValue CellValue(GpuRecurrentCell cell) => cell switch
+    {
+        GpuRecurrentCell.Lstm => RecurrentStep.CellValue.Lstm,
+        GpuRecurrentCell.Gru => RecurrentStep.CellValue.Gru,
+        _ => RecurrentStep.CellValue.Rnn,
+    };
+
+    // The kinds ONNX names as defaults; their alpha and beta are never read, so only the kind decides.
+    static bool IsDefault(GpuRecurrentCell cell, GpuRecurrentActivations a)
+    {
+        var d = GpuRecurrentActivations.Default(cell);
+        return a.F.Kind == d.F.Kind && a.G.Kind == d.G.Kind && a.H.Kind == d.H.Kind;
     }
 
     KernelPipeline OutputsPipeline(bool half)

@@ -8,6 +8,13 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
     readonly MetalDevice _dev;
     nint _cb;
     nint _blit;
+
+    // The compute encoder consecutive compute passes share. Opening a Metal encoder costs the driver tens of microseconds, and a serial
+    // compute encoder (the default dispatch type) already runs each dispatch to completion, with its writes visible, before the next one starts,
+    // which is the ordering the end of a pass promises. So a pass that ends leaves the encoder open for the next one; anything that is not
+    // a compute pass (copies, render passes, submission) closes it first. Passes that are timed get an encoder each, because Metal samples
+    // the counters at encoder boundaries.
+    nint _compute;
     bool _inPass;
     bool _finished;
     MetalRenderPass? _renderPass;
@@ -38,6 +45,7 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
     {
         _cb = commandBuffer;
         _blit = 0;
+        _compute = 0;
         _inPass = false;
         _finished = false;
         _timingSet = null;
@@ -59,6 +67,7 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
     internal nint TakeBuffer()
     {
         EndBlit();
+        EndCompute();
         var cb = _cb;
         _cb = 0;
         return cb;
@@ -69,6 +78,7 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
     {
         _cb = commandBuffer;
         _blit = 0;
+        _compute = 0;
         LastLabel = null;
         Passes = 0;
     }
@@ -110,6 +120,7 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
         }
 
         EndBlit();
+        EndCompute();
         _finished = true;
         var cb = _cb;
         _cb = 0;
@@ -129,6 +140,26 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
         }
     }
 
+    /// <summary>Closes the compute encoder the passes share, if one is open.</summary>
+    void EndCompute()
+    {
+        if (_compute != 0)
+        {
+            Msg.Void(_compute, Sel.endEncoding);
+            Objc.Release(ref _compute);
+        }
+    }
+
+    /// <summary>Called when a compute pass ends: a shareable encoder stays open for the next pass, any other closes now.</summary>
+    internal void ComputePassEnded(bool timed)
+    {
+        _inPass = false;
+        if (timed)
+        {
+            EndCompute();
+        }
+    }
+
     void EndBlit()
     {
         if (_blit != 0)
@@ -144,6 +175,7 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
         EnsureOpen();
         if (_blit == 0)
         {
+            EndCompute();
             using var pool = new Pool();
             _blit = Objc.objc_retain(Msg.Obj(_cb, Sel.blitCommandEncoder));
         }
@@ -168,6 +200,7 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
         }
 
         EndBlit();
+        EndCompute();
         using var pool = new Pool();
         var rpd = Msg.Obj(Cls.MTLRenderPassDescriptor, Sel.renderPassDescriptor);
         var cas = Msg.Obj(rpd, Sel.colorAttachments);
@@ -265,8 +298,17 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
     {
         EnsureOpen();
         EndBlit();
-        using var pool = new Pool();
         var timed = TakeTiming();
+        var pass = _computePass ??= new MetalComputePass(this);
+        if (timed < 0 && _compute != 0)
+        {
+            _inPass = true;
+            pass.Begin(_compute, shared: true);
+            return pass;
+        }
+
+        EndCompute();
+        using var pool = new Pool();
         nint enc;
         if (timed >= 0)
         {
@@ -287,9 +329,9 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
             throw new GpuException("Metal could not begin a compute pass");
         }
 
+        _compute = Objc.objc_retain(enc);
         _inPass = true;
-        var pass = _computePass ??= new MetalComputePass(this);
-        pass.Begin(Objc.objc_retain(enc));
+        pass.Begin(_compute, shared: timed < 0);
         return pass;
     }
 
@@ -820,12 +862,14 @@ internal sealed unsafe class MetalComputePass : GpuComputePass
     readonly uint[] _offsets = new uint[BindingRules.MaxSets * BindingRules.MaxDynamic];
     uint _dirty;
     bool _ended;
+    bool _shared;
 
     internal MetalComputePass(MetalEncoder owner) => _owner = owner;
 
-    internal void Begin(nint encoder)
+    internal void Begin(nint encoder, bool shared)
     {
         _enc = encoder;
+        _shared = shared;
         _pipeline = null;
         Array.Clear(_groups);
         _dirty = 0;
@@ -967,8 +1011,7 @@ internal sealed unsafe class MetalComputePass : GpuComputePass
         }
 
         _ended = true;
-        Msg.Void(_enc, Sel.endEncoding);
-        Objc.Release(ref _enc);
-        _owner.PassEnded();
+        _enc = 0;
+        _owner.ComputePassEnded(timed: !_shared);
     }
 }

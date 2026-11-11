@@ -77,6 +77,22 @@ start and end into consecutive slots; `TryReadTimestamps` returns nanoseconds on
   before it.
 - **WebGPU** does not report timestamps.
 
+## Passes and ordering
+
+Compute passes recorded one after another in one `GpuCommandEncoder` run in that order: a pass sees every write of the passes before it, and a later write
+to a buffer wins. Copies recorded between passes are ordered the same way.
+
+- **Vulkan** records every pass into the same command buffer and separates passes with memory barriers; a pass costs nothing beyond its commands.
+- **Metal** keeps one compute encoder open across consecutive passes. An encoder created by `computeCommandEncoder` is serial (`MTLDispatchTypeSerial`):
+  each dispatch runs to completion, with its writes visible, before the next starts, which is the ordering above. A copy, a render pass or the end of the
+  recording closes the encoder. A pass that is timed gets an encoder of its own, because counter samples are taken at encoder boundaries; timing a chain of
+  tiny passes therefore costs about 20 µs per pass on an Apple M2 (the sample buffers), where the same chain untimed costs 3 µs per dependent dispatch. Time whole
+  recordings, or the few passes you care about, rather than every pass of a long chain.
+- **WebGPU** ends and begins a compute pass in the browser's own encoder; the browser inserts the barriers.
+
+`DispatchChainTests` records chains of dependent passes (transposes of a matrix back and forth, repeated full writes to one buffer, copies between passes)
+and checks every element.
+
 ## Errors
 
 | Exception | Raised when | Extra data |
