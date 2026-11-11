@@ -39,6 +39,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="RecursiveAI.OneGpu.Kernels.Tests" />
+    <InternalsVisibleTo Include="RecursiveAI.OneGpu.WebRunner" />
   </ItemGroup>
 
 </Project>

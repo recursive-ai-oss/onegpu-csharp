@@ -71,10 +71,16 @@ public sealed class BindingCacheTests
         var (f2, s2, a2) = RunWeights(d, GpuKernelBindings.DefaultMaxCachedBindGroups, true);
         Assert.Equal((Weights, Weights, 2 * Weights), (f2, s2, a2));
 
-        // With the old bound of 64 the cache is flushed on the 65th set and every pass builds groups again.
-        var (f3, s3, _) = RunWeights(d, 64, true);
-        Assert.True(s3 > f3, $"a bound below the working set should rebuild groups on the second pass (built {f3} then {s3})");
-        Rig.Row(d, "binding cache", "gemm", $"{Weights} weight triples recorded twice: bound 72 builds {first} then {second}; default ({GpuKernelBindings.DefaultMaxCachedBindGroups}) {f2} then {s2}; bound 64 builds {f3} then {s3}; after ReleaseBindings {after - second} more", "ok");
+        // With the old bound of 64 the cache is flushed on the 65th set and every pass builds groups again. A browser cannot drop a bind group
+        // that commands still being recorded refer to, so the bound must cover one command buffer there; this part runs on the desktop backends only.
+        var (f3, s3) = (0, 0);
+        if (!Rig.Browser)
+        {
+            (f3, s3, _) = RunWeights(d, 64, true);
+            Assert.True(s3 > f3, $"a bound below the working set should rebuild groups on the second pass (built {f3} then {s3})");
+        }
+
+        Rig.Row(d, "binding cache", "gemm", $"{Weights} weight triples recorded twice: bound 72 builds {first} then {second}; default ({GpuKernelBindings.DefaultMaxCachedBindGroups}) {f2} then {s2}; bound 64 builds {f3} then {s3} (desktop only); after ReleaseBindings {after - second} more", "ok");
         Assert.Throws<ArgumentOutOfRangeException>(() => new Gemm(d, GemmElementType.F32, maxCachedBindGroups: 0));
     }
 
@@ -94,16 +100,18 @@ public sealed class BindingCacheTests
         using var ia = d.CreateBuffer<int>(1024);
         using var ib = d.CreateBuffer<int>(1024);
         using var flags = d.CreateBuffer<byte>(1024);
+        using var c = d.CreateBuffer<float>(1024);
+        using var ic = d.CreateBuffer<int>(1024);
         using var longs = d.CreateBuffer<long>(1024);
 
         var families = new (string Name, Action<GpuCommandEncoder> Record, Func<int> Built, Action Release)[]
         {
-            ("elementwise", e => { ew.EncodeBinary(e, GpuBinaryOp.Add, a, 0, [64, 16], a, 0, [16], b, 0); ew.EncodeCast(e, ia, 0, longs, 0, 512); ew.EncodeWhere(e, flags, 0, [1024], a, 0, [1024], b, 0, [1024], a, 0); }, () => ew.BindGroupsCreated, ew.ReleaseBindings),
+            ("elementwise", e => { ew.EncodeBinary(e, GpuBinaryOp.Add, a, 0, [64, 16], a, 0, [16], b, 0); ew.EncodeCast(e, ia, 0, longs, 0, 512); ew.EncodeWhere(e, flags, 0, [1024], a, 0, [1024], b, 0, [1024], c, 0); }, () => ew.BindGroupsCreated, ew.ReleaseBindings),
             ("reduce", e => red.EncodeReduce(e, GpuReduceOp.Sum, a, 0, [64, 16], [1], b, 0), () => red.BindGroupsCreated, red.ReleaseBindings),
             ("softmax", e => sm.Encode(e, a, 0, [64, 16], 1, b, 0), () => sm.BindGroupsCreated, sm.ReleaseBindings),
             ("norm", e => norm.Encode(e, false, a, 0, 64, 16, null, 0, null, 0, b, 0), () => norm.BindGroupsCreated, norm.ReleaseBindings),
             ("transpose", e => tr.Encode(e, a, 0, [64, 16], [1, 0], b, 0), () => tr.BindGroupsCreated, tr.ReleaseBindings),
-            ("integer", e => { ik.EncodeBinary(e, GpuIntegerOp.Add, ia, 0, [1024], ib, 0, [1024], ia, 0); ik.EncodeRange(e, longs, 0, 100, 0L, 1L); }, () => ik.BindGroupsCreated, ik.ReleaseBindings),
+            ("integer", e => { ik.EncodeBinary(e, GpuIntegerOp.Add, ia, 0, [1024], ib, 0, [1024], ic, 0); ik.EncodeRange(e, longs, 0, 100, 0L, 1L); }, () => ik.BindGroupsCreated, ik.ReleaseBindings),
         };
 
         var report = new List<string>();

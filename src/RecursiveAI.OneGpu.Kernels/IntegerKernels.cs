@@ -384,6 +384,7 @@ public sealed class IntegerKernels : IDisposable
         w[6] = (uint)kindOut;
         w[8] = (uint)rank;
         _integer ??= new KernelPipeline(_device, KernelSources.Make(Integer.IntegerOp.EntryPoint, Integer.IntegerOp.SpirV, Integer.IntegerOp.Msl, Integer.IntegerOp.MslFunctionName, Integer.IntegerOp.Wgsl, Integer.IntegerOp.WgslEntryPoint, Integer.IntegerOp.Layout), 3, IntegerWords, "integer", _maxBindGroups);
+
         Launch.Record(_device, encoder, _integer, w, count, offsetOutput, kindOut == 2 ? 2 : 0, 7, a.Buffer, b.Buffer, output.Buffer);
     }
 

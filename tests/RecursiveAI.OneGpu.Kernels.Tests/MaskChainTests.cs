@@ -6,7 +6,7 @@ namespace RecursiveAI.OneGpu.Kernels.Tests;
 /// </summary>
 public sealed class MaskChainTests
 {
-    public static IEnumerable<object[]> Sizes() => [[1, 128], [1, 512], [8, 128], [8, 512]];
+    static readonly (int B, int S)[] Sizes = [(1, 128), (1, 512), (8, 128), (8, 512)];
 
     // attention_mask: ones, then padding; every batch row has its own length (and one row is all padding when b is large enough).
     static long[] Mask(int b, int s)
@@ -27,9 +27,16 @@ public sealed class MaskChainTests
     static int Mismatches(ReadOnlySpan<float> got, ReadOnlySpan<float> want) => Rig.BitMismatches(got, want);
 
     // attention_mask int64 [b,s] -> Unsqueeze x2 -> Cast to float32 -> Sub from 1 -> Mul by a large negative: the additive mask [b,1,1,s].
-    [Theory]
-    [MemberData(nameof(Sizes))]
-    public async Task CastSubMulChainGivesTheAdditiveMask(int b, int s)
+    [Fact]
+    public async Task CastSubMulChainGivesTheAdditiveMask()
+    {
+        foreach (var (b, s) in Sizes)
+        {
+            await CastSubMulChainGivesTheAdditiveMaskCase(b, s);
+        }
+    }
+
+    static async Task CastSubMulChainGivesTheAdditiveMaskCase(int b, int s)
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -57,9 +64,16 @@ public sealed class MaskChainTests
     }
 
     // Equal(mask, 0) -> Where(isPad, lowest, 0): the variant exporters emit with a comparison.
-    [Theory]
-    [MemberData(nameof(Sizes))]
-    public async Task EqualWhereChainGivesTheAdditiveMask(int b, int s)
+    [Fact]
+    public async Task EqualWhereChainGivesTheAdditiveMask()
+    {
+        foreach (var (b, s) in Sizes)
+        {
+            await EqualWhereChainGivesTheAdditiveMaskCase(b, s);
+        }
+    }
+
+    static async Task EqualWhereChainGivesTheAdditiveMaskCase(int b, int s)
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -87,9 +101,16 @@ public sealed class MaskChainTests
     }
 
     // The causal chain: Range(0, s) -> GreaterOrEqual(row, column) -> And with the padding mask -> Where, and the bool cast to float.
-    [Theory]
-    [MemberData(nameof(Sizes))]
-    public async Task RangeGreaterOrEqualAndWhereChainGivesTheCausalMask(int b, int s)
+    [Fact]
+    public async Task RangeGreaterOrEqualAndWhereChainGivesTheCausalMask()
+    {
+        foreach (var (b, s) in Sizes)
+        {
+            await RangeGreaterOrEqualAndWhereChainGivesTheCausalMaskCase(b, s);
+        }
+    }
+
+    static async Task RangeGreaterOrEqualAndWhereChainGivesTheCausalMaskCase(int b, int s)
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;

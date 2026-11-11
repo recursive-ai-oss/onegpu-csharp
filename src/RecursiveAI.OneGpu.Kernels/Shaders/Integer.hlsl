@@ -112,39 +112,46 @@ bool GreaterEqualU(I64 a, I64 b)
     return (a.hi > b.hi) || (a.hi == b.hi && a.lo >= b.lo);
 }
 
-// Unsigned division and remainder. Both operands that fit 32 bits (every int32 operation) take the hardware divide; the rest shift
-// and subtract, one bit at a time.
+// Unsigned division and remainder by shift and subtract, one bit at a time from the top bit of the dividend down: the dividend is shifted left
+// through the remainder, every shift is by one and the loop count is fixed, and the conditional subtract is a masked subtract. Operands that fit
+// 32 bits use the hardware divide. DivOps calls this once for Div, Mod and Fmod: three copies of it in one kernel crashed one vendor's driver compiler.
 void UDivMod(I64 n, I64 d, out I64 q, out I64 r)
 {
+    uint nl = n.lo;
+    uint nh = n.hi;
+    uint ql = 0u;
+    uint qh = 0u;
+    uint rl = 0u;
+    uint rh = 0u;
     if (n.hi == 0u && d.hi == 0u)
     {
-        q = Make(n.lo / d.lo, 0u);
-        r = Make(n.lo - (n.lo / d.lo) * d.lo, 0u);
-        return;
+        ql = n.lo / d.lo;
+        rl = n.lo - ql * d.lo;
     }
-
-    q = Make(0u, 0u);
-    r = Make(0u, 0u);
-    [loop]
-    for (int i = 63; i >= 0; i--)
+    else
     {
-        // r = (r << 1) | bit i of n; a carry out of the top bit means r is certainly at least d.
-        bool carry = (r.hi >> 31) != 0u;
-        uint bit = (i >= 32) ? ((n.hi >> (uint)(i - 32)) & 1u) : ((n.lo >> (uint)i) & 1u);
-        r = Make((r.lo << 1) | bit, (r.hi << 1) | (r.lo >> 31));
-        if (carry || GreaterEqualU(r, d))
+        [loop]
+        for (uint k = 0u; k < 64u; k++)
         {
-            r = Sub(r, d);
-            if (i >= 32)
-            {
-                q.hi |= 1u << (uint)(i - 32);
-            }
-            else
-            {
-                q.lo |= 1u << (uint)i;
-            }
+            uint carry = rh >> 31;
+            rh = (rh << 1) | (rl >> 31);
+            rl = (rl << 1) | (nh >> 31);
+            nh = (nh << 1) | (nl >> 31);
+            nl = nl << 1;
+            uint ge = (carry != 0u || rh > d.hi || (rh == d.hi && rl >= d.lo)) ? 1u : 0u;
+            uint m = 0u - ge;
+            uint sl = d.lo & m;
+            uint sh = d.hi & m;
+            uint nrl = rl - sl;
+            rh = rh - sh - ((rl < sl) ? 1u : 0u);
+            rl = nrl;
+            qh = (qh << 1) | (ql >> 31);
+            ql = (ql << 1) | ge;
         }
     }
+
+    q = Make(ql, qh);
+    r = Make(rl, rh);
 }
 
 I64 Abs(I64 a)
@@ -152,46 +159,27 @@ I64 Abs(I64 a)
     return IsNeg(a) ? Neg(a) : a;
 }
 
-// Signed truncating division; 0 for a zero divisor, wrapping negation for -1.
-I64 Div(I64 a, I64 b)
+
+// Division, Mod (the divisor's sign) and Fmod (the dividend's sign) share one unsigned division. A zero divisor gives 0 and a divisor of -1
+// gives -a for division and 0 for the remainders.
+I64 DivOps(uint op, I64 a, I64 b)
 {
-    if (IsZero(b))
-    {
-        return Make(0u, 0u);
-    }
-
-    if (b.lo == 0xFFFFFFFFu && b.hi == 0xFFFFFFFFu)
-    {
-        return Neg(a);
-    }
-
+    bool bz = IsZero(b);
+    bool bm1 = (b.lo == 0xFFFFFFFFu && b.hi == 0xFFFFFFFFu);
     I64 q, r;
-    UDivMod(Abs(a), Abs(b), q, r);
-    return (IsNeg(a) != IsNeg(b)) ? Neg(q) : q;
-}
-
-// Signed remainder with the dividend's sign; 0 for a zero divisor or -1.
-I64 Fmod(I64 a, I64 b)
-{
-    if (IsZero(b) || (b.lo == 0xFFFFFFFFu && b.hi == 0xFFFFFFFFu))
+    UDivMod(Abs(a), bz ? Make(1u, 0u) : Abs(b), q, r);
+    if (op == 3u)
     {
-        return Make(0u, 0u);
+        return bz ? Make(0u, 0u) : (bm1 ? Neg(a) : ((IsNeg(a) != IsNeg(b)) ? Neg(q) : q));
     }
 
-    I64 q, r;
-    UDivMod(Abs(a), Abs(b), q, r);
-    return IsNeg(a) ? Neg(r) : r;
-}
-
-I64 Mod(I64 a, I64 b)
-{
-    I64 r = Fmod(a, b);
-    if (!IsZero(r) && (IsNeg(r) != IsNeg(b)))
+    I64 m = (bz || bm1) ? Make(0u, 0u) : (IsNeg(a) ? Neg(r) : r);
+    if (op == 4u && !IsZero(m) && (IsNeg(m) != IsNeg(b)))
     {
-        r = Add(r, b);
+        m = Add(m, b);
     }
 
-    return r;
+    return m;
 }
 
 // Element i of a packed array of the given kind, widened to 64 bits.
@@ -208,14 +196,16 @@ I64 Load(StructuredBuffer<uint> buf, uint kind, uint i)
 
 I64 Apply(uint op, I64 a, I64 b)
 {
+    if (op >= 3u && op <= 5u)
+    {
+        return DivOps(op, a, b);
+    }
+
     switch (op)
     {
         case 0u: return Add(a, b);
         case 1u: return Sub(a, b);
         case 2u: return Mul(a, b);
-        case 3u: return Div(a, b);
-        case 4u: return Mod(a, b);
-        case 5u: return Fmod(a, b);
         case 6u: return Less(b, a) ? b : a;
         case 7u: return Less(a, b) ? b : a;
         case 8u: return Make(Equal(a, b) ? 1u : 0u, 0u);
