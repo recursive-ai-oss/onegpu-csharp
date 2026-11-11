@@ -199,11 +199,11 @@ internal sealed class KernelPipeline : IDisposable
     readonly BindGroupEntry[] _entries;
     readonly int _maxGroups;
 
-    public KernelPipeline(GpuDevice device, in ShaderSource source, int bindings, int pushWords, string label, int maxGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
+    public KernelPipeline(GpuDevice device, in ShaderSource source, int bindings, int pushWords, string label, int maxGroups = GpuKernelBindings.DefaultMaxCachedBindGroups, uint requiredSubgroupSize = 0)
     {
         _device = device;
         _maxGroups = maxGroups;
-        _kernel = device.CreateComputeKernel(source, label);
+        _kernel = device.CreateComputeKernel(source, label, requiredSubgroupSize);
         if (_kernel.Bindings.Count != bindings || _kernel.PushConstants.Size != pushWords * 4)
         {
             var kernel = _kernel;

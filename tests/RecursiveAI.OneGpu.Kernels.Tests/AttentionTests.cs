@@ -82,9 +82,19 @@ public sealed class AttentionTests
         public double[] Want = [];
     }
 
-    static Prepared Prepare(Case c, bool half)
+    static float RoundBFloat16(float x)
     {
-        float[] R(float[] x) => half ? x.Select(RoundHalf).ToArray() : x;
+        var u = BitConverter.SingleToUInt32Bits(x);
+        return BitConverter.UInt32BitsToSingle((u + 0x7FFFu + ((u >> 16) & 1u)) & 0xFFFF0000u);
+    }
+
+    static ushort ToBFloat16(float x) => (ushort)(BitConverter.SingleToUInt32Bits(RoundBFloat16(x)) >> 16);
+
+    static float FromBFloat16(ushort x) => BitConverter.UInt32BitsToSingle((uint)x << 16);
+
+    static Prepared Prepare(Case c, bool half, bool bfloat16 = false)
+    {
+        float[] R(float[] x) => bfloat16 ? x.Select(RoundBFloat16).ToArray() : (half ? x.Select(RoundHalf).ToArray() : x);
         var p = new Prepared
         {
             Q = R(Rig.Random(c.B * c.H * c.Sq * c.D, c.Sq + 11, -2f, 2f)),
@@ -144,7 +154,14 @@ public sealed class AttentionTests
             prob.Mask = GpuAttentionLayout.ForMask(MaskShape(c), c.B, c.H, c.Sq, c.Sk, 0);
         }
 
-        Rig.Run(d, e => k.Encode(e, prob, bq, bk, bv, bo, bm, bl, mode));
+        if (typeof(T) == typeof(ushort))
+        {
+            Rig.Run(d, e => k.EncodeBFloat16(e, prob, (GpuBuffer<ushort>)(object)bq, (GpuBuffer<ushort>)(object)bk, (GpuBuffer<ushort>)(object)bv, (GpuBuffer<ushort>)(object)bo, bm, bl, mode));
+        }
+        else
+        {
+            Rig.Run(d, e => k.Encode(e, prob, bq, bk, bv, bo, bm, bl, mode));
+        }
         var got = await Rig.DownloadAsync(bo);
         var stray = 0;
         var zero = default(T);
@@ -182,7 +199,7 @@ public sealed class AttentionTests
         var d = gpu.Device;
         Software = d.Adapter.Name.Contains("swiftshader", StringComparison.OrdinalIgnoreCase);
         using var kernels = new Kernels(d);
-        Rig.Row(d, "attention", "-", "variant chosen for Fast and Deterministic", $"{kernels.Auto.Variant}; forced rows: {kernels.Rows.Variant}; forced pairs: {kernels.Pairs?.Variant ?? "not supported on this device"}");
+        Rig.Row(d, "attention", "-", "variant chosen for Fast and Deterministic (half; float32)", $"{kernels.Auto.Variant}; {kernels.Auto.FloatVariant}; forced rows: {kernels.Rows.Variant}; forced pairs: {kernels.Pairs?.Variant ?? "not supported on this device"}; forced matrix hardware: {(kernels.Coop is null ? "not supported on this device" : kernels.Coop.Variant)}; matrix hardware ruled out: {kernels.NoCoop.Variant}");
         await Sweep(d, kernels, SelectedModelCases().ToList(), "model shapes");
     }
 
@@ -202,6 +219,15 @@ public sealed class AttentionTests
         {
             Auto = new AttentionKernels(d);
             Rows = new AttentionKernels(d, variant: GpuAttentionVariant.Rows);
+            NoCoop = new AttentionKernels(d, allowMatrixHardware: false);
+            try
+            {
+                Coop = new AttentionKernels(d, variant: GpuAttentionVariant.Cooperative);
+            }
+            catch (GpuUnsupportedException)
+            {
+            }
+
             try
             {
                 Pairs = new AttentionKernels(d, variant: GpuAttentionVariant.Pairs);
@@ -215,16 +241,24 @@ public sealed class AttentionTests
 
         public AttentionKernels Rows { get; }
 
+        /// <summary>Auto with the matrix kernel ruled out: what a device without matrix hardware runs.</summary>
+        public AttentionKernels NoCoop { get; }
+
+        /// <summary>The matrix kernel forced, or null where the device lacks it.</summary>
+        public AttentionKernels? Coop { get; }
+
         public AttentionKernels? Pairs { get; }
 
-        // The system stops a command buffer that keeps an Apple GPU busy for too long ("impacting interactivity"), which leaves the output half written.
-        // The one-thread-per-row kernel is the slow one there (and not the one chosen), so it skips the problems of more than 40 million scores.
-        public static bool TooSlowForRows(GpuDevice d, Case c) => d.Adapter.VendorId == 0x106B && (long)c.B * c.H * c.Sq * c.Sk > 40_000_000;
-
-        public IEnumerable<(string Name, AttentionKernels K, GpuKernelMode Mode)> All()
+        public IEnumerable<(string Name, AttentionKernels K, GpuKernelMode Mode)> All(bool half)
         {
             yield return ("auto fast", Auto, GpuKernelMode.Fast);
             yield return ("auto deterministic", Auto, GpuKernelMode.Deterministic);
+            if (Coop is not null && half)
+            {
+                yield return ("matrix hardware deterministic", Coop, GpuKernelMode.Deterministic);
+                yield return ("matrix hardware ruled out deterministic", NoCoop, GpuKernelMode.Deterministic);
+            }
+
             yield return ("rows deterministic", Rows, GpuKernelMode.Deterministic);
             if (Pairs is not null)
             {
@@ -235,6 +269,8 @@ public sealed class AttentionTests
         public void Dispose()
         {
             Auto.Dispose();
+            NoCoop.Dispose();
+            Coop?.Dispose();
             Rows.Dispose();
             Pairs?.Dispose();
         }
@@ -253,13 +289,8 @@ public sealed class AttentionTests
                 var prep = Prepare(c, half);
                 var limit = half ? 2e-3 : 1e-5;
                 string? fastHash = null;
-                foreach (var (name, k, mode) in kernels.All())
+                foreach (var (name, k, mode) in kernels.All(half))
                 {
-                    if (k.Variant == "rows" && name.StartsWith("rows", StringComparison.Ordinal) && Kernels.TooSlowForRows(d, c))
-                    {
-                        continue;
-                    }
-
                     var o = await Run(d, k, c, prep, half, mode);
                     Assert.True(o.Stray == 0, $"{c.Name} {(half ? "f16" : "f32")} {name}: {o.Stray} elements outside the output tensor were written");
                     Assert.True(o.Scaled <= limit, $"{c.Name} {(half ? "f16" : "f32")} {name}: scaled error {o.Scaled}");
@@ -301,13 +332,13 @@ public sealed class AttentionTests
         using var kernels = new Kernels(d);
         foreach (var half in new[] { false, true })
         {
-            foreach (var (name, k, _) in kernels.All().Where(x => x.Name.EndsWith("deterministic", StringComparison.Ordinal)))
+            foreach (var (name, k, _) in kernels.All(half).Where(x => x.Name.EndsWith("deterministic", StringComparison.Ordinal)))
             {
                 var runs = 0;
                 var same = 0;
                 var samples = new List<string>();
                 var differing = new List<string>();
-                foreach (var c in SelectedModelCases().Concat(EdgeCases()).Where(c => Applies(c, half) && !(k.Variant == "rows" && name.StartsWith("rows", StringComparison.Ordinal) && Kernels.TooSlowForRows(d, c))))
+                foreach (var c in SelectedModelCases().Concat(EdgeCases()).Where(c => Applies(c, half)))
                 {
                     var prep = Prepare(c, half);
                     var o1 = await Run(d, k, c, prep, half, GpuKernelMode.Deterministic);
@@ -329,6 +360,94 @@ public sealed class AttentionTests
                 Assert.True(runs == same, $"{name} {(half ? "f16" : "f32")}: runs differ for: {string.Join(", ", differing)}");
             }
         }
+    }
+
+    // A long call is cut into dispatches of whole workgroups so a platform that stops long submissions never sees one; every workgroup works
+    // alone, so the cut must not change a bit. The budget here is tiny, so that even small problems are cut into many pieces.
+    [Fact]
+    public async Task CuttingALongCallIntoPiecesKeepsTheBits()
+    {
+        using var gpu = new GpuFixture();
+        var d = gpu.Device;
+        Software = d.Adapter.Name.Contains("swiftshader", StringComparison.OrdinalIgnoreCase);
+        var cases = new[]
+        {
+            new Case("bert B8 S128", 8, 12, 12, 128, 128, 64, Mask: 3),
+            new Case("minilm B2 S200", 2, 12, 12, 200, 200, 32, Mask: 3),
+            new Case("whisper decoder prefill", 1, 12, 12, 448, 448, 64, Causal: true, Layouts: 1),
+            new Case("cross 1 query, split keys", 2, 6, 6, 1, 1200, 64),
+            new Case("causal with lengths, d128", 2, 3, 3, 70, 300, 128, Causal: true, Lens: true, Layouts: 2),
+        };
+        if (Large)
+        {
+            // The long calls the watchdog of Apple GPUs used to stop: the whole call runs as one submission with a budget of 0, the cut call as many.
+            cases = [.. cases, new Case("whisper encoder B8 S1500", 8, 12, 12, 1500, 1500, 64)];
+        }
+
+        foreach (var variant in new[] { GpuAttentionVariant.Auto, GpuAttentionVariant.Rows })
+        {
+            using var whole = new AttentionKernels(d, variant: variant, submissionWorkBudget: 0);
+            using var cut = new AttentionKernels(d, variant: variant, submissionWorkBudget: Large ? 1UL << 30 : 1UL << 22);
+            foreach (var half in new[] { false, true })
+            {
+                var same = 0;
+                foreach (var c in cases)
+                {
+                    var prep = Prepare(c, half);
+                    // The scalar kernel on a whole Whisper batch is what the system stops on Apple GPUs; only its cut form runs there.
+                    var a = variant == GpuAttentionVariant.Rows && d.Adapter.VendorId == 0x106B && c.B * c.H * c.Sq * c.Sk > 40_000_000 ? null : await Run(d, whole, c, prep, half, GpuKernelMode.Fast);
+                    var b = await Run(d, cut, c, prep, half, GpuKernelMode.Fast);
+                    Assert.True(a is null || a.Hash == b.Hash, $"{variant} {(half ? "f16" : "f32")} {c.Name}: cut and whole calls differ");
+                    Assert.True(b.Scaled <= (half ? 2e-3 : 1e-5), $"{variant} {(half ? "f16" : "f32")} {c.Name}: scaled error {b.Scaled}");
+                    same++;
+                }
+
+                Rig.Row(d, "attention", half ? "f16" : "f32", $"{variant} ({(half ? whole.Variant : whole.FloatVariant)}): output of a call cut into pieces equals the whole call bit for bit", $"{same}/{cases.Length}");
+            }
+        }
+    }
+
+    // bfloat16 has no scalar kernel: devices without bfloat16 matrices throw a typed error, the others match the CPU reference (inputs rounded to bfloat16 first).
+    [Fact]
+    public async Task BFloat16AttentionMatchesTheCpuReference()
+    {
+        using var gpu = new GpuFixture();
+        var d = gpu.Device;
+        Software = d.Adapter.Name.Contains("swiftshader", StringComparison.OrdinalIgnoreCase);
+        using var kernels = new Kernels(d);
+        if (!kernels.Auto.BFloat16Available)
+        {
+            var prob = new AttentionProblem(1, 1, 1, 1, 64);
+            using var b = d.CreateBuffer<ushort>(64);
+            var enc = d.BeginCommands();
+            Assert.Throws<GpuUnsupportedException>(() => kernels.Auto.EncodeBFloat16(enc, prob, b, b, b, b));
+            d.Submit(enc);
+            Rig.Row(d, "attention", "bf16", "no bfloat16 matrices: EncodeBFloat16 throws GpuUnsupportedException", "ok");
+            return;
+        }
+
+        var cases = SelectedModelCases().Concat(EdgeCases()).Where(c => c.D % 2 == 0 && c.D <= AttentionKernels.CoopHeadDimLimit).ToList();
+        var worst = 0.0;
+        var at = "-";
+        var same = 0;
+        foreach (var c in cases)
+        {
+            var prep = Prepare(c, true, bfloat16: true);
+            var o1 = await Run<ushort>(d, kernels.Auto, c, prep, GpuKernelMode.Deterministic, ToBFloat16, FromBFloat16);
+            var o2 = await Run<ushort>(d, kernels.Auto, c, prep, GpuKernelMode.Deterministic, ToBFloat16, FromBFloat16);
+            Assert.True(o1.Stray == 0, $"{c.Name} bf16: {o1.Stray} elements outside the output tensor were written");
+            Assert.True(o1.Scaled <= 8e-3, $"{c.Name} bf16: scaled error {o1.Scaled}");
+            Assert.True(o1.Hash == o2.Hash, $"{c.Name} bf16: two runs differ");
+            same++;
+            if (o1.Scaled > worst)
+            {
+                worst = o1.Scaled;
+                at = c.Name;
+            }
+        }
+
+        Rig.Row(d, "attention", "bf16", $"matrix hardware, {cases.Count} cases, max scaled error (limit 8e-3)", $"{Rig.Sci(worst)} (at {at})");
+        Rig.Row(d, "attention", "bf16", "matrix hardware deterministic run twice per shape", $"{same}/{cases.Count} identical");
     }
 
     [Fact]
@@ -479,6 +598,23 @@ public sealed class AttentionTests
                 gemm.Encode(e, pv, probs, v, o2);
             }, out var unfusedWall);
             var flops = 4.0 * bh * sq * sk * dd;
+            using var qh = d.CreateBuffer<Half>(Rig.ToHalf(Rig.Random(bh * sq * dd, 1, -2f, 2f)));
+            using var kh = d.CreateBuffer<Half>(Rig.ToHalf(Rig.Random(bh * sk * dd, 2, -2f, 2f)));
+            using var vh = d.CreateBuffer<Half>(Rig.ToHalf(Rig.Random(bh * sk * dd, 3, -1f, 1f)));
+            using var oh = d.CreateBuffer<Half>(Rig.ToHalf(new float[bh * sq * dd]));
+            foreach (var (vname, fk) in new[] { ("rows", kernels.Rows), ("pairs", kernels.Pairs), ("matrix hardware", kernels.Coop) }.Where(x => x.Item2 is not null))
+            {
+                var fusedGpu = Time(d, timestamps, e => fk!.Encode(e, prob, qh, kh, vh, oh), out var fusedWall);
+                var line = $"THROUGHPUT\t{d.Adapter.Name}\t{name}\tf16 {vname}: fused {fusedGpu / 1000:F1} us gpu {fusedWall / 1000:F1} us wall {flops / fusedGpu:F0} GFLOP/s\tunfused f32 {unfusedGpu / 1000:F1} us gpu {unfusedWall / 1000:F1} us wall\tspeed-up {unfusedGpu / fusedGpu:F2}x gpu";
+                Console.WriteLine(line);
+#if !WEB_BACKEND
+                if (Environment.GetEnvironmentVariable("ONEGPU_REPORT") is { Length: > 0 } path)
+                {
+                    File.AppendAllText(path, line + "\n");
+                }
+#endif
+            }
+
             foreach (var (vname, fk) in new[] { ("rows", kernels.Rows), ("pairs", kernels.Pairs) }.Where(x => x.Item2 is not null))
             {
                 var fusedGpu = Time(d, timestamps, e => fk!.Encode(e, prob, q, k, v, o1), out var fusedWall);

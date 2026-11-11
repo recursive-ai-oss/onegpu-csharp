@@ -148,6 +148,7 @@ internal static class Sel
     public static readonly nint maxTotalThreadsPerThreadgroup = Objc.sel_registerName("maxTotalThreadsPerThreadgroup");
     public static readonly nint maxThreadsPerThreadgroup = Objc.sel_registerName("maxThreadsPerThreadgroup");
     public static readonly nint maxThreadgroupMemoryLength = Objc.sel_registerName("maxThreadgroupMemoryLength");
+    public static readonly nint staticThreadgroupMemoryLength = Objc.sel_registerName("staticThreadgroupMemoryLength");
     public static readonly nint maxBufferLength = Objc.sel_registerName("maxBufferLength");
     public static readonly nint currentAllocatedSize = Objc.sel_registerName("currentAllocatedSize");
 

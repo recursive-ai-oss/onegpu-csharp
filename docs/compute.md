@@ -36,9 +36,14 @@ capability (`Capability`, `Expected`, `Actual`): the workgroup size against the 
 against `ShaderFeatures`, the subgroup operations against `SubgroupOperations`. The bindings and push-constant block come from the
 reflection, so the host cannot declare a layout that differs from the shader's.
 
+**Workgroup memory a pipeline uses.** `GpuComputePipeline.ReportedWorkgroupMemoryBytes` is what the compiled pipeline reports (Metal's
+`staticThreadgroupMemoryLength`; 0 on backends that do not report it). Metal enforces its limit against that figure, which is larger than the declared size
+while shader validation is on (it doubles it) and when a three-component vector takes 16 bytes, so a kernel with several shapes picks one from this number
+after compiling (the float32 GEMM does).
+
 **Subgroup requirements.** `ComputePipelineDesc.RequireFullSubgroups` makes every subgroup of every workgroup full (the workgroup size must
 be a multiple of the subgroup size) and `RequiredSubgroupSize` pins the width. Cooperative-matrix kernels need the first below SPIR-V 1.6,
-so `CreateComputeKernel` sets it for any kernel whose reflection lists `CooperativeMatrix`, and takes an optional `requiredSubgroupSize` for
+so the shader compiler lists `FullSubgroups` in the reflection of every entry point that uses them and `CreateComputeKernel` sets it for any kernel whose reflection lists that feature (devices report it in `ShaderFeatures` when `GpuComputeCapabilities.FullSubgroups` is true), and takes an optional `requiredSubgroupSize` for
 kernels written for one width. Vulkan passes `VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT` and chains
 `VkPipelineShaderStageRequiredSubgroupSizeCreateInfo` (Vulkan 1.3 core, `VK_EXT_subgroup_size_control`). A request the device cannot meet
 throws `GpuUnsupportedException` whose `Capability` is `FullSubgroups` or `RequiredSubgroupSize`, before anything is created, on every

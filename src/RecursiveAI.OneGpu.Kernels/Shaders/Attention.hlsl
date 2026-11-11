@@ -115,7 +115,7 @@ struct AttnParams
     uint LensOff;
     uint NSplit;
     uint KeysPerSplit;
-    uint GridX;
+    uint GroupBase;   // first workgroup of this dispatch in the whole problem's numbering (long problems are cut into several dispatches)
 };
 
 [[vk::push_constant]] ConstantBuffer<AttnParams> AP;
@@ -156,7 +156,7 @@ float LoadE(StructuredBuffer<Elem> buf, uint i)
 [numthreads(64, 1, 1)]
 void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
-    uint lin = gid.y * AP.GridX + gid.x;
+    uint lin = AP.GroupBase + gid.x;
     uint nQB = (AP.QLen + BR - 1u) / BR;
     uint split = lin % AP.NSplit;
     uint t = lin / AP.NSplit;
