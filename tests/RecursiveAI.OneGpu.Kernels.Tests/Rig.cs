@@ -29,6 +29,23 @@ internal static class Rig
         return h;
     }
 
+    /// <summary>A bool tensor's bytes padded to a whole 32-bit word, as the kernels need.</summary>
+    public static byte[] PadBool(byte[] v)
+    {
+        var r = new byte[GpuKernelBuffers.PaddedBoolLength(Math.Max(1, v.Length))];
+        v.CopyTo(r, 0);
+        return r;
+    }
+
+    /// <summary>A one-element buffer, for a scalar operand.</summary>
+    public static GpuBuffer<T> Scalar<T>(GpuDevice d, T value)
+        where T : unmanaged
+    {
+        var data = new T[1];
+        data[0] = value;
+        return d.CreateBuffer<T>(data);
+    }
+
     public static GpuBuffer<T> Upload<T>(GpuDevice d, T[] data)
         where T : unmanaged => d.CreateBuffer<T>(data);
 

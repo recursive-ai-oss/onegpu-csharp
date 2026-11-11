@@ -17,6 +17,8 @@
     <OneShader Include="Shaders/ArgReduce.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Binary.hlsl" Axes="F16;ACT;RANK=R1|R2|RN" />
     <OneShader Include="Shaders/Cast.hlsl" />
+    <OneShader Include="Shaders/Generate.hlsl" />
+    <OneShader Include="Shaders/Integer.hlsl" />
     <OneShader Include="Shaders/Compare.hlsl" Axes="F16;RANK=R1|R2|RN" />
     <OneShader Include="Shaders/Norm.hlsl" Axes="F16;WAVE" />
     <OneShader Include="Shaders/Reduce.hlsl" Axes="F16;WAVE;RRANK=R1|RN" />

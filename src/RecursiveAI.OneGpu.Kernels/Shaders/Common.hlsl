@@ -107,3 +107,24 @@ float LoadH(StructuredBuffer<uint> buf, uint i)
 {
     return H2F(RawH(buf, i));
 }
+
+// Bool tensors hold one byte per element (0 or 1), four to a 32-bit word with element 4k in the low byte of word k, like the packed
+// halves above. A thread owns whole output words, so neighbouring threads never write the same word and no atomics are needed.
+
+// Number of 32-bit words that hold count bytes starting at byte index off.
+uint BoolWords(uint off, uint count)
+{
+    return ((off + count - 1u) >> 2) - (off >> 2) + 1u;
+}
+
+// Byte i of a packed bool array.
+uint RawB(StructuredBuffer<uint> buf, uint i)
+{
+    return (buf[i >> 2] >> ((i & 3u) << 3)) & 0xFFu;
+}
+
+// Replaces byte k (0..3) of a word.
+uint WithByte(uint word, uint k, uint value)
+{
+    return (word & ~(0xFFu << (k * 8u))) | ((value & 0xFFu) << (k * 8u));
+}

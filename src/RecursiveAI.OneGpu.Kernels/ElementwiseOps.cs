@@ -80,3 +80,44 @@ public enum GpuCompareOp
 /// <param name="P0">First parameter of the function, where it has one (see <see cref="GpuUnaryOp"/>).</param>
 /// <param name="P1">Second parameter of the function, where it has one.</param>
 public readonly record struct GpuActivation(GpuUnaryOp Op, float P0 = 0f, float P1 = 0f);
+
+/// <summary>Arithmetic on int32 and int64 tensors. Add, Sub, Mul and Neg wrap on overflow, as two's complement does.</summary>
+public enum GpuIntegerOp
+{
+    /// <summary>a + b.</summary>
+    Add = 0,
+    /// <summary>a - b.</summary>
+    Sub = 1,
+    /// <summary>a * b.</summary>
+    Mul = 2,
+    /// <summary>a / b truncated toward zero; 0 when b is 0; the minimum value divided by -1 wraps to itself.</summary>
+    Div = 3,
+    /// <summary>The remainder with the sign of the divisor (ONNX <c>Mod</c> with <c>fmod = 0</c>); 0 when b is 0 or -1.</summary>
+    Mod = 4,
+    /// <summary>The remainder with the sign of the dividend (ONNX <c>Mod</c> with <c>fmod = 1</c>); 0 when b is 0 or -1.</summary>
+    Fmod = 5,
+    /// <summary>The smaller of a and b.</summary>
+    Min = 6,
+    /// <summary>The larger of a and b.</summary>
+    Max = 7,
+}
+
+/// <summary>Logical operations on bool tensors.</summary>
+public enum GpuLogicOp
+{
+    /// <summary>a and b.</summary>
+    And = 13,
+    /// <summary>a or b.</summary>
+    Or = 14,
+    /// <summary>a xor b.</summary>
+    Xor = 15,
+}
+
+/// <summary>Unary functions of int32 and int64 tensors.</summary>
+public enum GpuIntegerUnaryOp
+{
+    /// <summary>-x, wrapping: the minimum value stays the minimum value.</summary>
+    Neg = 16,
+    /// <summary>|x|, wrapping: the minimum value stays the minimum value.</summary>
+    Abs = 17,
+}

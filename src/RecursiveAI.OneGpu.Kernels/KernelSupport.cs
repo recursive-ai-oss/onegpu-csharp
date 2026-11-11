@@ -90,6 +90,25 @@ internal static class Check
         }
     }
 
+    /// <summary>Checks a range of a bool buffer; the kernels read and write bool bytes in 32-bit words, so the last word must lie inside the buffer.</summary>
+    public static void RangeBytes(string operation, string name, int bufferLength, int offset, long extent)
+    {
+        if (offset < 0)
+        {
+            throw new GpuKernelShapeException(operation, name + "Offset", $"offset {offset} is negative");
+        }
+
+        if (extent < 0 || (long)offset + extent > bufferLength)
+        {
+            throw new GpuKernelShapeException(operation, name, $"elements {offset}..{(long)offset + extent} reach past the buffer of {bufferLength}");
+        }
+
+        if (extent > 0 && ((((long)offset + extent + 3) >> 2) << 2) > bufferLength)
+        {
+            throw new GpuKernelShapeException(operation, name, $"the buffer of {bufferLength} bytes ends inside a 32-bit word; allocate GpuKernelBuffers.PaddedBoolLength(n) elements");
+        }
+    }
+
     public static long Product(string operation, string name, ReadOnlySpan<int> shape)
     {
         long n = 1;
@@ -131,6 +150,25 @@ internal static class Variants
     }
 }
 
+/// <summary>Records one-dimensional element-wise dispatches whose threads each own one output element, or one output word when elements are packed.</summary>
+internal static class Launch
+{
+    // shift: 0 for one thread per element, 1 per word of two halves, 2 per word of four bool bytes.
+    // gridWord: index of the push-constant word that receives the grid width.
+    public static void Record(GpuDevice device, GpuCommandEncoder encoder, KernelPipeline pipeline, Span<uint> words, long count, int offsetOutput, int shift, int gridWord, GpuBuffer b0, GpuBuffer? b1 = null, GpuBuffer? b2 = null, GpuBuffer? b3 = null)
+    {
+        if (count == 0)
+        {
+            return;
+        }
+
+        var threads = shift == 0 ? count : (((offsetOutput + count - 1) >> shift) - (offsetOutput >> shift) + 1);
+        var (gx, gy) = Grid.For(device, (threads + 255) / 256);
+        words[gridWord] = gx;
+        pipeline.Record(encoder, words, gx, gy, b0, b1, b2, b3);
+    }
+}
+
 /// <summary>Grid arithmetic. Dispatches are two-dimensional so that more than 65535 workgroups fit on every device.</summary>
 internal static class Grid
 {
@@ -155,16 +193,16 @@ internal static class Grid
 /// </summary>
 internal sealed class KernelPipeline : IDisposable
 {
-    const int MaxCachedGroups = 512;
-
     readonly GpuDevice _device;
     readonly GpuComputeKernel _kernel;
     readonly Dictionary<BindKey, GpuBindGroup> _groups = [];
     readonly BindGroupEntry[] _entries;
+    readonly int _maxGroups;
 
-    public KernelPipeline(GpuDevice device, in ShaderSource source, int bindings, int pushWords, string label)
+    public KernelPipeline(GpuDevice device, in ShaderSource source, int bindings, int pushWords, string label, int maxGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         _device = device;
+        _maxGroups = maxGroups;
         _kernel = device.CreateComputeKernel(source, label);
         if (_kernel.Bindings.Count != bindings || _kernel.PushConstants.Size != pushWords * 4)
         {
@@ -178,6 +216,23 @@ internal sealed class KernelPipeline : IDisposable
 
     public GpuComputeKernel Kernel => _kernel;
 
+    /// <summary>How many bind groups this pipeline has built, for tests of the cache.</summary>
+    public int Created { get; private set; }
+
+    public static int Total(params KernelPipeline?[][] sets)
+    {
+        var n = 0;
+        foreach (var set in sets)
+        {
+            foreach (var p in set)
+            {
+                n += p?.Created ?? 0;
+            }
+        }
+
+        return n;
+    }
+
     public void Record(GpuCommandEncoder encoder, ReadOnlySpan<uint> push, uint groupsX, uint groupsY, GpuBuffer b0, GpuBuffer? b1 = null, GpuBuffer? b2 = null, GpuBuffer? b3 = null)
     {
         if (groupsX == 0 || groupsY == 0)
@@ -188,7 +243,7 @@ internal sealed class KernelPipeline : IDisposable
         var key = new BindKey(b0, b1, b2, b3);
         if (!_groups.TryGetValue(key, out var group))
         {
-            if (_groups.Count >= MaxCachedGroups)
+            if (_groups.Count >= _maxGroups)
             {
                 foreach (var g in _groups.Values)
                 {
@@ -217,6 +272,7 @@ internal sealed class KernelPipeline : IDisposable
 
             group = _kernel.CreateBindGroup(_device, 0, e);
             _groups.Add(key, group);
+            Created++;
         }
 
         var pass = encoder.BeginComputePass();
@@ -227,7 +283,8 @@ internal sealed class KernelPipeline : IDisposable
         pass.EndPass();
     }
 
-    public void Dispose()
+    /// <summary>Drops the cached bind groups; the next call with a buffer set builds its group again.</summary>
+    public void ReleaseBindings()
     {
         foreach (var g in _groups.Values)
         {
@@ -235,6 +292,11 @@ internal sealed class KernelPipeline : IDisposable
         }
 
         _groups.Clear();
+    }
+
+    public void Dispose()
+    {
+        ReleaseBindings();
         _kernel.Dispose();
     }
 

@@ -20,16 +20,19 @@ public sealed class NormKernels : IDisposable
     const int Words = 9;
 
     readonly GpuDevice _device;
+    readonly int _maxBindGroups;
     readonly bool _subgroups;
     readonly KernelPipeline?[] _pipelines = new KernelPipeline?[4];
 
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
     /// <param name="allowSubgroups">False keeps the fast variant off subgroup operations even where the device has them.</param>
-    public NormKernels(GpuDevice device, bool allowSubgroups = true)
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
+    public NormKernels(GpuDevice device, bool allowSubgroups = true, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
         _subgroups = Variants.UseSubgroups(device, allowSubgroups);
     }
 
@@ -118,6 +121,21 @@ public sealed class NormKernels : IDisposable
         pipeline.Record(encoder, w, gx, gy, input.Buffer, (scale ?? input).Buffer, (useBias ? bias! : scale ?? input).Buffer, output.Buffer);
     }
 
+    /// <summary>How many bind groups the family has built so far; tests use it to see the cache work.</summary>
+    internal int BindGroupsCreated => KernelPipeline.Total(_pipelines);
+
+    /// <summary>
+    /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.
+    /// The pipelines stay; the next call with a set of buffers builds its group again.
+    /// </summary>
+    public void ReleaseBindings()
+    {
+        for (var i = 0; i < _pipelines.Length; i++)
+        {
+            _pipelines[i]?.ReleaseBindings();
+        }
+    }
+
     /// <summary>Releases the pipelines and bind groups once the GPU has finished with them.</summary>
     public void Dispose()
     {
@@ -131,6 +149,6 @@ public sealed class NormKernels : IDisposable
     KernelPipeline Create(bool half, bool wave)
     {
         var v = Norm.Variants.Get(new Norm.Key(f16: half, wave: wave));
-        return new KernelPipeline(_device, KernelSources.Make(v.NormBlock.EntryPoint, v.NormBlock.SpirV, v.NormBlock.Msl, v.NormBlock.MslFunctionName, v.NormBlock.Wgsl, v.NormBlock.WgslEntryPoint, v.NormBlock.Layout), 4, Words, "norm");
+        return new KernelPipeline(_device, KernelSources.Make(v.NormBlock.EntryPoint, v.NormBlock.SpirV, v.NormBlock.Msl, v.NormBlock.MslFunctionName, v.NormBlock.Wgsl, v.NormBlock.WgslEntryPoint, v.NormBlock.Layout), 4, Words, "norm", _maxBindGroups);
     }
 }
