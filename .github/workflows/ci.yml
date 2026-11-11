@@ -1,0 +1,51 @@
+name: ci
+
+# The repository is private, so nothing runs on push or pull request: start a run by hand. Every step calls a script under
+# tools/ci, which also runs as plain shell on any machine with the .NET SDK.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Install Vulkan software driver and validation layer
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers vulkan-validationlayers
+      - name: Build and check
+        run: tools/ci/build.sh
+      - name: Test on Vulkan (software driver, validation on)
+        run: VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json tools/ci/test-vulkan.sh
+      - name: Native AOT smoke
+        run: VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json tools/ci/aot-smoke.sh
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the WebAssembly tools
+        run: dotnet workload install wasm-tools
+      - name: Test in headless Chrome (SwiftShader)
+        run: tools/ci/test-web.sh
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Test on Metal (validation fatal)
+        run: tools/ci/test-metal.sh

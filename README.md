@@ -20,15 +20,17 @@ the host fails at build or pipeline creation.
 
 ```
 dotnet build OneGpu.slnx
-dotnet test --project tests/RecursiveAI.OneGpu.Vulkan.Tests
+tools/ci/test-vulkan.sh      # Vulkan, validation on
+tools/ci/test-metal.sh       # macOS
+tools/ci/test-web.sh         # headless Chrome on WebGPU
 ```
 
 Output goes to `artifacts/` at the repository root, or to `$ONEGPU_ARTIFACTS` when set. Device tests skip, and print why, when no
 adapter is present. For Vulkan, run with the Khronos validation layer (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`, or
-`ONEGPU_GPU_VALIDATION=1`); a run that prints validation messages fails.
+`ONEGPU_VALIDATION=1`); a run that prints validation messages fails.
 
-Environment variables: `ONEGPU_BACKEND` (`vulkan`, `metal`, `webgpu`) overrides backend selection, `ONEGPU_GPU_ADAPTER` picks an adapter
-by name or kind, `ONEGPU_GPU_VALIDATION=1` turns validation on.
+Environment variables: `ONEGPU_BACKEND` (`vulkan`, `metal`, `webgpu`) overrides backend selection, `ONEGPU_ADAPTER` picks an adapter
+by name or kind, `ONEGPU_VALIDATION=1` turns validation on.
 
 ## Licence
 

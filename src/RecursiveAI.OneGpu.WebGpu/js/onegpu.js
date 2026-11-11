@@ -41,7 +41,7 @@ export async function init(requestJson) {
   if (!navigator.gpu) throw new Error('This browser has no WebGPU (navigator.gpu is missing).');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance', forceFallbackAdapter: !!req.fallback });
   if (!adapter) throw new Error('No WebGPU adapter is available.');
-  const want = ['depth32float-stencil8', 'rg11b10ufloat-renderable', 'bgra8unorm-storage', 'float32-filterable', 'float32-blendable', 'indirect-first-instance', 'depth-clip-control', 'timestamp-query', 'texture-compression-bc'];
+  const want = ['depth32float-stencil8', 'rg11b10ufloat-renderable', 'bgra8unorm-storage', 'float32-filterable', 'float32-blendable', 'indirect-first-instance', 'depth-clip-control', 'timestamp-query', 'texture-compression-bc', 'shader-f16', 'subgroups'];
   const features = want.filter(f => adapter.features.has(f));
   const limitNames = ['maxTextureDimension1D', 'maxTextureDimension2D', 'maxTextureDimension3D', 'maxTextureArrayLayers', 'maxBindGroups', 'maxBindingsPerBindGroup', 'maxDynamicUniformBuffersPerPipelineLayout', 'maxDynamicStorageBuffersPerPipelineLayout', 'maxSampledTexturesPerShaderStage', 'maxSamplersPerShaderStage', 'maxStorageBuffersPerShaderStage', 'maxStorageTexturesPerShaderStage', 'maxUniformBuffersPerShaderStage', 'maxUniformBufferBindingSize', 'maxStorageBufferBindingSize', 'maxVertexBuffers', 'maxBufferSize', 'maxVertexAttributes', 'maxVertexBufferArrayStride', 'maxInterStageShaderVariables', 'maxColorAttachments', 'maxColorAttachmentBytesPerSample', 'maxComputeWorkgroupStorageSize', 'maxComputeInvocationsPerWorkgroup', 'maxComputeWorkgroupSizeX', 'maxComputeWorkgroupSizeY', 'maxComputeWorkgroupSizeZ', 'maxComputeWorkgroupsPerDimension'];
   const requiredLimits = {};
@@ -56,6 +56,10 @@ export async function init(requestJson) {
     vendor: info.vendor || '', architecture: info.architecture || '', features,
     software: !!(adapter.isFallbackAdapter || info.isFallbackAdapter || /swiftshader|llvmpipe|software/i.test((info.description || '') + (info.vendor || '') + (info.architecture || ''))),
     maxTexture2D: device.limits.maxTextureDimension2D, maxTexture3D: device.limits.maxTextureDimension3D, maxLayers: device.limits.maxTextureArrayLayers,
+    // Compute: limits as the device got them, subgroup sizes from the adapter, and the WGSL language features the page's compiler has.
+    subgroupMin: info.subgroupMinSize || 0, subgroupMax: info.subgroupMaxSize || 0,
+    dot4: !!(navigator.gpu.wgslLanguageFeatures && navigator.gpu.wgslLanguageFeatures.has('packed_4x8_integer_dot_product')),
+    limits: Object.fromEntries(limitNames.concat(['minStorageBufferOffsetAlignment']).filter(k => device.limits[k] !== undefined).map(k => [k, device.limits[k]])),
   };
   return JSON.stringify(adapterInfo);
 }
@@ -170,6 +174,11 @@ function variantFor(L, shaders) {
 // ---- push constants: a ring of uniform slots; each change writes a slot and binds it with a dynamic offset ----
 const PUSH_SLOT = 256;   // minUniformBufferOffsetAlignment is at most 256
 let pushRing = null, pushOff = 0;
+let lastPushOff = 0;   // the slot the current pass last pushed; bind groups that share the push group are bound with it
+function ensureRing() {
+  if (!pushRing) pushRing = device.createBuffer({ size: 1 << 20, usage: 0x40 | 8, label: 'push constants' });
+  return pushRing;
+}
 function pushSlot(data) {
   const need = (data.length + PUSH_SLOT - 1) & ~(PUSH_SLOT - 1);
   if (!pushRing || pushOff + need > pushRing.size) {
@@ -185,6 +194,15 @@ function pushSlot(data) {
 function pushBlock(V, data) {
   const L = V.L;
   const off = pushSlot(data);
+  lastPushOff = off;
+  // The push block lives in the highest bind group the shaders use. When the application has put its own bind group there, the push
+  // binding is part of that group (see realizeBindGroup), so the group is bound again with the new slot behind its own dynamic offsets.
+  const shared = pending.get(V.pushGroup);
+  if (shared && O[shared.gid].L === V.L) {
+    const bg = realizeBindGroup(O[shared.gid], V);
+    if (bg) (rp || cp).setBindGroup(V.pushGroup, bg, [...shared.dyn, off]);
+    return;
+  }
   if (V.pushBuf !== pushRing) {
     V.pushBuf = pushRing;
     V.pushBG = device.createBindGroup({ layout: V.bgls[V.pushGroup], entries: [{ binding: V.pushBinding, resource: { buffer: pushRing, offset: 0, size: (L.pushSize + 15) & ~15 } }] });
@@ -238,8 +256,9 @@ function dropViews(id) {
 function realizeBindGroup(g, V) {
   if (!V) { note('bind group used before a pipeline was set'); return null; }
   const bgl = V.bgls[g.set];
+  const sharesPush = V.pushGroup === g.set;
   let bg = g.bgs.get(bgl);
-  if (bg) return bg;
+  if (bg && (!sharesPush || g.ringOf === pushRing)) return bg;
   const present = V.sets[g.set];
   const entries = [];
   for (const e of g.entries) {
@@ -250,6 +269,11 @@ function realizeBindGroup(g, V) {
       entries.push({ binding: e.binding, resource: getView(e.id, e.view) });
     }
     else entries.push({ binding: e.binding, resource: O[e.id] });
+  }
+  if (sharesPush) {
+    // The push binding is in this group's layout, so the group has to carry it: a slot ring buffer bound with a dynamic offset.
+    entries.push({ binding: V.pushBinding, resource: { buffer: ensureRing(), offset: 0, size: (V.L.pushSize + 15) & ~15 } });
+    g.ringOf = pushRing;
   }
   bg = device.createBindGroup({ layout: bgl, entries, ...lbl(g.label) });
   g.bgs.set(bgl, bg);
@@ -315,7 +339,7 @@ const pipeLayout = new WeakMap();
 const pending = new Map();   // set index -> the bind group last set in this pass
 function applyBind(set, gid, dyn) {
   const bg = realizeBindGroup(O[gid], curV);
-  if (bg) (rp || cp).setBindGroup(set, bg, dyn);
+  if (bg) (rp || cp).setBindGroup(set, bg, curV.pushGroup === set ? [...dyn, lastPushOff] : dyn);
 }
 const garbage = [];   // temporary buffers of the current encoder, destroyed once it is submitted
 
@@ -418,7 +442,7 @@ function run(op) {
       queue.writeTexture({ texture: O[id], mipLevel: mip, origin }, data, { bytesPerRow: w * m.bpt, rowsPerImage: h }, [w, h, d]);
       break;
     }
-    case 20: enc = device.createCommandEncoder(); pushOff = 0; break;
+    case 20: enc = device.createCommandEncoder(); pushOff = 0; lastPushOff = 0; break;
     case 21: { queue.submit([enc.finish()]); enc = null; for (const g of garbage.splice(0)) g.destroy(); break; }
     case 22: {
       curV = null; pending.clear();

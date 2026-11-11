@@ -1,0 +1,29 @@
+name: release
+
+# Packs the libraries. Publishing to a package feed is a separate, manual step that this workflow does not perform.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Pack
+        run: |
+          dotnet restore OneGpu.slnx
+          dotnet pack OneGpu.slnx -c Release --no-restore -p:Version="${{ inputs.version }}" -p:ContinuousIntegrationBuild=true -o packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: packages/*.nupkg
