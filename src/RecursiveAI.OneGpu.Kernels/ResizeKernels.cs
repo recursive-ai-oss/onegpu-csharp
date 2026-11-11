@@ -325,8 +325,8 @@ public sealed class ResizeKernels : IDisposable
         }
     }
 
-    /// <summary>How many bind groups the family has built so far; tests use it to see the cache work.</summary>
-    internal int BindGroupsCreated => KernelPipeline.Total(_pipelines);
+    /// <summary>How many bind groups the family has built so far; it stops growing once the buffer sets in use are cached (see <see cref="ReleaseBindings"/>).</summary>
+    public int BindGroupsCreated => KernelPipeline.Total(_pipelines);
 
     /// <summary>
     /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.

@@ -28,10 +28,11 @@ public enum ConvVariant
 /// are applied by one element-wise pass after the product, in the order sum, bias, residual, activation, each rounded in float32.
 /// </para>
 /// <para>
-/// The column matrix and, for float16, the float32 accumulators live in scratch buffers. Pass them to <c>Encode</c> to control where they live
-/// (see <see cref="ColumnElements(in ConvProblem)"/> and <see cref="AccumulatorElements"/> for the size of the whole batch, and note that a smaller buffer is accepted: the batch is then
-/// processed in chunks of as many images as fit, at least one); pass null and the instance keeps its own, grown on demand up to 64 MiB. Chunks are independent images, so chunking
-/// does not change a bit of the result.
+/// The column matrix of the unfold variants and, for float16, the float32 accumulators live in scratch buffers; <see cref="Scratch(in ConvProblem, bool)"/> says what a shape needs
+/// on this device (nothing for the variants that gather windows while they multiply). Pass buffers and element offsets to <c>Encode</c> to place the scratch in an arena
+/// of the caller's (it must not overlap the other operands); a buffer smaller than the whole batch needs is accepted, and the batch is then processed in chunks of as many
+/// images as fit, at least one. Pass null and the instance keeps its own, grown on demand up to 64 MiB. Chunks are independent images, so chunking does not change a bit
+/// of the result.
 /// </para>
 /// <para>
 /// <b>Determinism.</b> No kernel here uses an atomic, a subgroup operation or a split of the reduction: each output is summed in an order fixed by the shape
@@ -50,6 +51,9 @@ public sealed class ConvKernels : IDisposable
     const string TransposeName = "ConvTranspose";
     const long OwnScratchBytes = 64L << 20;
 
+    // Below this many 64 x 64 workgroups the matrix-hardware kernel uses 64 x 32 tiles (an M2 has ten cores; the 64 x 64 grid of a 7 x 7 layer at batch 1 has 8, a 14 x 14 layer's 16; wider grids measured no better with the narrow tile).
+    const long NarrowBelowWorkgroups = 40;
+
     readonly GpuDevice _device;
     readonly GpuKernelMode _mode;
     readonly GemmOptions? _gemmOptions;
@@ -59,6 +63,8 @@ public sealed class ConvKernels : IDisposable
     readonly KernelPipeline?[] _depthwise = new KernelPipeline?[2];
     readonly KernelPipeline?[] _col2im = new KernelPipeline?[2];
     readonly ConvPipeline?[] _convGemm = new ConvPipeline?[3];
+    ConvPipeline? _convCoop;
+    ConvPipeline? _convCoopNarrow;
     Gemm? _gemm32;
     Gemm? _gemm16;
     GpuBuffer<float>? _dummy;
@@ -83,6 +89,9 @@ public sealed class ConvKernels : IDisposable
     /// <summary>Lets tests turn the implicit kernel off to compare it with the column-matrix path.</summary>
     internal bool AllowImplicit { get; set; } = true;
 
+    /// <summary>Lets tests turn the matrix-hardware implicit kernel off to compare it with the column-matrix path.</summary>
+    internal bool AllowCoopImplicit { get; set; } = true;
+
     /// <summary>The mode the instance was created with.</summary>
     public GpuKernelMode Mode => _mode;
 
@@ -92,7 +101,7 @@ public sealed class ConvKernels : IDisposable
     /// <summary>The matrix-product variant used for float16 inputs (<see cref="Gemm.Variant"/>).</summary>
     public string GemmVariantFloat16 => (_gemm16 ??= new Gemm(_device, GemmElementType.F16, _mode, _gemmOptions, _maxBindGroups)).Variant;
 
-    /// <summary>How <see cref="Encode(GpuCommandEncoder, in ConvProblem, GpuBuffer{float}, GpuBuffer{float}, GpuBuffer{float}?, GpuBuffer{float}?, GpuBuffer{float}, GpuBuffer{float}?)"/> computes a shape. Does not validate the shape.</summary>
+    /// <summary>How <see cref="Encode(GpuCommandEncoder, in ConvProblem, GpuBuffer{float}, GpuBuffer{float}, GpuBuffer{float}?, GpuBuffer{float}?, GpuBuffer{float}, GpuBuffer{float}?, int)"/> computes a shape. Does not validate the shape.</summary>
     /// <param name="problem">The convolution.</param>
     public static ConvVariant ChooseVariant(in ConvProblem problem)
     {
@@ -119,6 +128,11 @@ public sealed class ConvKernels : IDisposable
         }
 
         var gemm = half ? GemmVariantFloat16 : GemmVariantFloat32;
+        if (UsesCoopImplicit(half))
+        {
+            return "implicit fused-epilogue " + gemm + " (windows gathered into the matrix tiles; pointwise tiles read the operands directly)";
+        }
+
         if (UsesImplicitGemm(half))
         {
             return (half ? "implicit " : "implicit fused-epilogue ") + gemm + " + " + (half ? "epilogue pass" : "bias/residual/activation in the store");
@@ -129,6 +143,34 @@ public sealed class ConvKernels : IDisposable
 
     static bool IsPointwise(in ConvProblem p) =>
         p.KernelHeight == 1 && p.KernelWidth == 1 && p.StrideHeight == 1 && p.StrideWidth == 1 && p.PadTop == 0 && p.PadBottom == 0 && p.PadLeft == 0 && p.PadRight == 0;
+
+    /// <summary>
+    /// The scratch this instance needs to run a convolution of the given shape and element type on its device: nothing for the variants that gather windows while they
+    /// multiply (the portable and the matrix-hardware implicit kernels, depthwise, pointwise float32), the column matrix for the unfold variants, and for halves
+    /// float32 accumulators. Sizes are in elements of the scratch buffers' types; a buffer of the per-image size works (the batch then runs in chunks of images,
+    /// which changes no bit of the result) and a buffer of the whole-batch size runs it in one go.
+    /// </summary>
+    /// <param name="problem">The convolution; it must be valid.</param>
+    /// <param name="half">True for float16 operands, false for float32.</param>
+    public ConvScratch Scratch(in ConvProblem problem, bool half)
+    {
+        var variant = ChooseVariant(problem);
+        long ohw = (long)problem.OutHeight * problem.OutWidth;
+        long yImage = problem.OutChannels * ohw;
+        long colPerImage = variant == ConvVariant.Im2ColMatrixProduct && !UsesCoopImplicit(half) && !UsesImplicitGemm(half)
+            ? (long)problem.InChannels * problem.KernelHeight * problem.KernelWidth * ohw
+            : 0;
+        var accPerImage = half && variant != ConvVariant.Depthwise ? yImage : 0;
+        return new ConvScratch(colPerImage * problem.Batch, accPerImage * problem.Batch, colPerImage, accPerImage);
+    }
+
+    /// <summary>The scratch a transposed convolution needs: float32 columns (the matrix product's result), for both element types. See <see cref="Scratch(in ConvProblem, bool)"/>.</summary>
+    /// <param name="problem">The transposed convolution; it must be valid.</param>
+    public static ConvScratch Scratch(in ConvTransposeProblem problem)
+    {
+        long perImage = (long)problem.OutChannels * problem.KernelHeight * problem.KernelWidth * problem.Height * problem.Width;
+        return new ConvScratch(perImage * problem.Batch, 0, perImage, 0);
+    }
 
     /// <summary>
     /// Elements of the column matrix the whole batch of <paramref name="problem"/> needs (float32 or float16 elements, matching the data type): 0 for variants
@@ -160,11 +202,12 @@ public sealed class ConvKernels : IDisposable
     /// <param name="bias">Bias, <c>OutChannels</c> elements, or null for none.</param>
     /// <param name="residual">A tensor of the output's shape added after the bias, or null.</param>
     /// <param name="y">Receives the output, <c>[Batch, OutChannels, OutHeight, OutWidth]</c>. Also the accumulators of the matrix product.</param>
-    /// <param name="columns">Scratch for the column matrix (see <see cref="ColumnElements(in ConvProblem)"/>), or null to use the instance's own.</param>
-    /// <exception cref="GpuKernelShapeException">A dimension, stride, group count, padding or offset is invalid, a range reaches past its buffer, or the scratch is smaller than one image needs. Names the argument.</exception>
+    /// <param name="columns">Scratch for the column matrix (see <see cref="Scratch(in ConvProblem, bool)"/> for its size), or null to use the instance's own.</param>
+    /// <param name="columnsOffset">Element offset of the scratch in <paramref name="columns"/>; ignored when that is null. May share a buffer with the other operands as long as the ranges do not overlap.</param>
+    /// <exception cref="GpuKernelShapeException">A dimension, stride, group count, padding or offset is invalid, a range reaches past its buffer, the scratch is smaller than one image needs, or the scratch overlaps another operand in the same buffer. Names the argument.</exception>
     /// <exception cref="GpuUnsupportedException">An operand is larger than one storage-buffer binding can cover on this device.</exception>
-    public void Encode(GpuCommandEncoder encoder, in ConvProblem problem, GpuBuffer<float> x, GpuBuffer<float> w, GpuBuffer<float>? bias, GpuBuffer<float>? residual, GpuBuffer<float> y, GpuBuffer<float>? columns = null) =>
-        EncodeConv(encoder, problem, x, w, bias, residual, y, columns, null);
+    public void Encode(GpuCommandEncoder encoder, in ConvProblem problem, GpuBuffer<float> x, GpuBuffer<float> w, GpuBuffer<float>? bias, GpuBuffer<float>? residual, GpuBuffer<float> y, GpuBuffer<float>? columns = null, int columnsOffset = 0) =>
+        EncodeConv(encoder, problem, x, w, bias, residual, y, columns, columnsOffset, null, 0);
 
     /// <summary>
     /// Records a float16 convolution with float32 accumulation <c>y = activation(conv(x, w) + bias + residual)</c>; every operand and the output are halves.
@@ -176,12 +219,14 @@ public sealed class ConvKernels : IDisposable
     /// <param name="bias">Bias, <c>OutChannels</c> elements, or null for none.</param>
     /// <param name="residual">A tensor of the output's shape added after the bias, or null.</param>
     /// <param name="y">Receives the output, <c>[Batch, OutChannels, OutHeight, OutWidth]</c>.</param>
-    /// <param name="columns">Scratch for the column matrix (see <see cref="ColumnElements(in ConvProblem)"/>), or null to use the instance's own.</param>
-    /// <param name="accumulators">Float32 scratch for the matrix product's result (see <see cref="AccumulatorElements"/>), or null to use the instance's own.</param>
+    /// <param name="columns">Scratch of halves for the column matrix (see <see cref="Scratch(in ConvProblem, bool)"/> for its size), or null to use the instance's own.</param>
+    /// <param name="accumulators">Float32 scratch for the matrix product's result, or null to use the instance's own.</param>
+    /// <param name="columnsOffset">Element offset of the scratch in <paramref name="columns"/>, in halves; ignored when that is null.</param>
+    /// <param name="accumulatorsOffset">Element offset of the scratch in <paramref name="accumulators"/>, in floats; ignored when that is null.</param>
     /// <exception cref="GpuKernelShapeException">As for the float32 overload.</exception>
     /// <exception cref="GpuUnsupportedException">An operand is larger than one storage-buffer binding can cover on this device.</exception>
-    public void Encode(GpuCommandEncoder encoder, in ConvProblem problem, GpuBuffer<Half> x, GpuBuffer<Half> w, GpuBuffer<Half>? bias, GpuBuffer<Half>? residual, GpuBuffer<Half> y, GpuBuffer<Half>? columns = null, GpuBuffer<float>? accumulators = null) =>
-        EncodeConv(encoder, problem, x, w, bias, residual, y, columns, accumulators);
+    public void Encode(GpuCommandEncoder encoder, in ConvProblem problem, GpuBuffer<Half> x, GpuBuffer<Half> w, GpuBuffer<Half>? bias, GpuBuffer<Half>? residual, GpuBuffer<Half> y, GpuBuffer<Half>? columns = null, GpuBuffer<float>? accumulators = null, int columnsOffset = 0, int accumulatorsOffset = 0) =>
+        EncodeConv(encoder, problem, x, w, bias, residual, y, columns, columnsOffset, accumulators, accumulatorsOffset);
 
     /// <summary>Records a float32 transposed convolution <c>y = activation(convTranspose(x, w) + bias)</c>.</summary>
     /// <param name="encoder">Receives the passes. No other pass may be open on it.</param>
@@ -190,11 +235,12 @@ public sealed class ConvKernels : IDisposable
     /// <param name="w">Weights, <c>[InChannels, OutChannels / Groups, KernelHeight, KernelWidth]</c>.</param>
     /// <param name="bias">Bias, <c>OutChannels</c> elements, or null for none.</param>
     /// <param name="y">Receives the output, <c>[Batch, OutChannels, OutHeight, OutWidth]</c>.</param>
-    /// <param name="columns">Float32 scratch (see <see cref="ColumnElements(in ConvTransposeProblem)"/>), or null to use the instance's own.</param>
-    /// <exception cref="GpuKernelShapeException">A dimension, stride, group count, padding or offset is invalid, a range reaches past its buffer, or the scratch is smaller than one image needs.</exception>
+    /// <param name="columns">Float32 scratch (see <see cref="Scratch(in ConvTransposeProblem)"/> for its size), or null to use the instance's own.</param>
+    /// <param name="columnsOffset">Element offset of the scratch in <paramref name="columns"/>; ignored when that is null.</param>
+    /// <exception cref="GpuKernelShapeException">A dimension, stride, group count, padding or offset is invalid, a range reaches past its buffer, the scratch is smaller than one image needs, or it overlaps another operand in the same buffer.</exception>
     /// <exception cref="GpuUnsupportedException">An operand is larger than one storage-buffer binding can cover on this device.</exception>
-    public void EncodeTranspose(GpuCommandEncoder encoder, in ConvTransposeProblem problem, GpuBuffer<float> x, GpuBuffer<float> w, GpuBuffer<float>? bias, GpuBuffer<float> y, GpuBuffer<float>? columns = null) =>
-        EncodeTransposeCore(encoder, problem, x, w, bias, y, columns);
+    public void EncodeTranspose(GpuCommandEncoder encoder, in ConvTransposeProblem problem, GpuBuffer<float> x, GpuBuffer<float> w, GpuBuffer<float>? bias, GpuBuffer<float> y, GpuBuffer<float>? columns = null, int columnsOffset = 0) =>
+        EncodeTransposeCore(encoder, problem, x, w, bias, y, columns, columnsOffset);
 
     /// <summary>Records a float16 transposed convolution with float32 accumulation; operands and output are halves.</summary>
     /// <param name="encoder">Receives the passes. No other pass may be open on it.</param>
@@ -203,13 +249,14 @@ public sealed class ConvKernels : IDisposable
     /// <param name="w">Weights, <c>[InChannels, OutChannels / Groups, KernelHeight, KernelWidth]</c>.</param>
     /// <param name="bias">Bias, <c>OutChannels</c> elements, or null for none.</param>
     /// <param name="y">Receives the output, <c>[Batch, OutChannels, OutHeight, OutWidth]</c>.</param>
-    /// <param name="columns">Float32 scratch (see <see cref="ColumnElements(in ConvTransposeProblem)"/>), or null to use the instance's own.</param>
+    /// <param name="columns">Float32 scratch (see <see cref="Scratch(in ConvTransposeProblem)"/> for its size), or null to use the instance's own.</param>
+    /// <param name="columnsOffset">Element offset of the scratch in <paramref name="columns"/>, in floats; ignored when that is null.</param>
     /// <exception cref="GpuKernelShapeException">As for the float32 overload.</exception>
     /// <exception cref="GpuUnsupportedException">An operand is larger than one storage-buffer binding can cover on this device.</exception>
-    public void EncodeTranspose(GpuCommandEncoder encoder, in ConvTransposeProblem problem, GpuBuffer<Half> x, GpuBuffer<Half> w, GpuBuffer<Half>? bias, GpuBuffer<Half> y, GpuBuffer<float>? columns = null) =>
-        EncodeTransposeCore(encoder, problem, x, w, bias, y, columns);
+    public void EncodeTranspose(GpuCommandEncoder encoder, in ConvTransposeProblem problem, GpuBuffer<Half> x, GpuBuffer<Half> w, GpuBuffer<Half>? bias, GpuBuffer<Half> y, GpuBuffer<float>? columns = null, int columnsOffset = 0) =>
+        EncodeTransposeCore(encoder, problem, x, w, bias, y, columns, columnsOffset);
 
-    void EncodeConv<T>(GpuCommandEncoder encoder, in ConvProblem p, GpuBuffer<T> x, GpuBuffer<T> w, GpuBuffer<T>? bias, GpuBuffer<T>? residual, GpuBuffer<T> y, GpuBuffer<T>? columns, GpuBuffer<float>? accumulators)
+    void EncodeConv<T>(GpuCommandEncoder encoder, in ConvProblem p, GpuBuffer<T> x, GpuBuffer<T> w, GpuBuffer<T>? bias, GpuBuffer<T>? residual, GpuBuffer<T> y, GpuBuffer<T>? columns, int columnsOffset, GpuBuffer<float>? accumulators, int accumulatorsOffset)
         where T : unmanaged
     {
         ArgumentNullException.ThrowIfNull(encoder);
@@ -245,6 +292,15 @@ public sealed class ConvKernels : IDisposable
         var (act, p0, p1) = ActivationWords(p.Activation);
         var dummy = Dummy();
         var kind = half ? 1 : 0;
+        if (columns is null)
+        {
+            columnsOffset = 0;
+        }
+
+        if (accumulators is null)
+        {
+            accumulatorsOffset = 0;
+        }
         if (variant == ConvVariant.Depthwise)
         {
             var pipe = _depthwise[kind] ??= CreateDepthwise(half);
@@ -281,7 +337,8 @@ public sealed class ConvKernels : IDisposable
         }
 
         var pointwise = variant == ConvVariant.MatrixProduct;
-        var implicitGemm = UsesImplicitGemm(half);
+        var coop = UsesCoopImplicit(half);
+        var implicitGemm = coop || UsesImplicitGemm(half);
         // With float32 operands the implicit kernel applies the bias, residual and the activations it knows as it stores; anything else is left to the epilogue pass.
         var fused = implicitGemm && !half && FusableActivation(p.Activation.Op);
         long colPerImage = pointwise || implicitGemm ? 0 : (long)p.InChannels * p.KernelHeight * p.KernelWidth * ohw;
@@ -297,27 +354,39 @@ public sealed class ConvKernels : IDisposable
         if (colPerImage > 0)
         {
             cols = columns ?? OwnColumns<T>(colPerImage, chunk);
-            chunk = Math.Min(chunk, (cols.Length - (half ? 1 : 0)) / colPerImage);
+            CheckScratchOffset(ConvName, nameof(columns), columnsOffset, cols.Length);
+            var colsAvailable = cols.Length - columnsOffset;
+            chunk = Math.Min(chunk, (colsAvailable - (half ? 1 : 0)) / colPerImage);
             if (chunk < 1)
             {
-                throw new GpuKernelShapeException(ConvName, nameof(columns), $"the scratch holds {cols.Length} elements; one image needs {colPerImage}");
+                throw new GpuKernelShapeException(ConvName, nameof(columns), $"the scratch holds {colsAvailable} elements from its offset; one image needs {colPerImage}");
             }
+
+            CheckScratchRange(ConvName, nameof(columns), cols.Buffer, columnsOffset, chunk * colPerImage, [(nameof(x), x.Buffer, p.OffsetX, xImage * p.Batch), (nameof(w), w.Buffer, p.OffsetW, (long)p.OutChannels * kElems), (nameof(y), y.Buffer, p.OffsetY, yImage * p.Batch), (nameof(residual), residual?.Buffer, p.OffsetResidual, yImage * p.Batch), (nameof(bias), bias?.Buffer, p.OffsetBias, p.OutChannels)]);
         }
 
         if (half)
         {
             acc = accumulators ?? OwnAccumulators(yImage, chunk);
-            var fit = acc.Length / yImage;
+            CheckScratchOffset(ConvName, nameof(accumulators), accumulatorsOffset, acc.Length);
+            var fit = (acc.Length - accumulatorsOffset) / yImage;
             if (fit < 1)
             {
-                throw new GpuKernelShapeException(ConvName, nameof(accumulators), $"the scratch holds {acc.Length} elements; one image needs {yImage}");
+                throw new GpuKernelShapeException(ConvName, nameof(accumulators), $"the scratch holds {acc.Length - accumulatorsOffset} elements from its offset; one image needs {yImage}");
             }
 
             chunk = Math.Min(chunk, fit);
+            CheckScratchRange(ConvName, nameof(accumulators), acc.Buffer, accumulatorsOffset, chunk * yImage, [(nameof(columns), cols?.Buffer, columnsOffset, chunk * colPerImage)]);
         }
 
         var tilesX = (ohw + 63) / 64;
         var tilesY = (coutG + 63L) / 64;
+        // A 64 x 64 tile grid that leaves most of the GPU idle (small images, the late layers of a classifier) is cut into 64 x 32 tiles instead.
+        var narrow = coop && tilesX * tilesY * p.Groups * p.Batch < NarrowBelowWorkgroups;
+        if (narrow)
+        {
+            tilesX = (ohw + 31) / 32;
+        }
         if (implicitGemm)
         {
             var limit = _device.Capabilities.Compute.MaxWorkgroupCount;
@@ -339,7 +408,7 @@ public sealed class ConvKernels : IDisposable
             var cn = (int)Math.Min(chunk, p.Batch - n0);
             if (implicitGemm)
             {
-                var pipe = _convGemm[kind] ??= CreateConvGemm(half);
+                var pipe = coop ? (narrow ? (_convCoopNarrow ??= CreateConvCoop(true)) : (_convCoop ??= CreateConvCoop(false))) : (_convGemm[kind] ??= CreateConvGemm(half));
                 cg[0] = (uint)coutG;
                 cg[1] = (uint)ohw;
                 cg[2] = (uint)kElems;
@@ -358,7 +427,7 @@ public sealed class ConvKernels : IDisposable
                 cg[15] = (uint)p.PadLeft;
                 cg[16] = (uint)(p.OffsetX + (n0 * xImage));
                 cg[17] = (uint)p.OffsetW;
-                cg[18] = half ? 0u : (uint)(p.OffsetY + (n0 * yImage));
+                cg[18] = half ? (uint)accumulatorsOffset : (uint)(p.OffsetY + (n0 * yImage));
                 cg[19] = (uint)p.OffsetBias;
                 cg[20] = (uint)(p.OffsetResidual + (n0 * yImage));
                 cg[21] = (uint)p.OutChannels;
@@ -379,7 +448,7 @@ public sealed class ConvKernels : IDisposable
                     var count = (long)cn * colPerImage;
                     w17[0] = (uint)count;
                     w17[1] = (uint)(p.OffsetX + (n0 * xImage));
-                    w17[2] = 0;
+                    w17[2] = (uint)columnsOffset;
                     w17[4] = (uint)p.InChannels;
                     w17[5] = (uint)p.Height;
                     w17[6] = (uint)p.Width;
@@ -413,12 +482,12 @@ public sealed class ConvKernels : IDisposable
                     }
                     else
                     {
-                        gp.OffsetB = checked((int)((long)g * kElems * ohw));
+                        gp.OffsetB = checked((int)(columnsOffset + ((long)g * kElems * ohw)));
                         gp.StrideB = (int)colPerImage;
                     }
 
                     gp.StrideC = (int)yImage;
-                    gp.OffsetC = half ? checked((int)((long)g * coutG * ohw)) : checked((int)(p.OffsetY + (n0 * yImage) + ((long)g * coutG * ohw)));
+                    gp.OffsetC = half ? checked((int)(accumulatorsOffset + ((long)g * coutG * ohw))) : checked((int)(p.OffsetY + (n0 * yImage) + ((long)g * coutG * ohw)));
                     RunGemm(encoder, gp, w, pointwise ? x : cols!, half ? acc! : (GpuBuffer<float>)(object)y);
                 }
             }
@@ -429,7 +498,7 @@ public sealed class ConvKernels : IDisposable
                 var count = (long)cn * yImage;
                 e[0] = (uint)count;
                 e[1] = (uint)(p.OffsetY + (n0 * yImage));
-                e[2] = 0;
+                e[2] = (uint)accumulatorsOffset;
                 e[3] = (uint)p.OffsetBias;
                 e[4] = (uint)(p.OffsetResidual + (n0 * yImage));
                 e[5] = (uint)ohw;
@@ -461,11 +530,16 @@ public sealed class ConvKernels : IDisposable
         return AllowImplicit && variant.StartsWith("tiled", StringComparison.Ordinal);
     }
 
+    // On a device whose float32 matrix product runs on matrix hardware (Metal) the implicit kernel uses it too: the windows are gathered while the tiles are staged,
+    // so no column matrix is written and read, and the bias, residual and activation are applied as the result is stored.
+    bool UsesCoopImplicit(bool half) =>
+        AllowImplicit && AllowCoopImplicit && !half && GemmVariantFloat32.StartsWith("simdgroup", StringComparison.Ordinal);
+
     // Activations the implicit kernel applies itself (see ConvAct in ConvGemm.hlsl).
     static bool FusableActivation(GpuUnaryOp op) =>
         op is GpuUnaryOp.Identity or GpuUnaryOp.Tanh or GpuUnaryOp.Sigmoid or GpuUnaryOp.Relu or GpuUnaryOp.Silu or GpuUnaryOp.HardSigmoid or GpuUnaryOp.HardSwish or GpuUnaryOp.Clip or GpuUnaryOp.LeakyRelu;
 
-    void EncodeTransposeCore<T>(GpuCommandEncoder encoder, in ConvTransposeProblem p, GpuBuffer<T> x, GpuBuffer<T> w, GpuBuffer<T>? bias, GpuBuffer<T> y, GpuBuffer<float>? columns)
+    void EncodeTransposeCore<T>(GpuCommandEncoder encoder, in ConvTransposeProblem p, GpuBuffer<T> x, GpuBuffer<T> w, GpuBuffer<T>? bias, GpuBuffer<T> y, GpuBuffer<float>? columns, int columnsOffset)
         where T : unmanaged
     {
         ArgumentNullException.ThrowIfNull(encoder);
@@ -494,12 +568,20 @@ public sealed class ConvKernels : IDisposable
             Check.Range(TransposeName, nameof(bias), bias.Length, p.OffsetBias, p.OutChannels, half);
         }
 
+        if (columns is null)
+        {
+            columnsOffset = 0;
+        }
+
         var cols = columns ?? OwnAccumulators(colPerImage, p.Batch);
-        var chunk = Math.Min(p.Batch, cols.Length / colPerImage);
+        CheckScratchOffset(TransposeName, nameof(columns), columnsOffset, cols.Length);
+        var chunk = Math.Min(p.Batch, (cols.Length - columnsOffset) / colPerImage);
         if (chunk < 1)
         {
-            throw new GpuKernelShapeException(TransposeName, nameof(columns), $"the scratch holds {cols.Length} elements; one image needs {colPerImage}");
+            throw new GpuKernelShapeException(TransposeName, nameof(columns), $"the scratch holds {cols.Length - columnsOffset} elements from its offset; one image needs {colPerImage}");
         }
+
+        CheckScratchRange(TransposeName, nameof(columns), cols.Buffer, columnsOffset, chunk * colPerImage, [(nameof(x), x.Buffer, p.OffsetX, xImage * p.Batch), (nameof(w), w.Buffer, p.OffsetW, (long)p.InChannels * rows), (nameof(y), y.Buffer, p.OffsetY, yImage * p.Batch), (nameof(bias), bias?.Buffer, p.OffsetBias, p.OutChannels)]);
 
         var (act, p0, p1) = ActivationWords(p.Activation);
         var dummy = Dummy();
@@ -520,7 +602,7 @@ public sealed class ConvKernels : IDisposable
                     StrideA = 0,
                     OffsetB = checked((int)(p.OffsetX + (n0 * xImage) + ((long)g * cinG * hw))),
                     StrideB = (int)xImage,
-                    OffsetC = checked((int)(g * rows * hw)),
+                    OffsetC = checked((int)(columnsOffset + (g * rows * hw))),
                     StrideC = (int)colPerImage,
                 };
                 RunGemm(encoder, gp, w, x, cols);
@@ -528,7 +610,7 @@ public sealed class ConvKernels : IDisposable
 
             var count = (long)cn * yImage;
             c[0] = (uint)count;
-            c[1] = 0;
+            c[1] = (uint)columnsOffset;
             c[2] = (uint)p.OffsetBias;
             c[3] = (uint)(p.OffsetY + (n0 * yImage));
             c[5] = (uint)p.OutChannels;
@@ -624,6 +706,26 @@ public sealed class ConvKernels : IDisposable
         }
 
         return _ownAccumulators;
+    }
+
+    static void CheckScratchOffset(string name, string argument, int offset, int length)
+    {
+        if (offset < 0 || offset > length)
+        {
+            throw new GpuKernelShapeException(name, argument + " offset", $"offset {offset} is outside the scratch buffer of {length} elements");
+        }
+    }
+
+    // The scratch must not share elements with an operand that lives in the same buffer (the operands are a caller's arena slices); distinct buffers never overlap.
+    static void CheckScratchRange(string name, string argument, GpuBuffer scratch, long offset, long length, ReadOnlySpan<(string Name, GpuBuffer? Buffer, long Offset, long Length)> others)
+    {
+        foreach (var (otherName, buffer, otherOffset, otherLength) in others)
+        {
+            if (buffer is not null && ReferenceEquals(buffer, scratch) && offset < otherOffset + otherLength && otherOffset < offset + length)
+            {
+                throw new GpuKernelShapeException(name, argument, $"the scratch range [{offset}, {offset + length}) overlaps {otherName} [{otherOffset}, {otherOffset + otherLength}) in the same buffer");
+            }
+        }
     }
 
     static void CheckSize(string name, string argument, long elements)
@@ -727,8 +829,8 @@ public sealed class ConvKernels : IDisposable
         }
     }
 
-    /// <summary>How many bind groups the family has built so far; tests use it to see the cache work.</summary>
-    internal int BindGroupsCreated => KernelPipeline.Total(_im2col, _epilogue, _depthwise, _col2im) + ConvPipeline.Total(_convGemm) + (_gemm32?.BindGroupsCreated ?? 0) + (_gemm16?.BindGroupsCreated ?? 0);
+    /// <summary>How many bind groups the family has built so far; it stops growing once the buffer sets in use are cached (see <see cref="ReleaseBindings"/>).</summary>
+    public int BindGroupsCreated => KernelPipeline.Total(_im2col, _epilogue, _depthwise, _col2im) + ConvPipeline.Total(_convGemm) + (_convCoop?.Created ?? 0) + (_convCoopNarrow?.Created ?? 0) + (_gemm32?.BindGroupsCreated ?? 0) + (_gemm16?.BindGroupsCreated ?? 0);
 
     /// <summary>
     /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.
@@ -748,6 +850,9 @@ public sealed class ConvKernels : IDisposable
         {
             p?.ReleaseBindings();
         }
+
+        _convCoop?.ReleaseBindings();
+        _convCoopNarrow?.ReleaseBindings();
 
         _gemm32?.ReleaseBindings();
         _gemm16?.ReleaseBindings();
@@ -771,6 +876,10 @@ public sealed class ConvKernels : IDisposable
             _convGemm[i] = null;
         }
 
+        _convCoop?.Dispose();
+        _convCoop = null;
+        _convCoopNarrow?.Dispose();
+        _convCoopNarrow = null;
         _gemm32?.Dispose();
         _gemm16?.Dispose();
         _dummy?.Dispose();
@@ -807,6 +916,16 @@ public sealed class ConvKernels : IDisposable
     {
         var e = ConvGemm.Variants.Get(new ConvGemm.Key(f16: half)).ConvGemmTiled;
         return new ConvPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 26, "conv-gemm", _maxBindGroups);
+    }
+
+    ConvPipeline CreateConvCoop(bool narrow)
+    {
+        if (narrow)
+        {
+            return new ConvPipeline(_device, new ShaderSource(ShaderStage.Compute, ConvCoopNarrowF32.ConvCoop.EntryPoint) { Msl = ConvCoopNarrowF32.ConvCoop.Msl, MslFunctionName = ConvCoopNarrowF32.ConvCoop.MslFunctionName, Layout = ConvCoopNarrowF32.ConvCoop.Layout }, 26, "conv-coop-narrow", _maxBindGroups, 32);
+        }
+
+        return new ConvPipeline(_device, new ShaderSource(ShaderStage.Compute, ConvCoopF32.ConvCoop.EntryPoint) { Msl = ConvCoopF32.ConvCoop.Msl, MslFunctionName = ConvCoopF32.ConvCoop.MslFunctionName, Layout = ConvCoopF32.ConvCoop.Layout }, 26, "conv-coop", _maxBindGroups, 32);
     }
 
     KernelPipeline CreateCol2Im(bool half)

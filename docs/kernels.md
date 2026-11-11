@@ -40,7 +40,7 @@ device.Submit(encoder);
 
 | `GatherKernels` | ONNX Gather (any axis, negative indices, int32 or int64 indices; the embedding lookup), GatherElements, GatherND (with batch dimensions), over 8-, 16-, 32- and 64-bit payloads |
 | `ScatterKernels` | ScatterND and ScatterElements with reduction none, add, mul, min or max |
-| `LayoutKernels` | Slice (including negative steps), Expand, Concat (up to four inputs per pass, more by chaining) |
+| `LayoutKernels` | Slice (including negative steps), Expand, Concat (up to four inputs per pass, more by chaining; inputs may live in the output's buffer when their ranges do not overlap the output's, read in place, or through a scratch copy in a browser) |
 | `Int8Gemm` | MatMulInteger (uint8/int8 in any mix, scalar or per-row/column zero points, int32 result), the float-scaled form and the requantized form of QLinearMatMul |
 | `DynamicQuantizeKernels` | DynamicQuantizeLinear (float32 to uint8 with scale and zero point) |
 | `DequantizeKernels` | DequantizeLinear: uint8, int8 or int32 to float32 or Half, per tensor or per axis, optional zero point |

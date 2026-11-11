@@ -16,7 +16,8 @@ public readonly record struct GpuConcatInput<T>(GpuBuffer<T> Buffer, int Offset,
 /// </summary>
 /// <remarks>
 /// Payload types are <see cref="float"/>, <see cref="int"/>, <see cref="uint"/> (4 bytes), <see cref="Half"/> (2 bytes; buffers must end on a
-/// 32-bit word, see <see cref="GpuKernelBuffers.PaddedHalfLength"/>) and <see cref="long"/> (8 bytes). The output must not overlap an input.
+/// 32-bit word, see <see cref="GpuKernelBuffers.PaddedHalfLength"/>) and <see cref="long"/> (8 bytes). The output must not overlap an input,
+/// except that <c>Concat</c> accepts inputs that live in the output's buffer when their element ranges are disjoint from the output's (an arena).
 /// Slice and Expand share the strided copy of <see cref="TransposeKernels"/> and need at most six dimensions after neighbours that stay
 /// neighbours are merged. Not thread-safe.
 /// </remarks>
@@ -29,6 +30,7 @@ public sealed class LayoutKernels : IDisposable
     readonly int _maxBindGroups;
     readonly TransposeKernels _strided;
     readonly WideKernelPipeline?[] _concat = new WideKernelPipeline?[4];
+    GpuBuffer<uint>? _aliasScratch;
 
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
@@ -308,7 +310,16 @@ public sealed class LayoutKernels : IDisposable
 
             sum += inp.AxisLength;
             Check.Range(Name, $"{nameof(inputs)}[{i}]", inp.Buffer.Length, inp.Offset, outer * inp.AxisLength * inner, half);
-            RequireDistinct(Name, inp.Buffer.Buffer, output.Buffer);
+            if (ReferenceEquals(inp.Buffer.Buffer, output.Buffer))
+            {
+                // Inputs in the output's buffer are fine as long as they do not share elements with the output (an arena holds both).
+                long inStart = inp.Offset;
+                long inEnd = inStart + (outer * inp.AxisLength * inner);
+                if (inStart < offsetOutput + total && offsetOutput < inEnd && inEnd > inStart)
+                {
+                    throw new GpuKernelShapeException(Name, $"{nameof(inputs)}[{i}]", $"the input range [{inStart}, {inEnd}) overlaps the output range [{offsetOutput}, {offsetOutput + total}) in the same buffer");
+                }
+            }
         }
 
         if (sum != outputShape[ax])
@@ -320,6 +331,49 @@ public sealed class LayoutKernels : IDisposable
         if (total == 0)
         {
             return;
+        }
+
+        // A browser does not allow one buffer to be read and written in the same dispatch, so there inputs that live in the output's buffer are first copied
+        // to a scratch buffer of the family's and read from there. Elsewhere the dispatch reads them in place.
+        var viaScratch = _device.Backend == GpuBackend.WebGpu;
+        var elementBytes = width == 0 ? 2 : width == 2 ? 8 : 4;
+        if (viaScratch)
+        {
+            long need = 0;
+            var anyAlias = false;
+            for (var i = 0; i < inputs.Length; i++)
+            {
+                if (ReferenceEquals(inputs[i].Buffer.Buffer, output.Buffer))
+                {
+                    anyAlias = true;
+                    if (inputs[i].AxisLength > 0)
+                    {
+                        need += RoundUp256(AliasSlotBytes(inputs[i], outer, inner, elementBytes, out _));
+                    }
+                }
+            }
+
+            if (anyAlias)
+            {
+                need = Math.Max(need, 4);
+                var words = checked((int)(need / 4));
+                if (_aliasScratch is null || _aliasScratch.Length < words)
+                {
+                    _aliasScratch?.Dispose();
+                    _aliasScratch = _device.CreateBuffer<uint>(words);
+                }
+
+                long slot = 0;
+                for (var i = 0; i < inputs.Length; i++)
+                {
+                    if (ReferenceEquals(inputs[i].Buffer.Buffer, output.Buffer) && inputs[i].AxisLength > 0)
+                    {
+                        var length = AliasSlotBytes(inputs[i], outer, inner, elementBytes, out var from);
+                        encoder.CopyBuffer(output.Buffer, (ulong)from, _aliasScratch.Buffer, (ulong)slot, (ulong)(((length + 3) / 4) * 4));
+                        slot += RoundUp256(length);
+                    }
+                }
+            }
         }
 
         var pipeline = _concat[width] ??= CreateConcat(width);
@@ -336,26 +390,69 @@ public sealed class LayoutKernels : IDisposable
             w[3] = (uint)inner;
             w[4] = (uint)outputShape[ax];
             w[5] = (uint)n;
-            var b0 = inputs[first].Buffer.Buffer;
-            GpuBuffer b1 = b0, b2 = b0, b3 = b0;
+            GpuBuffer b0 = output.Buffer, b1 = b0, b2 = b0, b3 = b0;
             for (var k = 0; k < n; k++)
             {
                 var inp = inputs[first + k];
-                w[6 + k] = (uint)inp.Offset;
+                var buffer = inp.Buffer.Buffer;
+                var offset = (long)inp.Offset;
+                if (viaScratch && ReferenceEquals(buffer, output.Buffer))
+                {
+                    buffer = _aliasScratch!.Buffer;
+                    offset = 0;
+                }
+
+                if (viaScratch && ReferenceEquals(inp.Buffer.Buffer, output.Buffer) && inp.AxisLength > 0)
+                {
+                    long slotStart = 0;
+                    for (var j = 0; j < first + k; j++)
+                    {
+                        if (ReferenceEquals(inputs[j].Buffer.Buffer, output.Buffer) && inputs[j].AxisLength > 0)
+                        {
+                            slotStart += RoundUp256(AliasSlotBytes(inputs[j], outer, inner, elementBytes, out _));
+                        }
+                    }
+
+                    AliasSlotBytes(inp, outer, inner, elementBytes, out var from);
+                    offset = (((long)inp.Offset * elementBytes) - from + slotStart) / elementBytes;
+                }
+
+                w[6 + k] = (uint)offset;
                 w[10 + k] = (uint)start;
                 w[14 + k] = (uint)inp.AxisLength;
                 start += inp.AxisLength;
                 switch (k)
                 {
-                    case 1: b1 = inp.Buffer.Buffer; break;
-                    case 2: b2 = inp.Buffer.Buffer; break;
-                    case 3: b3 = inp.Buffer.Buffer; break;
+                    case 0: b0 = buffer; break;
+                    case 1: b1 = buffer; break;
+                    case 2: b2 = buffer; break;
+                    case 3: b3 = buffer; break;
                 }
+            }
+
+            // Unused slots repeat the first input's buffer, so a pass binds nothing it does not read.
+            if (n < 4)
+            {
+                b1 = n > 1 ? b1 : b0;
+                b2 = n > 2 ? b2 : b0;
+                b3 = n > 3 ? b3 : b0;
             }
 
             pipeline.Record(encoder, w, gx, gy, 1, [b0, b1, b2, b3, output.Buffer]);
         }
     }
+
+    // Bytes of an input's range widened to whole 32-bit words (a copy moves words), and the byte offset the copy starts at.
+    static long AliasSlotBytes<T>(in GpuConcatInput<T> input, long outer, long inner, int elementBytes, out long from)
+        where T : unmanaged
+    {
+        long begin = (long)input.Offset * elementBytes;
+        long end = begin + (outer * input.AxisLength * inner * elementBytes);
+        from = begin & ~3L;
+        return ((end + 3) & ~3L) - from;
+    }
+
+    static long RoundUp256(long bytes) => (bytes + 255) & ~255L;
 
     internal int BindGroupsCreated => WideKernelPipeline.Total(_concat) + _strided.BindGroupsCreated;
 
@@ -379,6 +476,8 @@ public sealed class LayoutKernels : IDisposable
             _concat[i] = null;
         }
 
+        _aliasScratch?.Dispose();
+        _aliasScratch = null;
         _strided.Dispose();
     }
 

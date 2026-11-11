@@ -84,8 +84,16 @@ public sealed class Gemm : IDisposable
         // four is the fallback for a device whose workgroup limits are smaller. float32 tiles are twice as big: the eight-subgroup shape declares
         // 18944 bytes, which fits Metal's 32768-byte limit, but Metal reports twice the declared size while shader validation is on, so the
         // choice is made from the length the compiled pipeline reports (below) and not from a formula.
-        var wide = (options?.WorkgroupSubgroups ?? 0) != 4;
-        if (wide && (options?.WorkgroupSubgroups ?? 0) == 0 && !MatrixVariantFits(device, elementType, wide: true))
+        // The float32 kernel reads whole tiles straight from the operands (GEMM_DIRECT); with four subgroups it measured 1.4x the eight-subgroup shape on an Apple M2
+        // (1490 against 1065 GFLOP/s on a 1024 x 3072 x 768 product), so float32 asks for four unless a test forces eight.
+        var requested = options?.WorkgroupSubgroups ?? 0;
+        if (requested == 0 && elementType == GemmElementType.F32)
+        {
+            requested = 4;
+        }
+
+        var wide = requested != 4;
+        if (wide && requested == 0 && !MatrixVariantFits(device, elementType, wide: true))
         {
             wide = false;
         }
