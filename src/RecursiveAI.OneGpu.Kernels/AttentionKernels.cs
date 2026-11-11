@@ -64,9 +64,10 @@ public sealed class AttentionKernels : IDisposable
     const int MinKeysPerSplit = 128;
     const int TargetGroups = 256;
     const int TileWords = 32;
-    // A workgroup that walks at least this many keys sums blockwise (see Attention.hlsl): the rounding error of one running sum grows with the key count,
-    // while the blockwise form costs registers and with them speed on short key ranges.
-    const int BlockwiseSumKeys = 1024;
+    // A workgroup that walks at least this many keys sums blockwise (see Attention.hlsl): the rounding error of one running sum grows with the key
+    // count, while the blockwise form costs registers and with them speed on short key ranges. The value sits above the 512 keys of BERT-class models
+    // and below the 768 per range that a Whisper encoder call gets.
+    const int BlockwiseSumKeys = 640;
     const double ScalarWorkWeight = 4;    // the scalar kernels run an operation several times slower than the matrix path, which the submission budget counts in matrix-path operations
     const double CoopWorkWeight = 1.5;    // the matrix kernel multiplies Q Kᵀ twice
     const int CombineWords = 11;
