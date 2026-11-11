@@ -77,6 +77,9 @@ The reductions, softmax and normalisation have both modes.
 - A softmax row of 16 to 1024 elements gets a power-of-two group of threads (about four elements each), so one workgroup handles 256 / group rows. The statistics are merged by the fixed halving tree in both modes.
 - A reduction with fewer than 128 outputs and at least 16384 reduced elements (a sum over a whole tensor) runs in two passes: the reduced elements are cut into at most 256 contiguous chunks of at least 4096, a workgroup reduces each chunk to a partial result in a scratch buffer of 128 x 256 floats (`ReduceKernels.ScratchLength`; the family keeps its own unless the caller passes one), and one workgroup per output combines the partials in index order. The cut is a function of the shape, so the deterministic mode stays bit-identical run to run.
 - Otherwise a workgroup takes each output. The choice depends on the shape only, never on the device.
+- A workgroup beyond the rounded-up grid (the grid is two-dimensional, so it can hold more workgroups than there are outputs) returns before
+  its first barrier. The workgroup id is uniform, so WGSL's uniformity analysis accepts the barriers that follow. The multi-row softmax keeps
+  a per-thread bounds flag instead, because its rows differ between the threads of one workgroup.
 
 ## Special values
 

@@ -33,7 +33,7 @@ public sealed class GemmThroughput
         var noHardware = Environment.GetEnvironmentVariable("ONEGPU_GEMM_NO_HARDWARE") == "1";
         foreach (var type in new[] { GemmElementType.F32, GemmElementType.F16, GemmElementType.BF16 })
         {
-            using var gemm = new Gemm(d, type, GpuKernelMode.Fast, new GemmOptions { AllowMatrixHardware = !noHardware });
+            using var gemm = new Gemm(d, type, GpuKernelMode.Fast, new GemmOptions { AllowMatrixHardware = !noHardware, WorkgroupSubgroups = int.TryParse(Environment.GetEnvironmentVariable("ONEGPU_GEMM_SUBGROUPS"), out var sgs) ? sgs : 0 });
             foreach (var (name, m, n, k, batch, transB) in Shapes)
             {
                 var p = new GemmProblem(m, n, k) { Batch = batch, TransposeB = transB, StrideA = m * k, StrideB = batch > 1 ? k * n : 0, StrideC = m * n };

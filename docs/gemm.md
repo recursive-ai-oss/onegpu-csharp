@@ -10,12 +10,20 @@ from the device's capabilities at creation, and records into a caller's `GpuComm
 | Variant (`Gemm.Variant`) | Used when | Notes |
 |---|---|---|
 | `tiled-64x64x16` | everything else, and always in `Deterministic` mode | HLSL through the shader compiler: SPIR-V, MSL and WGSL. |
-| `cooperative-matrix-16x16x16-tile64x64x16` | Vulkan, `Fast`, f16 or bf16 inputs, 32-wide subgroups, the device lists a 16x16x16 combination of the input type with float32 accumulation, 12 KB of workgroup memory | Hand-written SPIR-V (`tools/kernels`) until the shader compiler has cooperative-matrix types. Needs the device features `cooperativeMatrix` and `vulkanMemoryModel` (the device enables both when it has them), and for bf16 `shaderBFloat16CooperativeMatrix`. |
-| `simdgroup-matrix-8x8x8-tile64x64x16` | Metal, `Fast`, the device lists an 8x8x8 combination of the input type with float32 accumulation, 32-wide simdgroups, 256 invocations, 16 KB of threadgroup memory | Metal Shading Language text (`src/RecursiveAI.OneGpu.Kernels/Raw`). Also used for float32 inputs. |
+| `cooperative-matrix-16x16x16-tile64x64x16-8sg` (`-4sg`) | Vulkan, `Fast`, f16 or bf16 inputs; subgroups of 32 (fixed, or selectable and pinned to 32); pipelines with full subgroups; the device lists a 16x16x16 combination of the input type with float32 accumulation; the kernel's shader features (16-bit storage, `VK_KHR_cooperative_matrix`, the Vulkan memory model, and for bf16 `VK_KHR_shader_bfloat16`) | HLSL `CooperativeMatrix` through the shader compiler. Eight subgroups per workgroup; four if the device allows fewer than 256 invocations or too little workgroup memory. |
+| `simdgroup-matrix-16x16x16-tile64x64x16-8sg` (`-4sg`) | Metal, `Fast`, the device lists an 8x8x8 combination of the input type with float32 accumulation, 32-wide simdgroups | The same HLSL; the shader compiler lowers a 16x16 matrix to 2x2 `simdgroup_matrix` 8x8 tiles. Float32 inputs use it too, with four simdgroups (the Metal compiler counts the 8-simdgroup float32 shape at 37888 bytes of threadgroup memory against a limit of 32768). |
 
 `GemmOptions.AllowMatrixHardware = false` forces the portable variant. WebGPU has no matrix hardware in the browser today and always runs
-the portable variant. Half-precision inputs are read as pairs inside 32-bit words, so the portable variant needs no 16-bit storage
-feature and runs in Chrome without `shader-f16`.
+the portable variant, whose half-precision inputs are read as pairs inside 32-bit words, so it needs no 16-bit storage feature and runs in
+Chrome without `shader-f16`.
+
+**Which devices take the matrix kernel.** The choice is made once, in the constructor, from `GpuCapabilities.Compute` and the kernel's own
+reflection (`EntryLayout.RequiredFeatures` against `ShaderFeatures`); nothing is guessed from the vendor. The kernel is written for 32-wide
+subgroups: its pipeline is created with full subgroups and, where the device can run several widths, with the subgroup size pinned to 32
+(`ComputePipelineDesc.RequireFullSubgroups`, `RequiredSubgroupSize`). A device that only has 64-wide subgroups, such as an AMD GPU in wave64
+mode with no wave32 option, does not qualify and runs the portable kernel; a wave64 variant has not been written because no device that
+offers one was available to test it on. The AMD GPU in the RADV test machine (Raphael iGPU, subgroups 32 to 64, size selectable) reports no
+cooperative-matrix shapes at all, so it takes the portable kernel as well, as does lavapipe.
 
 ### Portable kernel
 
@@ -25,10 +33,12 @@ any M, N, K, leading dimension and offset works. A grid of 64 x 64 tiles has `ce
 
 ### Matrix-hardware kernels
 
-The same 64 x 64 output tile and 16-wide k step. Vulkan: four subgroups (2 x 2), each with four 16 x 16 float32 accumulators. Metal: eight
-simdgroups (2 x 4), each with eight 8 x 8 accumulators. Operands are converted into workgroup memory in the matrix element type
-(including the bounds handling and the transposes), the accumulators leave through workgroup memory so alpha, beta and the edges are plain
-code. bf16 uses the native bfloat16 matrix type on both APIs.
+The same 64 x 64 output tile and 16-wide k step as the portable kernel. Eight subgroups (2 x 4) each own 32 x 16 of C as two 16 x 16 float32
+accumulators; the four-subgroup shape (2 x 2) owns 32 x 32 as four. Each k step copies the A and B tiles from the operand buffers, in their
+own element type, into padded workgroup memory (this is where the bounds, the transposes and odd leading dimensions are handled), then every
+subgroup loads its fragments and multiplies them with cooperative matrices. The accumulators leave through workgroup memory so alpha, beta and
+the edges are plain code. The copy involves no conversion: reading bfloat16 through float32 first cost a third of the throughput. The 16-bit
+elements are read from storage buffers as 16-bit values, which needs 16-bit storage access; every device with cooperative matrices has it.
 
 ## Deterministic mode
 
@@ -70,16 +80,26 @@ read.
 GPU time from timestamp queries (median of 30 dispatches) on the RTX 4070, driver 595; host time between submit and idle on the Apple M2
 (Metal here reports no timestamp queries). Peaks used: RTX 4070 float32 29.2 TFLOP/s (5888 lanes x 2 x 2.475 GHz); float16 tensor with
 float32 accumulation about 58 TFLOP/s dense (derived from the Ada figures, so approximate); M2 float32 3.6 TFLOP/s (Apple's figure for the
-10-core GPU). These are first-version numbers, measured while other jobs shared the machines.
+10-core GPU). These are indicative numbers, measured while other jobs shared the machines.
 
 | Device, variant, inputs | Large shapes (GFLOP/s) | Fraction of peak |
 |---|---|---|
-| RTX 4070, tiled, float32 | 5500 to 7100 (square 4096: 7130) | 19 to 24 % |
-| RTX 4070, cooperative matrix, float16 | 17700 to 25400 (square 4096: 25400) | 30 to 44 % |
-| RTX 4070, cooperative matrix, bfloat16 | 16200 to 28400 (square 4096: 22400 to 28400) | 28 to 49 % |
-| Apple M2, simdgroup matrix, float32 and float16 | 420 to 475 (square 4096: 406 to 442) | 12 % |
-| Apple M2, simdgroup matrix, bfloat16 | 64 to 133 | 2 to 4 % (bfloat16 matrices are not native on this GPU) |
+| RTX 4070, tiled, float32 | 5100 to 6900 (square 4096: 5500) | 18 to 24 % |
+| RTX 4070, cooperative matrix, float16, 8 subgroups | 25500 to 34200 (square 4096: 36500) | 44 to 59 % (square: 63 %) |
+| RTX 4070, cooperative matrix, bfloat16, 8 subgroups | 25100 to 33900 (square 4096: 36300) | 43 to 58 % (square: 63 %) |
+| RTX 4070, cooperative matrix, float16 or bfloat16, 4 subgroups | 19800 to 29700 (square 4096: 30900) | 34 to 51 % |
+| Apple M2, simdgroup matrix, float16, 8 simdgroups | 436 to 456 (square 4096: 402 to 407) | 12 % |
+| Apple M2, simdgroup matrix, bfloat16, 8 simdgroups | 419 to 440 (square 4096: 406 to 435) | 12 % |
+| Apple M2, simdgroup matrix, float32, 4 simdgroups | 308 to 358 (square 4096: 328) | 9 to 10 % |
 | Apple M2, tiled | 100 to 139 | 3 to 4 % |
+
+The Apple rows were measured on a machine that other jobs were using, so treat them as lower bounds. The float32 matrix kernel on the M2 is
+about 20 % slower than the 8x8 kernel written by hand that it replaced (308 to 358 against 398 to 452), because the Metal compiler counts the
+8-simdgroup float32 shape at twice its declared threadgroup memory and so it keeps four simdgroups; float16 is 2 to 9 % below the old kernel
+and bfloat16 is three to five times faster (the old kernel converted each element). On the RTX 4070 the float16 kernel is 1.25 to 2.0 times
+the hand-written SPIR-V it replaced and bfloat16 is 1.3 to 2.2 times (the smallest gain is the batched 128 x 128 scores product, the largest the
+square 4096 product), because the operands are now copied into workgroup memory without a detour through float32 and eight subgroups hide more
+latency than four.
 
 Single-row products (decode, M = 1) are memory bound and use one row of a 64-row tile: 100 to 150 GFLOP/s on the RTX 4070, 2 to 9 on the M2.
 A skinny-M variant and larger tiles for the Apple GPU are the next tuning steps.

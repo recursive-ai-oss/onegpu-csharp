@@ -4,8 +4,8 @@
 //   StructuredBuffer<bfloat16_t>, groupshared bfloat16_t[]   2-byte elements
 //   CooperativeMatrix<bfloat16_t, 16, 16, MatrixUse::A>      see cooperative_matrix.hlsl; accumulates in float
 //
-// The conversion is the part that matters for the GEMM kernels: they read bfloat16 weights from storage buffers of 32-bit words today
-// and widen with a shift, which needs no type. A real type removes the shift and lets cooperative matrices take bfloat16 operands.
+// Answered by 1.5.0. The portable GEMM kernel still reads bfloat16 weights from storage buffers of 32-bit words and widens with a shift,
+// which needs no type; the cooperative-matrix kernel reads and stores the bfloat16 type directly.
 
 StructuredBuffer<bfloat16_t> A : register(t0);
 StructuredBuffer<bfloat16_t> B : register(t1);

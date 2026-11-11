@@ -1,8 +1,7 @@
 // Requested HLSL surface: subgroup-scope cooperative matrices.
 //
-// Compiles once the shader compiler supports it; until then the GEMM kernels that need it are written directly in SPIR-V and Metal
-// Shading Language (tools/kernels, src/RecursiveAI.OneGpu.Kernels/Raw). This file is the kernel those two stand in for, reduced to one
-// 16 x 16 x 16 product per subgroup so the expected output below can be checked by eye.
+// Answered: the shader compiler supports this surface since 1.5.0, and the GEMM kernels use it (Shaders/GemmCoop.hlsli). This file is
+// the original request, reduced to one 16 x 16 x 16 product per subgroup so the expected output below can be checked by eye.
 //
 // Surface:
 //   CooperativeMatrix<T, Rows, Cols, Use>      T = float16_t, bfloat16_t (see bfloat16.hlsl), float, int8_t/uint8_t, int32/uint32

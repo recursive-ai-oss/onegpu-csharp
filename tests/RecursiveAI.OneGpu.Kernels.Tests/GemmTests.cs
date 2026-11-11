@@ -28,11 +28,11 @@ public sealed class GemmTests
 
     static (bool Hardware, string Tag) Setup() => (Environment.GetEnvironmentVariable("ONEGPU_GEMM_NO_HARDWARE") != "1", Environment.GetEnvironmentVariable("ONEGPU_GEMM_NO_HARDWARE") == "1" ? "forced-portable" : "auto");
 
-    static async Task Parity(GemmElementType type, GpuKernelMode mode)
+    static async Task Parity(GemmElementType type, GpuKernelMode mode, int subgroups = 0)
     {
         using var f = new GemmFixture();
         var (hw, tag) = Setup();
-        using var gemm = new Gemm(f.Device, type, mode, new GemmOptions { AllowMatrixHardware = hw });
+        using var gemm = new Gemm(f.Device, type, mode, new GemmOptions { AllowMatrixHardware = hw, WorkgroupSubgroups = subgroups });
         var tol = GemmFixture.Tolerance(type);
         var failures = new StringBuilder();
         uint seed = 1;
@@ -81,6 +81,17 @@ public sealed class GemmTests
     [Fact] public Task F16Fast() => Parity(GemmElementType.F16, GpuKernelMode.Fast);
 
     [Fact] public Task BF16Fast() => Parity(GemmElementType.BF16, GpuKernelMode.Fast);
+
+    // Both workgroup shapes of the matrix kernel are checked on every device; the default picks one of them by backend.
+    [Fact] public Task F32FastFourSubgroups() => Parity(GemmElementType.F32, GpuKernelMode.Fast, 4);
+
+    [Fact] public Task F16FastFourSubgroups() => Parity(GemmElementType.F16, GpuKernelMode.Fast, 4);
+
+    [Fact] public Task F16FastEightSubgroups() => Parity(GemmElementType.F16, GpuKernelMode.Fast, 8);
+
+    [Fact] public Task BF16FastFourSubgroups() => Parity(GemmElementType.BF16, GpuKernelMode.Fast, 4);
+
+    [Fact] public Task BF16FastEightSubgroups() => Parity(GemmElementType.BF16, GpuKernelMode.Fast, 8);
 
     [Fact] public Task F32Deterministic() => Parity(GemmElementType.F32, GpuKernelMode.Deterministic);
 
@@ -140,5 +151,58 @@ public sealed class GemmTests
         using var halfB = f.Device.CreateBuffer<Half>(16);
         Assert.Throws<ArgumentException>(() => gemm.Encode(enc, new GemmProblem(4, 4, 4), halfA, halfB, c));
         f.Device.Submit(enc);
+    }
+
+    static ShaderSource TiledSource() => new(ShaderStage.Compute, Shaders.GemmF32.GemmTiled.EntryPoint) { SpirV = Shaders.GemmF32.GemmTiled.SpirV, Wgsl = Shaders.GemmF32.GemmTiled.Wgsl, WgslEntryPoint = Shaders.GemmF32.GemmTiled.WgslEntryPoint, Msl = Shaders.GemmF32.GemmTiled.Msl, MslFunctionName = Shaders.GemmF32.GemmTiled.MslFunctionName, Layout = Shaders.GemmF32.GemmTiled.Layout };
+
+    static ShaderSource CoopSource() => new(ShaderStage.Compute, Shaders.GemmCoopF16.GemmCoop.EntryPoint) { SpirV = Shaders.GemmCoopF16.GemmCoop.SpirV, Msl = Shaders.GemmCoopF16.GemmCoop.Msl, MslFunctionName = Shaders.GemmCoopF16.GemmCoop.MslFunctionName, Layout = Shaders.GemmCoopF16.GemmCoop.Layout };
+
+    [Fact]
+    public void SubgroupRequirementsAreHonouredOrFailWithATypedError()
+    {
+        using var f = new GemmFixture();
+        var cc = f.Device.Capabilities.Compute;
+        using var kernel = f.Device.CreateComputeKernel(TiledSource(), "layout donor");
+        using var shader = f.Device.CreateShader(TiledSource());
+
+        var full = new ComputePipelineDesc { Layout = kernel.PipelineLayout, Compute = shader, RequireFullSubgroups = true };
+        if (cc.FullSubgroups)
+        {
+            f.Device.CreateComputePipeline(full).Dispose();
+        }
+        else
+        {
+            var e = Assert.Throws<GpuUnsupportedException>(() => f.Device.CreateComputePipeline(full));
+            Assert.Equal(nameof(GpuComputeCapabilities.FullSubgroups), e.Capability);
+        }
+
+        // A width no device has: always refused, and the error names the request.
+        var impossible = new ComputePipelineDesc { Layout = kernel.PipelineLayout, Compute = shader, RequiredSubgroupSize = Math.Max(cc.SubgroupMaxSize, 1) * 2 };
+        var ex = Assert.Throws<GpuUnsupportedException>(() => f.Device.CreateComputePipeline(impossible));
+        Assert.Equal(nameof(ComputePipelineDesc.RequiredSubgroupSize), ex.Capability);
+
+        // The widest size the device lists is accepted when sizes are selectable or there is only one.
+        if (cc.SubgroupMaxSize != 0 && (cc.SubgroupSizeControl || cc.SubgroupMinSize == cc.SubgroupMaxSize))
+        {
+            f.Device.CreateComputePipeline(new ComputePipelineDesc { Layout = kernel.PipelineLayout, Compute = shader, RequiredSubgroupSize = cc.SubgroupMaxSize, RequireFullSubgroups = cc.FullSubgroups }).Dispose();
+        }
+
+        Report($"SUBGROUPS\t{f.Device.Adapter.Name}\t{f.Device.Backend}\tfull-subgroups {cc.FullSubgroups}\tsize-control {cc.SubgroupSizeControl}\trange {cc.SubgroupMinSize}-{cc.SubgroupMaxSize}\tfull request {(cc.FullSubgroups ? "accepted" : "typed error")}\tsize {Math.Max(cc.SubgroupMaxSize, 1) * 2} typed error");
+    }
+
+    [Fact]
+    public void MatrixKernelsFailWithATypedErrorWhereTheDeviceHasNoMatrixHardware()
+    {
+        using var f = new GemmFixture();
+        var cc = f.Device.Capabilities.Compute;
+        if (cc.CooperativeMatrix && (cc.ShaderFeatures & Shaders.GemmCoopF16.GemmCoop.Layout.RequiredFeatures) == Shaders.GemmCoopF16.GemmCoop.Layout.RequiredFeatures && cc.FullSubgroups)
+        {
+            f.Device.CreateComputeKernel(CoopSource(), "matrix kernel", cc.SubgroupMinSize <= 32 && 32 <= cc.SubgroupMaxSize && (cc.SubgroupSizeControl || cc.SubgroupMinSize == cc.SubgroupMaxSize) ? 32u : 0u).Dispose();
+            Report($"MATRIXKERNEL\t{f.Device.Adapter.Name}\t{f.Device.Backend}\tcreated");
+            return;
+        }
+
+        var e = Assert.Throws<GpuUnsupportedException>(() => f.Device.CreateComputeKernel(CoopSource(), "matrix kernel"));
+        Report($"MATRIXKERNEL\t{f.Device.Adapter.Name}\t{f.Device.Backend}\ttyped error on {e.Capability}: {e.Expected}");
     }
 }
