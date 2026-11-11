@@ -15,10 +15,8 @@ internal sealed unsafe class VulkanInstance
     public VkInstance Handle;
     public readonly VkGlobalFns Global = new();
     public readonly VkInstanceFns Fns = new();
-    // Validation messages go to every device attached to the instance (see Attach); the callback's user data is this object.
+    // The messenger's callback sends each message to the device it concerns (see ValidationRouter).
     public bool HasMessenger;
-    public GCHandle SinkHandle;
-    readonly List<ValidationSink> _sinks = [];
     public VkDebugUtilsMessengerEXT Messenger;
     public bool SurfaceKhr, XlibKhr, WaylandKhr, Win32Khr, AndroidKhr;
     public readonly List<AdapterEntry> Adapters = [];
@@ -66,35 +64,6 @@ internal sealed unsafe class VulkanInstance
 
             existing.AddRef();
             return existing;
-        }
-    }
-
-    /// <summary>Starts delivering this instance's validation messages to <paramref name="sink"/>.</summary>
-    public void Attach(ValidationSink sink)
-    {
-        lock (_sinks)
-        {
-            _sinks.Add(sink);
-        }
-    }
-
-    /// <summary>Stops delivering messages to <paramref name="sink"/>.</summary>
-    public void Detach(ValidationSink sink)
-    {
-        lock (_sinks)
-        {
-            _sinks.Remove(sink);
-        }
-    }
-
-    void Broadcast(string text)
-    {
-        lock (_sinks)
-        {
-            foreach (var s in _sinks)
-            {
-                s.Add(text);
-            }
         }
     }
 
@@ -307,13 +276,11 @@ internal sealed unsafe class VulkanInstance
 
         if (debugUtils)
         {
-            SinkHandle = GCHandle.Alloc(this);
             var mci = new VkDebugUtilsMessengerCreateInfoEXT
             {
                 messageSeverity = VkDebugUtilsMessageSeverityFlagBitsEXT.Warning | VkDebugUtilsMessageSeverityFlagBitsEXT.Error,
                 messageType = VkDebugUtilsMessageTypeFlagBitsEXT.General | VkDebugUtilsMessageTypeFlagBitsEXT.Validation | VkDebugUtilsMessageTypeFlagBitsEXT.Performance,
                 pfnUserCallback = (nint)(delegate* unmanaged<VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagBitsEXT, VkDebugUtilsMessengerCallbackDataEXT*, void*, uint>)&DebugCallback,
-                pUserData = (void*)GCHandle.ToIntPtr(SinkHandle),
             };
             VkDebugUtilsMessengerEXT m;
             if (Fns.vkCreateDebugUtilsMessengerEXT(Handle, &mci, null, &m) == VkResult.Success)
@@ -329,11 +296,10 @@ internal sealed unsafe class VulkanInstance
     [UnmanagedCallersOnly]
     static uint DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagBitsEXT types, VkDebugUtilsMessengerCallbackDataEXT* data, void* user)
     {
-        var instance = (VulkanInstance?)GCHandle.FromIntPtr((nint)user).Target;
-        if (instance is not null && data != null && data->pMessage != null)
+        if (data != null && data->pMessage != null)
         {
             var text = Marshal.PtrToStringUTF8((nint)data->pMessage) ?? "";
-            instance.Broadcast($"[{severity}] {text}");
+            ValidationRouter.Route(data, $"[{severity}] {text}");
         }
 
         return 0;
@@ -471,9 +437,5 @@ internal sealed unsafe class VulkanInstance
             Handle = default;
         }
 
-        if (SinkHandle.IsAllocated)
-        {
-            SinkHandle.Free();
-        }
     }
 }

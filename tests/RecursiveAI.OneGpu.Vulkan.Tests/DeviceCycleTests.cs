@@ -31,14 +31,17 @@ public class DeviceCycleTests
                 throw new InvalidOperationException($"device creation failed at cycle {i} of {Cycles}: {e.Message}", e);
             }
 
+            string[] messages;
             using (device)
             {
                 // A little real work, so each cycle exercises memory, a submission and teardown with work retired.
                 using var buffer = device.CreateBuffer<uint>(256);
                 device.WaitIdle();
-                var messages = device.TakeValidationMessages();
-                Assert.True(messages.Length == 0, $"cycle {i}: validation layer reported:\n" + string.Join("\n", messages));
+                messages = device.TakeValidationMessages();
             }
+
+            messages = [.. messages, .. device.TakeValidationMessages()];
+            Assert.True(messages.Length == 0, $"cycle {i}: validation layer reported:\n" + string.Join("\n", messages));
         }
 
         Console.WriteLine($"device cycles completed: {Cycles}");

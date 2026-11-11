@@ -59,6 +59,7 @@ internal sealed unsafe class VulkanSwapchain : GpuSwapchain, IRetirable
                 var sci = new VkSemaphoreCreateInfo();
                 VkSemaphore s;
                 dev.Check(dev.Fns.vkCreateSemaphore(dev.Handle, &sci, null, &s), "vkCreateSemaphore");
+                dev.Own(VkObjectType.Semaphore, (ulong)s.Value);
                 _acquire[i] = s;
             }
 
@@ -86,6 +87,7 @@ internal sealed unsafe class VulkanSwapchain : GpuSwapchain, IRetirable
 
                 var xi = new VkXlibSurfaceCreateInfoKHR { dpy = (void*)s.Display, window = (nuint)s.Window };
                 _dev.Check(_dev.InstanceFns.vkCreateXlibSurfaceKHR(_dev.Instance, &xi, null, &surface), "vkCreateXlibSurfaceKHR");
+                _dev.Own(VkObjectType.Surface, (ulong)surface.Value);
                 break;
             case SurfaceKind.Wayland:
                 if (!_dev.WaylandKhr)
@@ -95,6 +97,7 @@ internal sealed unsafe class VulkanSwapchain : GpuSwapchain, IRetirable
 
                 var wi = new VkWaylandSurfaceCreateInfoKHR { display = (void*)s.Display, surface = (void*)s.Window };
                 _dev.Check(_dev.InstanceFns.vkCreateWaylandSurfaceKHR(_dev.Instance, &wi, null, &surface), "vkCreateWaylandSurfaceKHR");
+                _dev.Own(VkObjectType.Surface, (ulong)surface.Value);
                 break;
             case SurfaceKind.Win32:
                 if (!_dev.Win32Khr)
@@ -104,6 +107,7 @@ internal sealed unsafe class VulkanSwapchain : GpuSwapchain, IRetirable
 
                 var win = new VkWin32SurfaceCreateInfoKHR { hinstance = s.Display, hwnd = s.Window };
                 _dev.Check(_dev.InstanceFns.vkCreateWin32SurfaceKHR(_dev.Instance, &win, null, &surface), "vkCreateWin32SurfaceKHR");
+                _dev.Own(VkObjectType.Surface, (ulong)surface.Value);
                 break;
             case SurfaceKind.Android:
                 if (!_dev.AndroidKhr)
@@ -113,6 +117,7 @@ internal sealed unsafe class VulkanSwapchain : GpuSwapchain, IRetirable
 
                 var droid = new VkAndroidSurfaceCreateInfoKHR { window = (void*)s.Window };
                 _dev.Check(_dev.InstanceFns.vkCreateAndroidSurfaceKHR(_dev.Instance, &droid, null, &surface), "vkCreateAndroidSurfaceKHR");
+                _dev.Own(VkObjectType.Surface, (ulong)surface.Value);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(s));
@@ -289,6 +294,7 @@ internal sealed unsafe class VulkanSwapchain : GpuSwapchain, IRetirable
             _dev.Fns.vkDestroySwapchainKHR(_dev.Handle, old, null);
         }
 
+        _dev.Own(VkObjectType.Swapchain, (ulong)sc.Value);
         _swapchain = sc;
         _width = w;
         _height = h;
@@ -301,6 +307,11 @@ internal sealed unsafe class VulkanSwapchain : GpuSwapchain, IRetirable
             _dev.Fns.vkGetSwapchainImagesKHR(_dev.Handle, sc, &n, hp);
         }
 
+        foreach (var image in handles)
+        {
+            _dev.Own(VkObjectType.Image, (ulong)image.Value);
+        }
+
         var tex = new TextureDesc(w, h, _format, TextureUsage.RenderTarget | TextureUsage.CopySource | _desc.ExtraUsage) { Label = "swapchain image" };
         _images = new VulkanTexture[n];
         _renderDone = new VkSemaphore[n];
@@ -311,6 +322,7 @@ internal sealed unsafe class VulkanSwapchain : GpuSwapchain, IRetirable
             var si = new VkSemaphoreCreateInfo();
             VkSemaphore s;
             _dev.Check(_dev.Fns.vkCreateSemaphore(_dev.Handle, &si, null, &s), "vkCreateSemaphore");
+            _dev.Own(VkObjectType.Semaphore, (ulong)s.Value);
             _renderDone[i] = s;
         }
     }

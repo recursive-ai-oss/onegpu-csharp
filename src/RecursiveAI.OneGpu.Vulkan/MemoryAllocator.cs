@@ -197,6 +197,7 @@ internal sealed unsafe class MemoryAllocator
         }
 
         _device.Check(r, "vkAllocateMemory");
+        _device.Own(VkObjectType.DeviceMemory, (ulong)mem.Value);
         byte* mapped = null;
         if (host)
         {

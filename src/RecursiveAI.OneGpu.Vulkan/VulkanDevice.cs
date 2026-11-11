@@ -44,8 +44,6 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
     readonly VkDeviceFns _deviceFns = new();
     readonly GpuAdapterInfo _adapter;
     readonly ValidationSink? _sink;
-    GCHandle _sinkHandle;
-    VkDebugUtilsMessengerEXT _messenger;
     VkInstance _instance;
     VkPhysicalDevice _physical;
     VkDevice _device;
@@ -63,6 +61,9 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
     readonly List<(ulong Serial, IRetirable Item)> _retired = new(64);
     readonly List<(ulong Serial, VulkanEncoder Encoder)> _inflight = new(2 * EncoderPoolSize);
     readonly Stack<VulkanEncoder> _freeEncoders = new(EncoderPoolSize);
+
+    // Every encoder ever made, so one that was begun and never submitted still has its command pool destroyed with the device.
+    readonly List<VulkanEncoder> _allEncoders = new(EncoderPoolSize);
     readonly List<(ulong Serial, Staging Item)> _stagingBusy = new(64);
     readonly List<Staging> _stagingPending = new(64);
     readonly Stack<Staging>[] _stagingFree = new Stack<Staging>[2 * 48];
@@ -127,7 +128,7 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
     {
         for (var i = 0; i < EncoderPoolSize; i++)
         {
-            _freeEncoders.Push(new VulkanEncoder(this));
+            _freeEncoders.Push(NewEncoder());
         }
     }
 
@@ -136,13 +137,11 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
         _owner = inst;
         if (_sink is not null)
         {
-            inst.Attach(_sink);
+            ValidationRouter.Register(_sink);
         }
 
         _global = inst.Global;
         _instanceFns = inst.Fns;
-        _messenger = inst.Messenger;
-        _sinkHandle = inst.SinkHandle;
         SurfaceKhr = inst.SurfaceKhr;
         XlibKhr = inst.XlibKhr;
         WaylandKhr = inst.WaylandKhr;
@@ -298,7 +297,12 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
             ppEnabledExtensionNames = (byte**)extPtrs,
         };
         VkDevice dev;
-        Check(_instanceFns.vkCreateDevice(_physical, &dci, null, &dev), "vkCreateDevice");
+        using (EnterRouting())
+        {
+            Check(_instanceFns.vkCreateDevice(_physical, &dci, null, &dev), "vkCreateDevice");
+        }
+
+        Own(VkObjectType.Device, (ulong)dev.Value);
         _device = dev;
 
         var getDeviceProc = (delegate* unmanaged<nint, byte*, nint>)VulkanLoader.GetInstanceProcAddr(_instance.Value, "vkGetDeviceProcAddr\0"u8.GetPointer());
@@ -306,12 +310,14 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
 
         VkQueue q;
         _deviceFns.vkGetDeviceQueue(_device, QueueFamily, 0, &q);
+        Own(VkObjectType.Queue, (ulong)q.Value);
         _queue = q;
 
         var tci = new VkSemaphoreTypeCreateInfo { semaphoreType = VkSemaphoreType.Timeline, initialValue = 0 };
         var sci = new VkSemaphoreCreateInfo { pNext = &tci };
         VkSemaphore sem;
         Check(_deviceFns.vkCreateSemaphore(_device, &sci, null, &sem), "vkCreateSemaphore");
+        Own(VkObjectType.Semaphore, (ulong)sem.Value);
         _timeline = sem;
 
         VkPhysicalDeviceProperties props;
@@ -368,6 +374,17 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
     }
 
     public override string[] TakeValidationMessages() => _sink?.Take() ?? [];
+
+    /// <summary>Records that a Vulkan object belongs to this device, so validation messages that name it reach this device's sink. Free when validation is off.</summary>
+    internal void Own(VkObjectType type, ulong handle)
+    {
+        if (_sink is not null)
+        {
+            ValidationRouter.Own(type, handle, _sink);
+        }
+    }
+
+    ValidationRouter.Scope EnterRouting() => ValidationRouter.Enter(_sink);
 
     // ---- deferred destruction and submission ----
 
@@ -458,7 +475,14 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
     public override GpuCommandEncoder BeginCommands()
     {
         Poll();
-        return _freeEncoders.Count > 0 ? _freeEncoders.Pop() : new VulkanEncoder(this);
+        return _freeEncoders.Count > 0 ? _freeEncoders.Pop() : NewEncoder();
+    }
+
+    VulkanEncoder NewEncoder()
+    {
+        var encoder = new VulkanEncoder(this);
+        _allEncoders.Add(encoder);
+        return encoder;
     }
 
     internal VulkanEncoder UploadEncoder => _upload ??= (VulkanEncoder)BeginCommands();
@@ -744,6 +768,7 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
         };
         VkBuffer buf;
         Check(_deviceFns.vkCreateBuffer(_device, &bci, null, &buf), "vkCreateBuffer");
+        Own(VkObjectType.Buffer, (ulong)buf.Value);
         VkMemoryRequirements req;
         _deviceFns.vkGetBufferMemoryRequirements(_device, buf, &req);
         var alloc = _memory.Allocate(req, readback ? MemoryKind.Readback : MemoryKind.Upload);
@@ -940,6 +965,12 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
         }
 
         _upload?.Destroy();
+        foreach (var encoder in _allEncoders)
+        {
+            encoder.Destroy();
+        }
+
+        _allEncoders.Clear();
         foreach (var stack in _stagingFree)
         {
             if (stack is null)
@@ -992,13 +1023,20 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
             }
 
             _memory?.Destroy();
-            _deviceFns.vkDestroyDevice(_device, null);
+
+            // The layer reports objects still alive when the device goes (leaks) from inside this call, on this thread; the scope sends them
+            // to this device's sink so its owner can read them with TakeValidationMessages after Dispose.
+            using (EnterRouting())
+            {
+                _deviceFns.vkDestroyDevice(_device, null);
+            }
+
             _device = default;
         }
 
-        if (_owner is not null && _sink is not null)
+        if (_sink is not null)
         {
-            _owner.Detach(_sink);
+            ValidationRouter.Forget(_sink);
         }
 
         _owner?.Release();

@@ -36,6 +36,9 @@ internal sealed class GemmFixture : IDisposable
         Device.WaitIdle();
         var messages = Device.TakeValidationMessages();
         Device.Dispose();
+
+        // Destroying the device is where the layer reports objects the test never disposed.
+        messages = [.. messages, .. Device.TakeValidationMessages()];
         Assert.True(messages.Length == 0, "validation layer reported:\n" + string.Join("\n", messages));
     }
 #endif

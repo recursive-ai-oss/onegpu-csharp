@@ -485,6 +485,13 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
         _waiter?.Dispose();
         _waiter = null;
 
+        // Metal has no leak report of its own; buffers are the one resource this backend tallies, so a buffer nobody disposed shows up here.
+        var leaked = Volatile.Read(ref _liveBuffers);
+        if (leaked > 0)
+        {
+            _messages.Add($"device disposed while {leaked} buffer(s) ({Interlocked.Read(ref _liveBufferBytes)} bytes) were still alive");
+        }
+
         _disposed = true;
         Objc.Release(ref _noDepthState);
         Objc.Release(ref _timestampCounterSet);

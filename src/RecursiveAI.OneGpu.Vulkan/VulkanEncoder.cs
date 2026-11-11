@@ -38,6 +38,7 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
         var ci = new VkCommandPoolCreateInfo { queueFamilyIndex = dev.QueueFamily };
         VkCommandPool pool;
         dev.Check(dev.Fns.vkCreateCommandPool(dev.Handle, &ci, null, &pool), "vkCreateCommandPool");
+        dev.Own(VkObjectType.CommandPool, (ulong)pool.Value);
         _pool = pool;
         _render = new VulkanRenderPass(this);
         _compute = new VulkanComputePass(this);
@@ -54,6 +55,7 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
         {
             var ai = new VkCommandBufferAllocateInfo { commandPool = _pool, level = VkCommandBufferLevel.Primary, commandBufferCount = 1 };
             _dev.Check(_dev.Fns.vkAllocateCommandBuffers(_dev.Handle, &ai, &cb), "vkAllocateCommandBuffers");
+            _dev.Own(VkObjectType.CommandBuffer, (ulong)cb.Value);
             _all.Add(cb);
         }
 

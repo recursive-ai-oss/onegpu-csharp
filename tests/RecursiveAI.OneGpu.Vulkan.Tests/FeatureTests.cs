@@ -803,7 +803,7 @@ public sealed class FeatureTests
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
-        var target = Target(d, 8, 8);
+        using var target = Target(d, 8, 8);
 
         static void Passes(GpuDevice d, GpuCommandEncoder enc, GpuTexture target, int count)
         {

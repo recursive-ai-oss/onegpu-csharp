@@ -191,6 +191,11 @@ public abstract partial class GpuDevice : IDisposable
     /// Returns and clears the warnings and errors the validation layer reported since the last call.
     /// Empty when validation is off.
     /// </summary>
+    /// <remarks>
+    /// A message reaches only the device it concerns, so devices alive at the same time do not see each other's. Call it again after
+    /// <see cref="Dispose"/> to read what destroying the device reported: the Vulkan layer lists objects that were never disposed (leaks)
+    /// there, and the Metal backend reports buffers still alive. A tool that wants to know it is leak-free checks that list is empty.
+    /// </remarks>
     public abstract string[] TakeValidationMessages();
 
     /// <summary>Waits for the GPU and releases the device and everything created from it.</summary>

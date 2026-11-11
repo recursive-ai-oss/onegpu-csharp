@@ -128,6 +128,7 @@ internal sealed unsafe class VulkanTexture : GpuTexture, IRetirable
         };
         VkImageView view;
         _dev.Check(_dev.Fns.vkCreateImageView(_dev.Handle, &ci, null, &view), "vkCreateImageView");
+        _dev.Own(VkObjectType.ImageView, (ulong)view.Value);
         _sampledViews.Add((d, view));
         return view;
     }
@@ -164,6 +165,7 @@ internal sealed unsafe class VulkanTexture : GpuTexture, IRetirable
         };
         VkImageView view;
         _dev.Check(_dev.Fns.vkCreateImageView(_dev.Handle, &ci, null, &view), "vkCreateImageView");
+        _dev.Own(VkObjectType.ImageView, (ulong)view.Value);
         _views.Add((mip, layer, view));
         return view;
     }

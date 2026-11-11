@@ -136,7 +136,9 @@ public sealed class GemmTests
         Assert.Equal("StrideC", ex.Argument);
         ex = Assert.Throws<GpuKernelShapeException>(() => gemm.Encode(enc, new GemmProblem(int.MaxValue, 4, 4), a, b, c));
         Assert.Equal("OffsetC", ex.Argument);
-        Assert.Throws<ArgumentException>(() => gemm.Encode(enc, new GemmProblem(4, 4, 4), f.Device.CreateBuffer<Half>(16), f.Device.CreateBuffer<Half>(16), c));
+        using var halfA = f.Device.CreateBuffer<Half>(16);
+        using var halfB = f.Device.CreateBuffer<Half>(16);
+        Assert.Throws<ArgumentException>(() => gemm.Encode(enc, new GemmProblem(4, 4, 4), halfA, halfB, c));
         f.Device.Submit(enc);
     }
 }

@@ -79,8 +79,19 @@ reports zeros.
 
 The Vulkan backend shares one instance per process (one more when validation is requested) and keeps it for the life of the process; each
 device is its own logical device on it. Some drivers refuse new instances after a few dozen create and destroy pairs in one process
-(NVIDIA 595 stopped after about 80), and a long-running tool or test run must not hit that. Validation messages reach every device that is alive
-when the layer reports them, so devices created at the same time in one process may see each other's messages.
+(NVIDIA 595 stopped after about 80), and a long-running tool or test run must not hit that.
+
+## Validation messages
+
+`GpuDevice.TakeValidationMessages` returns what the layer said about this device. Devices share one instance and one message callback, so
+the Vulkan backend records which device created each object and sends a message to the owner of the first object it names; messages raised
+while a `VkDevice` is created or destroyed go to that device. Two devices alive at once never see each other's messages. A message that
+names no object any device owns goes to every live device, because dropping it would hide a real problem.
+
+Call `TakeValidationMessages` again after `Dispose`: destroying a Vulkan device is where the layer lists the objects that were never
+disposed (`vkDestroyDevice(): ... has N leaked objects`), and the Metal backend adds a line when buffers were still alive. The test
+fixtures do this, so every suite also checks for leaks. A command encoder that was begun and never submitted does not leak: the device
+destroys every encoder it made.
 
 ## Browser
 

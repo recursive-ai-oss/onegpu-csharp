@@ -17,6 +17,7 @@ internal sealed unsafe partial class VulkanDevice
         var ci = new VkBufferCreateInfo { size = desc.Size, usage = VkMap.BufferUsage(desc.Usage), sharingMode = VkSharingMode.Exclusive };
         VkBuffer buf;
         Check(Fns.vkCreateBuffer(Handle, &ci, null, &buf), "vkCreateBuffer");
+        Own(VkObjectType.Buffer, (ulong)buf.Value);
         VkMemoryRequirements req;
         Fns.vkGetBufferMemoryRequirements(Handle, buf, &req);
         var alloc = Memory.Allocate(req, MemoryKind.DeviceLocal);
@@ -128,6 +129,7 @@ internal sealed unsafe partial class VulkanDevice
         };
         VkImage image;
         Check(Fns.vkCreateImage(Handle, &ci, null, &image), "vkCreateImage");
+        Own(VkObjectType.Image, (ulong)image.Value);
         VkMemoryRequirements req;
         Fns.vkGetImageMemoryRequirements(Handle, image, &req);
         var alloc = Memory.Allocate(req, MemoryKind.DeviceLocal);
@@ -162,6 +164,7 @@ internal sealed unsafe partial class VulkanDevice
         };
         VkImageView view;
         Check(Fns.vkCreateImageView(Handle, &vi, null, &view), "vkCreateImageView");
+        Own(VkObjectType.ImageView, (ulong)view.Value);
         return view;
     }
 
@@ -186,6 +189,7 @@ internal sealed unsafe partial class VulkanDevice
         };
         VkSampler s;
         Check(Fns.vkCreateSampler(Handle, &ci, null, &s), "vkCreateSampler");
+        Own(VkObjectType.Sampler, (ulong)s.Value);
         return new VulkanSampler(this, s);
     }
 
@@ -211,6 +215,7 @@ internal sealed unsafe partial class VulkanDevice
         var ci = new VkShaderModuleCreateInfo { codeSize = (nuint)spirv.Length, pCode = (uint*)code };
         VkShaderModule m;
         Check(Fns.vkCreateShaderModule(Handle, &ci, null, &m), "vkCreateShaderModule");
+        Own(VkObjectType.ShaderModule, (ulong)m.Value);
         return new VulkanShader(this, m, stage, entryPoint);
     }
 
@@ -283,6 +288,7 @@ internal sealed unsafe partial class VulkanDevice
                 var ci = new VkDescriptorSetLayoutCreateInfo { bindingCount = (uint)list.Count, pBindings = vb };
                 VkDescriptorSetLayout l;
                 Check(Fns.vkCreateDescriptorSetLayout(Handle, &ci, null, &l), "vkCreateDescriptorSetLayout");
+                Own(VkObjectType.DescriptorSetLayout, (ulong)l.Value);
                 layouts[s] = l;
             }
 
@@ -302,6 +308,7 @@ internal sealed unsafe partial class VulkanDevice
 
             VkPipelineLayout layout;
             Check(Fns.vkCreatePipelineLayout(Handle, &pl, null, &layout), "vkCreatePipelineLayout");
+            Own(VkObjectType.PipelineLayout, (ulong)layout.Value);
             return new VulkanPipelineLayout(this, layout, layouts, result, pushConstants);
         }
         catch
@@ -333,6 +340,7 @@ internal sealed unsafe partial class VulkanDevice
         var ci = new VkDescriptorPoolCreateInfo { flags = VkDescriptorPoolCreateFlagBits.FreeDescriptorSet, maxSets = 512, poolSizeCount = 7, pPoolSizes = sizes };
         VkDescriptorPool pool;
         Check(Fns.vkCreateDescriptorPool(Handle, &ci, null, &pool), "vkCreateDescriptorPool");
+        Own(VkObjectType.DescriptorPool, (ulong)pool.Value);
         _descriptorPools.Add(pool);
         return pool;
     }
@@ -354,6 +362,7 @@ internal sealed unsafe partial class VulkanDevice
                 var r = Fns.vkAllocateDescriptorSets(Handle, &ai, &set);
                 if (r == VkResult.Success)
                 {
+                    Own(VkObjectType.DescriptorSet, (ulong)set.Value);
                     poolIndex = i;
                     return set;
                 }
@@ -686,6 +695,7 @@ internal sealed unsafe partial class VulkanDevice
         };
         VkPipeline pipe;
         Check(Fns.vkCreateGraphicsPipelines(Handle, default, 1, &ci, null, &pipe), "vkCreateGraphicsPipelines");
+        Own(VkObjectType.Pipeline, (ulong)pipe.Value);
         return new VulkanGraphicsPipeline(this, pipe, layout);
     }
 
@@ -706,6 +716,7 @@ internal sealed unsafe partial class VulkanDevice
         };
         VkPipeline pipe;
         Check(Fns.vkCreateComputePipelines(Handle, default, 1, &ci, null, &pipe), "vkCreateComputePipelines");
+        Own(VkObjectType.Pipeline, (ulong)pipe.Value);
         return new VulkanComputePipeline(this, pipe, layout);
     }
 
@@ -726,6 +737,7 @@ internal sealed unsafe partial class VulkanDevice
         var ci = new VkQueryPoolCreateInfo { queryType = VkQueryType.Timestamp, queryCount = count };
         VkQueryPool pool;
         Check(Fns.vkCreateQueryPool(Handle, &ci, null, &pool), "vkCreateQueryPool");
+        Own(VkObjectType.QueryPool, (ulong)pool.Value);
 
         // Queries must be reset before the first read.
         Fns.vkResetQueryPool(Handle, pool, 0, count);
