@@ -127,15 +127,15 @@ public sealed class GemmTests
         using var c = f.Device.CreateBuffer<float>(100);
         var enc = f.Device.BeginCommands();
         var ex = Assert.Throws<GpuKernelShapeException>(() => gemm.Encode(enc, new GemmProblem(-1, 4, 4), a, b, c));
-        Assert.Equal("M", ex.Dimension);
+        Assert.Equal("M", ex.Argument);
         ex = Assert.Throws<GpuKernelShapeException>(() => gemm.Encode(enc, new GemmProblem(10, 10, 11), a, b, c));
-        Assert.Equal("OffsetA", ex.Dimension);
+        Assert.Equal("OffsetA", ex.Argument);
         ex = Assert.Throws<GpuKernelShapeException>(() => gemm.Encode(enc, new GemmProblem(4, 4, 4) { Lda = 2 }, a, b, c));
-        Assert.Equal("Lda", ex.Dimension);
+        Assert.Equal("Lda", ex.Argument);
         ex = Assert.Throws<GpuKernelShapeException>(() => gemm.Encode(enc, new GemmProblem(4, 4, 4) { Batch = 3, StrideC = 8 }, a, b, c));
-        Assert.Equal("StrideC", ex.Dimension);
+        Assert.Equal("StrideC", ex.Argument);
         ex = Assert.Throws<GpuKernelShapeException>(() => gemm.Encode(enc, new GemmProblem(int.MaxValue, 4, 4), a, b, c));
-        Assert.Equal("OffsetC", ex.Dimension);
+        Assert.Equal("OffsetC", ex.Argument);
         Assert.Throws<ArgumentException>(() => gemm.Encode(enc, new GemmProblem(4, 4, 4), f.Device.CreateBuffer<Half>(16), f.Device.CreateBuffer<Half>(16), c));
         f.Device.Submit(enc);
     }

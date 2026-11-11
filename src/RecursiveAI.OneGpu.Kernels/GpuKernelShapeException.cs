@@ -1,25 +1,25 @@
 namespace RecursiveAI.OneGpu.Kernels;
 
 /// <summary>
-/// An operand's shape, stride, offset or size is invalid for a kernel: negative, inconsistent, out of the buffer's range or larger than the
-/// device can dispatch. Raised before anything is recorded, so a bad shape never reaches the driver.
+/// A shape, stride, offset or size given to a kernel is invalid for the operation: dimensions that cannot broadcast, an axis out of range,
+/// a range that reaches past a buffer, or a size beyond what the kernels address. Raised before any buffer is created or work recorded.
 /// </summary>
-public sealed class GpuKernelShapeException : GpuException
+public sealed class GpuKernelShapeException : ArgumentException
 {
     /// <summary>Creates the exception.</summary>
-    /// <param name="operation">The operation, for example <c>Gemm</c>.</param>
-    /// <param name="dimension">The offending dimension or operand, for example <c>K</c> or <c>OffsetA</c>.</param>
-    /// <param name="message">What is wrong, with the values.</param>
-    public GpuKernelShapeException(string operation, string dimension, string message)
-        : base($"{operation}: {dimension}: {message}")
+    /// <param name="operation">The operation, for example <c>Add</c> or <c>Softmax</c>.</param>
+    /// <param name="argument">The argument or dimension at fault, for example <c>shapeB[2]</c> or <c>axis</c>.</param>
+    /// <param name="message">What is wrong, with the values involved.</param>
+    public GpuKernelShapeException(string operation, string argument, string message)
+        : base($"{operation}: {argument}: {message}", argument)
     {
         Operation = operation;
-        Dimension = dimension;
+        Argument = argument;
     }
 
-    /// <summary>The operation that rejected the shape.</summary>
+    /// <summary>The operation that rejected its arguments.</summary>
     public string Operation { get; }
 
-    /// <summary>The dimension or operand that is wrong.</summary>
-    public string Dimension { get; }
+    /// <summary>The argument or dimension at fault.</summary>
+    public string Argument { get; }
 }

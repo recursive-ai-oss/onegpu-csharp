@@ -1,14 +1,32 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Compute kernels for GPU inference: matrix multiplication and its relatives, written in HLSL and compiled at build time.</Description>
+    <Description>Compute kernels for machine-learning inference, written in HLSL and compiled for Vulkan, Metal and WebGPU.</Description>
     <ImplicitUsings>enable</ImplicitUsings>
+    <OneShaderNamespace>RecursiveAI.OneGpu.Kernels.Shaders</OneShaderNamespace>
+    <EnableDefaultOneShaderItems>false</EnableDefaultOneShaderItems>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../RecursiveAI.OneGpu/RecursiveAI.OneGpu.csproj" />
-    <!-- Compiles the HLSL files to SPIR-V, Metal and WGSL at build time and generates their C# bindings. Not a runtime dependency. -->
+    <!-- Build-time only: the compiler and the binding generator never reach a consumer. -->
     <PackageReference Include="RecursiveAI.OneShader.Build" PrivateAssets="all" />
+    <ProjectReference Include="../RecursiveAI.OneGpu/RecursiveAI.OneGpu.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <OneShader Include="Shaders/ArgReduce.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Binary.hlsl" Axes="F16;ACT;RANK=R1|R2|RN" />
+    <OneShader Include="Shaders/Cast.hlsl" />
+    <OneShader Include="Shaders/Compare.hlsl" Axes="F16;RANK=R1|R2|RN" />
+    <OneShader Include="Shaders/Norm.hlsl" Axes="F16;WAVE" />
+    <OneShader Include="Shaders/Reduce.hlsl" Axes="F16;WAVE;RRANK=R1|RN" />
+    <OneShader Include="Shaders/Softmax.hlsl" Axes="F16;WAVE" />
+    <OneShader Include="Shaders/Transpose.hlsl" Axes="ELEM=W16|W32|W64" />
+    <OneShader Include="Shaders/Unary.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Where.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/GemmF32.hlsl" />
+    <OneShader Include="Shaders/GemmF16.hlsl" />
+    <OneShader Include="Shaders/GemmBF16.hlsl" />
   </ItemGroup>
 
   <ItemGroup>

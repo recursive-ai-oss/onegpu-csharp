@@ -22,11 +22,12 @@
 
   <PropertyGroup>
     <Shared>$(MSBuildThisFileDirectory)../RecursiveAI.OneGpu.Vulkan.Tests/</Shared>
+    <KernelTests>$(MSBuildThisFileDirectory)../RecursiveAI.OneGpu.Kernels.Tests/</KernelTests>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="*.cs" />
-    <Compile Include="../RecursiveAI.OneGpu.Kernels.Tests/GemmTests.cs;../RecursiveAI.OneGpu.Kernels.Tests/GemmRunner.cs;../RecursiveAI.OneGpu.Kernels.Tests/GemmReference.cs" />
+    <Compile Include="$(KernelTests)*.cs" Exclude="$(KernelTests)Fixture.cs" />
     <Compile Include="$(Shared)FeatureTests.cs;$(Shared)ComputeTests.cs;$(Shared)RenderTests.cs;$(Shared)Png.cs;$(Shared)ReadHelpers.cs" />
     <OneShader Include="$(Shared)Shaders/*.hlsl" Exclude="$(Shared)Shaders/TextureArray.hlsl" Targets="SpirV;Msl;Wgsl" />
     <EmbeddedResource Include="../../testdata/gpu/*.png" LogicalName="golden/%(Filename)%(Extension)" />

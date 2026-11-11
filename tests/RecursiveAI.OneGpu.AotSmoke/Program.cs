@@ -56,6 +56,8 @@ for (var i = 0; i < Count; i++)
     }
 }
 
+wrong += await KernelSmoke.RunAsync(device);
+
 device.WaitIdle();
 var messages = device.TakeValidationMessages();
 foreach (var m in messages)
@@ -63,5 +65,5 @@ foreach (var m in messages)
     Console.WriteLine("validation: " + m);
 }
 
-Console.WriteLine($"vector add of {Count} elements: {wrong} wrong, {messages.Length} validation messages");
+Console.WriteLine($"vector add of {Count} elements and one kernel of each family: {wrong} wrong, {messages.Length} validation messages");
 return wrong == 0 && messages.Length == 0 ? 0 : 1;
