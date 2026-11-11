@@ -18,7 +18,10 @@
     <OneShader Include="Shaders/Binary.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Cast.hlsl" />
     <OneShader Include="Shaders/Compare.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Norm.hlsl" Axes="F16;WAVE" />
     <OneShader Include="Shaders/Reduce.hlsl" Axes="F16;WAVE" />
+    <OneShader Include="Shaders/Softmax.hlsl" Axes="F16;WAVE" />
+    <OneShader Include="Shaders/Transpose.hlsl" Axes="ELEM=W16|W32|W64" />
     <OneShader Include="Shaders/Unary.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Where.hlsl" Axes="F16" />
   </ItemGroup>
