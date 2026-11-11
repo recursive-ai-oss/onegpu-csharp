@@ -142,19 +142,22 @@ void GemmTiledBody(uint3 group, uint tid)
         GroupMemoryBarrierWithGroupSync();
     }
 
-    // beta == 0 never reads C, so uninitialised output memory (even NaN) is fine, as in BLAS.
+    // beta == 0 never reads C, so uninitialised output memory (even NaN) is fine, as in BLAS. The bounds are tested with positive
+    // conditions around the store rather than a continue: the Metal output of the shader compiler dropped the
+    // continue inside the unrolled loops, so the guard never ran.
     [unroll] for (uint i3 = 0; i3 < 4; i3++)
     {
         uint gm = m0 + ty + 16 * i3;
-        if (gm >= P.M) { continue; }
         [unroll] for (uint j3 = 0; j3 < 4; j3++)
         {
             uint gn = n0 + tx + 16 * j3;
-            if (gn >= P.N) { continue; }
-            uint at = baseC + gm * P.Ldc + gn;
-            float r = P.Alpha * acc[i3][j3];
-            if (P.Beta != 0.0) { r = mad(P.Beta, C[at], r); }
-            C[at] = r;
+            if (gm < P.M && gn < P.N)
+            {
+                uint at = baseC + gm * P.Ldc + gn;
+                float r = P.Alpha * acc[i3][j3];
+                if (P.Beta != 0.0) { r = mad(P.Beta, C[at], r); }
+                C[at] = r;
+            }
         }
     }
 }

@@ -55,6 +55,18 @@ public sealed class GemmTests
 
     static string Describe(string name, double scaled) => $"{name}: scaled error {scaled:e2}";
 
+    [Fact]
+    public void ReportsDeviceCapabilities()
+    {
+        using var f = new GemmFixture();
+        var cc = f.Device.Capabilities.Compute;
+        Report($"CAPS\t{f.Device.Adapter.Name}\t{f.Device.Backend}\t{cc.Describe().ReplaceLineEndings(" | ")}");
+        foreach (var shape in cc.CooperativeMatrices)
+        {
+            Report($"CAPS\t{f.Device.Adapter.Name}\tcooperative matrix\t{shape}");
+        }
+    }
+
     [Fact] public void F32Fast() => Parity(GemmElementType.F32, GpuKernelMode.Fast);
 
     [Fact] public void F16Fast() => Parity(GemmElementType.F16, GpuKernelMode.Fast);

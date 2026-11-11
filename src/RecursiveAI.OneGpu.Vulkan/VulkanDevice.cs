@@ -186,7 +186,7 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
         var useCoopMatrix = hasCoopMatrix && fcm.cooperativeMatrix != 0;
         var useBFloat16 = hasBFloat16 && fbf.shaderBFloat16Type != 0;
         var ecm = new VkPhysicalDeviceCooperativeMatrixFeaturesKHR { cooperativeMatrix = 1 };
-        var ebf = new VkPhysicalDeviceShaderBfloat16FeaturesKHR { shaderBFloat16Type = 1 };
+        var ebf = new VkPhysicalDeviceShaderBfloat16FeaturesKHR { shaderBFloat16Type = 1, shaderBFloat16CooperativeMatrix = fbf.shaderBFloat16CooperativeMatrix };
         void* eTail = null;
         if (useBFloat16)
         {
@@ -217,6 +217,9 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
             storageBuffer8BitAccess = f12.storageBuffer8BitAccess,
             uniformAndStorageBuffer8BitAccess = f12.uniformAndStorageBuffer8BitAccess,
             timelineSemaphore = 1,
+            // Cooperative-matrix shaders must declare the Vulkan memory model.
+            vulkanMemoryModel = f12.vulkanMemoryModel,
+            vulkanMemoryModelDeviceScope = f12.vulkanMemoryModelDeviceScope,
             hostQueryReset = f12.hostQueryReset,
             shaderSampledImageArrayNonUniformIndexing = f12.shaderSampledImageArrayNonUniformIndexing,
             shaderStorageBufferArrayNonUniformIndexing = f12.shaderStorageBufferArrayNonUniformIndexing,

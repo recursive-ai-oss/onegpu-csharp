@@ -38,7 +38,11 @@ public sealed class Gemm : IDisposable
     const int MaxCachedBindGroups = 64;
 
     readonly GpuDevice _device;
-    readonly GpuComputeKernel _kernel;
+    readonly GpuComputeKernel? _kernel;
+    readonly GpuShader? _rawShader;
+    readonly GpuPipelineLayout? _rawLayout;
+    readonly GpuComputePipeline _pipeline;
+    readonly GpuPipelineLayout _layout;
     readonly uint _tileM;
     readonly uint _tileN;
     readonly Dictionary<(GpuBuffer, GpuBuffer, GpuBuffer), GpuBindGroup> _bindGroups = [];
@@ -55,6 +59,60 @@ public sealed class Gemm : IDisposable
         _device = device;
         ElementType = elementType;
         Mode = mode;
+        _tileM = 64;
+        _tileN = 64;
+        if (mode == GpuKernelMode.Fast && (options?.AllowMatrixHardware ?? true) && SimdgroupMatrixVariantFits(device, elementType))
+        {
+            // Same reason as the SPIR-V kernel below: the shader compiler cannot express simdgroup matrices yet, so the kernel is
+            // Metal Shading Language text (Raw/gemm_simdgroup.metal) that borrows the portable kernel's layout (buffers 0..2, push constants
+            // at 3, 256 invocations per threadgroup) for its bindings.
+            var (kind, elem, input) = elementType switch
+            {
+                GemmElementType.F32 => (0, "float", "float"),
+                GemmElementType.F16 => (1, "half", "uint"),
+                _ => (2, "bfloat", "uint"),
+            };
+            var msl = System.Text.Encoding.UTF8.GetBytes($"#define GEMM_KIND {kind}\n#define GEMM_ELEM {elem}\n#define GEMM_IN {input}\n" + System.Text.Encoding.UTF8.GetString(LoadRaw("gemm_simdgroup.metal")));
+            _kernel = elementType switch
+            {
+                GemmElementType.F32 => device.CreateComputeKernel(new ShaderSource(ShaderStage.Compute, GemmF32.GemmTiled.EntryPoint) { Msl = msl, MslFunctionName = GemmF32.GemmTiled.MslFunctionName, Layout = GemmF32.GemmTiled.Layout }, "gemm f32 simdgroup matrix"),
+                GemmElementType.F16 => device.CreateComputeKernel(new ShaderSource(ShaderStage.Compute, GemmF16.GemmTiled.EntryPoint) { Msl = msl, MslFunctionName = GemmF16.GemmTiled.MslFunctionName, Layout = GemmF16.GemmTiled.Layout }, "gemm f16 simdgroup matrix"),
+                _ => device.CreateComputeKernel(new ShaderSource(ShaderStage.Compute, GemmBF16.GemmTiled.EntryPoint) { Msl = msl, MslFunctionName = GemmBF16.GemmTiled.MslFunctionName, Layout = GemmBF16.GemmTiled.Layout }, "gemm bf16 simdgroup matrix"),
+            };
+            _pipeline = _kernel.Pipeline;
+            _layout = _kernel.PipelineLayout;
+            Variant = "simdgroup-matrix-8x8x8-tile64x64x16";
+            return;
+        }
+
+        if (mode == GpuKernelMode.Fast && (options?.AllowMatrixHardware ?? true) && CooperativeMatrixVariantFits(device, elementType))
+        {
+            // The shader compiler has no cooperative-matrix types yet, so this kernel is hand-written SPIR-V (tools/kernels).
+            var spirv = LoadRaw(elementType == GemmElementType.F16 ? "gemm_coop_f16.spv" : "gemm_coop_bf16.spv");
+            _rawShader = device.CreateShader(ShaderStage.Compute, spirv, "main");
+            try
+            {
+                ReadOnlySpan<ResourceBinding> bindings =
+                [
+                    new ResourceBinding(0, 0, 1, ResourceKind.ReadOnlyStorageBuffer, ShaderStage.Compute),
+                    new ResourceBinding(0, 1, 1, ResourceKind.ReadOnlyStorageBuffer, ShaderStage.Compute),
+                    new ResourceBinding(0, 2, 1, ResourceKind.StorageBuffer, ShaderStage.Compute),
+                ];
+                _rawLayout = device.CreatePipelineLayout(bindings, new PushConstantRange(PushBlockSize, ShaderStage.Compute));
+                _pipeline = device.CreateComputePipeline(new ComputePipelineDesc { Layout = _rawLayout, Compute = _rawShader, Label = "gemm cooperative matrix" });
+                _layout = _rawLayout;
+            }
+            catch
+            {
+                _rawLayout?.Dispose();
+                _rawShader.Dispose();
+                throw;
+            }
+
+            Variant = "cooperative-matrix-16x16x16-tile64x64x16";
+            return;
+        }
+
         _kernel = elementType switch
         {
             GemmElementType.F32 => device.CreateComputeKernel(new ShaderSource(ShaderStage.Compute, GemmF32.GemmTiled.EntryPoint) { SpirV = GemmF32.GemmTiled.SpirV, Wgsl = GemmF32.GemmTiled.Wgsl, WgslEntryPoint = GemmF32.GemmTiled.WgslEntryPoint, Msl = GemmF32.GemmTiled.Msl, MslFunctionName = GemmF32.GemmTiled.MslFunctionName, Layout = GemmF32.GemmTiled.Layout }, "gemm f32"),
@@ -62,9 +120,79 @@ public sealed class Gemm : IDisposable
             GemmElementType.BF16 => device.CreateComputeKernel(new ShaderSource(ShaderStage.Compute, GemmBF16.GemmTiled.EntryPoint) { SpirV = GemmBF16.GemmTiled.SpirV, Wgsl = GemmBF16.GemmTiled.Wgsl, WgslEntryPoint = GemmBF16.GemmTiled.WgslEntryPoint, Msl = GemmBF16.GemmTiled.Msl, MslFunctionName = GemmBF16.GemmTiled.MslFunctionName, Layout = GemmBF16.GemmTiled.Layout }, "gemm bf16"),
             _ => throw new ArgumentOutOfRangeException(nameof(elementType)),
         };
-        _tileM = 64;
-        _tileN = 64;
+        _pipeline = _kernel.Pipeline;
+        _layout = _kernel.PipelineLayout;
         Variant = "tiled-64x64x16";
+    }
+
+    // Size of the push-constant block both variants share: 15 four-byte members.
+    const uint PushBlockSize = 60;
+
+    // The cooperative-matrix kernel is written for 16x16x16 fragments with float32 accumulation, 32-wide subgroups (it runs four
+    // of them as a 2x2 grid, and a different width would change how many subgroups the workgroup holds), and about 10 KB of workgroup memory.
+    static bool CooperativeMatrixVariantFits(GpuDevice device, GemmElementType type)
+    {
+        if (device.Backend != GpuBackend.Vulkan || type == GemmElementType.F32)
+        {
+            return false;
+        }
+
+        var cc = device.Capabilities.Compute;
+        if (cc.SubgroupMinSize != 32 || cc.SubgroupMaxSize != 32 || cc.MaxWorkgroupInvocations < 128 || cc.MaxWorkgroupSizeX < 128 || cc.MaxWorkgroupMemoryBytes < 12288)
+        {
+            return false;
+        }
+
+        var wanted = type == GemmElementType.F16 ? GpuScalarType.F16 : GpuScalarType.BF16;
+        foreach (var shape in cc.CooperativeMatrices)
+        {
+            if (shape is { M: 16, N: 16, K: 16, CType: GpuScalarType.F32, ResultType: GpuScalarType.F32, Saturating: false } && shape.AType == wanted && shape.BType == wanted)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // The simdgroup kernel needs 256 invocations (eight 32-wide simdgroups), 15 KB of threadgroup memory at most (float tiles), and the
+    // 8x8x8 combination for the element type with float32 accumulation.
+    static bool SimdgroupMatrixVariantFits(GpuDevice device, GemmElementType type)
+    {
+        if (device.Backend != GpuBackend.Metal)
+        {
+            return false;
+        }
+
+        var cc = device.Capabilities.Compute;
+        if (cc.SubgroupMinSize != 32 || cc.SubgroupMaxSize != 32 || cc.MaxWorkgroupInvocations < 256 || cc.MaxWorkgroupMemoryBytes < 16384)
+        {
+            return false;
+        }
+
+        var wanted = type switch
+        {
+            GemmElementType.F32 => GpuScalarType.F32,
+            GemmElementType.F16 => GpuScalarType.F16,
+            _ => GpuScalarType.BF16,
+        };
+        foreach (var shape in cc.CooperativeMatrices)
+        {
+            if (shape is { M: 8, N: 8, K: 8, CType: GpuScalarType.F32, ResultType: GpuScalarType.F32 } && shape.AType == wanted && shape.BType == wanted)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    static byte[] LoadRaw(string name)
+    {
+        using var stream = typeof(Gemm).Assembly.GetManifestResourceStream(name) ?? throw new InvalidOperationException($"the kernel resource {name} is missing from the assembly");
+        var bytes = new byte[stream.Length];
+        stream.ReadExactly(bytes);
+        return bytes;
     }
 
     /// <summary>Element type of A and B.</summary>
@@ -145,7 +273,17 @@ public sealed class Gemm : IDisposable
     public void Dispose()
     {
         ReleaseBindings();
-        _kernel.Dispose();
+        if (_kernel is null)
+        {
+            _pipeline.Dispose();
+        }
+        else
+        {
+            _kernel.Dispose();
+        }
+
+        _rawLayout?.Dispose();
+        _rawShader?.Dispose();
     }
 
     void RequireType(GemmElementType expected)
@@ -187,7 +325,7 @@ public sealed class Gemm : IDisposable
                 ReleaseBindings();
             }
 
-            group = _kernel.CreateBindGroup(_device, 0, [BindGroupEntry.ForBuffer(0, a), BindGroupEntry.ForBuffer(1, b), BindGroupEntry.ForBuffer(2, c)]);
+            group = _device.CreateBindGroup(_layout, 0, [BindGroupEntry.ForBuffer(0, a), BindGroupEntry.ForBuffer(1, b), BindGroupEntry.ForBuffer(2, c)]);
             _bindGroups.Add(key, group);
         }
 
@@ -210,7 +348,7 @@ public sealed class Gemm : IDisposable
             Beta = p.Beta,
         };
         var pass = encoder.BeginComputePass();
-        pass.SetPipeline(_kernel.Pipeline);
+        pass.SetPipeline(_pipeline);
         pass.SetBindGroup(0, group);
         pass.SetPushConstants(0, MemoryMarshal.AsBytes(new ReadOnlySpan<PushBlock>(in push)));
         pass.Dispatch(groupsX, groupsY, (uint)p.Batch);
