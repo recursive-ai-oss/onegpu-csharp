@@ -64,3 +64,22 @@ read.
   as part of a word.
 - Recording a call allocates nothing once the bind group for its three buffers is cached (64 triples; `ReleaseBindings` drops them).
 - A batch with `StrideB = 0` shares one B (a weight matrix) across the batch; `StrideC` must keep the outputs apart.
+
+## Throughput (indicative)
+
+GPU time from timestamp queries (median of 30 dispatches) on the RTX 4070, driver 595; host time between submit and idle on the Apple M2
+(Metal here reports no timestamp queries). Peaks used: RTX 4070 float32 29.2 TFLOP/s (5888 lanes x 2 x 2.475 GHz); float16 tensor with
+float32 accumulation about 58 TFLOP/s dense (derived from the Ada figures, so approximate); M2 float32 3.6 TFLOP/s (Apple's figure for the
+10-core GPU). These are first-version numbers, measured while other jobs shared the machines.
+
+| Device, variant, inputs | Large shapes (GFLOP/s) | Fraction of peak |
+|---|---|---|
+| RTX 4070, tiled, float32 | 5500 to 7100 (square 4096: 7130) | 19 to 24 % |
+| RTX 4070, cooperative matrix, float16 | 17700 to 25400 (square 4096: 25400) | 30 to 44 % |
+| RTX 4070, cooperative matrix, bfloat16 | 16200 to 28400 (square 4096: 22400 to 28400) | 28 to 49 % |
+| Apple M2, simdgroup matrix, float32 and float16 | 420 to 475 (square 4096: 406 to 442) | 12 % |
+| Apple M2, simdgroup matrix, bfloat16 | 64 to 133 | 2 to 4 % (bfloat16 matrices are not native on this GPU) |
+| Apple M2, tiled | 100 to 139 | 3 to 4 % |
+
+Single-row products (decode, M = 1) are memory bound and use one row of a 64-row tile: 100 to 150 GFLOP/s on the RTX 4070, 2 to 9 on the M2.
+A skinny-M variant and larger tiles for the Apple GPU are the next tuning steps.
