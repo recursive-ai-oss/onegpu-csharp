@@ -54,6 +54,14 @@ public enum GpuScalarType
     U64 = 10,
     /// <summary>16-bit brain float (8 exponent bits, 7 mantissa bits).</summary>
     BF16 = 1000141000,
+    /// <summary>Signed 8-bit integers packed four to a 32-bit word.</summary>
+    I8Packed = 1000491000,
+    /// <summary>Unsigned 8-bit integers packed four to a 32-bit word.</summary>
+    U8Packed = 1000491001,
+    /// <summary>8-bit float with 4 exponent bits and 3 mantissa bits (E4M3).</summary>
+    F8E4M3 = 1000491002,
+    /// <summary>8-bit float with 5 exponent bits and 2 mantissa bits (E5M2).</summary>
+    F8E5M2 = 1000491003,
 }
 
 /// <summary>One matrix multiply-accumulate shape a device runs on dedicated matrix hardware: <c>Result = A × B + C</c>, with A of M×K, B of K×N and C and Result of M×N.</summary>
