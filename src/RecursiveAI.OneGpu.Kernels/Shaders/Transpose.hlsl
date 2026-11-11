@@ -42,6 +42,13 @@ void TransposeOp(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
     uint t = (gid.y * TP.GridX + gid.x) * WG + tid;
 #if ELEM_W16
+    // Surplus threads must not touch the buffer: a browser clamps an out-of-range index to the last word, and a surplus thread would then
+    // write that word back with stale contents.
+    if (t >= HalfWords(TP.OffO, TP.Count))
+    {
+        return;
+    }
+
     uint word = (TP.OffO >> 1) + t;
     uint res = TOut[word];
     [unroll]

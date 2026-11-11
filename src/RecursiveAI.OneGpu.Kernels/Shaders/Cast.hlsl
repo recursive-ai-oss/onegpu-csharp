@@ -159,6 +159,11 @@ void CastOp(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     if (CP.Dst == 1u)
     {
         // One thread per 32-bit word of half-precision output.
+        if (t >= HalfWords(CP.OffD, CP.Count))
+        {
+            return;
+        }
+
         uint word = (CP.OffD >> 1) + t;
         first = word * 2u;
         last = first + 1u;

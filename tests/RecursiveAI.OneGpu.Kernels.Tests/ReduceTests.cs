@@ -120,6 +120,12 @@ public sealed class ReduceTests
                 foreach (var (shape, axes) in Cases)
                 {
                     var n = shape.Aggregate(1, (p, q) => p * q);
+                    if (Rig.Browser && shape.Contains(0) && op is GpuReduceOp.Mean or GpuReduceOp.Max or GpuReduceOp.Min or GpuReduceOp.LogSum)
+                    {
+                        // The result of an empty reduction is NaN or an infinity, which WGSL does not guarantee.
+                        continue;
+                    }
+
                     var x = Data(op, n, n + (int)op);
                     var xr = half ? x.Select(v => (double)(Half)v).ToArray() : x.Select(v => (double)v).ToArray();
                     var want = Reference(op, xr, shape, axes, out var numOut);

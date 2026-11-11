@@ -23,7 +23,14 @@ void BinaryOp(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
     uint t = (gid.y * BP.GridX + gid.x) * WG + tid;
 #if F16
+    // Surplus threads must not touch the buffer: a browser clamps an out-of-range index to the last word, and a surplus thread would then
+    // write that word back with stale contents.
     // One thread owns one 32-bit word, so two threads never write the same word.
+    if (t >= HalfWords(BP.OffO, BP.Count))
+    {
+        return;
+    }
+
     uint word = (BP.OffO >> 1) + t;
     uint res = BinO[word];
     [unroll]

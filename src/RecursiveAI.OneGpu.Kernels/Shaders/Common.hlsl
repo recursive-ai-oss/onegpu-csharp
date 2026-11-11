@@ -91,6 +91,12 @@ uint F2H(float f)
     return s | (r >> 13);
 }
 
+// Number of 32-bit words that hold count halves starting at half index off.
+uint HalfWords(uint off, uint count)
+{
+    return ((off + count - 1u) >> 1) - (off >> 1) + 1u;
+}
+
 // The 16 bits of element i of a packed half array.
 uint RawH(StructuredBuffer<uint> buf, uint i)
 {

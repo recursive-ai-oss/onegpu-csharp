@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/RecursiveAI.OneGpu.Backends/RecursiveAI.OneGpu.Backends.csproj" />
+    <ProjectReference Include="../../src/RecursiveAI.OneGpu.Kernels/RecursiveAI.OneGpu.Kernels.csproj" />
+  </ItemGroup>
+
+</Project>

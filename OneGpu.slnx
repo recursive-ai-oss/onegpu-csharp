@@ -7,6 +7,9 @@
     <Project Path="src/RecursiveAI.OneGpu.Backends/RecursiveAI.OneGpu.Backends.csproj" />
     <Project Path="src/RecursiveAI.OneGpu.Kernels/RecursiveAI.OneGpu.Kernels.csproj" />
   </Folder>
+  <Folder Name="/bench/">
+    <Project Path="bench/RecursiveAI.OneGpu.Kernels.Bench/RecursiveAI.OneGpu.Kernels.Bench.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/RecursiveAI.OneGpu.Tests/RecursiveAI.OneGpu.Tests.csproj" />
     <Project Path="tests/RecursiveAI.OneGpu.Vulkan.Tests/RecursiveAI.OneGpu.Vulkan.Tests.csproj" />

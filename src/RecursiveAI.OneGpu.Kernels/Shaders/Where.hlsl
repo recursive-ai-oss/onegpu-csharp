@@ -61,6 +61,13 @@ void WhereOp(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
     uint t = (gid.y * WP.GridX + gid.x) * WG + tid;
 #if F16
+    // Surplus threads must not touch the buffer: a browser clamps an out-of-range index to the last word, and a surplus thread would then
+    // write that word back with stale contents.
+    if (t >= HalfWords(WP.OffO, WP.Count))
+    {
+        return;
+    }
+
     uint word = (WP.OffO >> 1) + t;
     uint res = WhO[word];
     [unroll]
