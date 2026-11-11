@@ -4,13 +4,30 @@
 
 #include "Common.hlsl"
 
-#if F16
+#if F16 || BF16
 typedef uint Elem;
 #else
 typedef float Elem;
 #endif
 
 #define FLAG_ZERO 8u
+
+#if BF16
+// Round to nearest even, keeping the top 16 bits of the float; NaN stays a quiet NaN.
+uint F2B(float f)
+{
+    uint u = asuint(f);
+    if ((u & 0x7FFFFFFFu) > INF_BITS)
+    {
+        return 0x7FC0u;
+    }
+
+    return (u + 0x7FFFu + ((u >> 16) & 1u)) >> 16;
+}
+#define F2H16 F2B
+#else
+#define F2H16 F2H
+#endif
 
 bool IsNegInf(float x)
 {
@@ -77,7 +94,7 @@ float MergeOne(uint rec0, uint stride, uint d, uint zeroFlag)
 void AttentionMerge(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
     uint idx = (gid.y * CP.GridX + gid.x) * 64u + tid;
-#if F16
+#if F16 || BF16
     uint per = CP.D >> 1;
 #else
     uint per = CP.D;
@@ -97,10 +114,10 @@ void AttentionMerge(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     uint rec0 = row * CP.NSplit * stride;
     uint oBase = CP.OOff + b * CP.OBatch + h * CP.OHead + q * CP.ORow;
     uint zero = CP.Flags & FLAG_ZERO;
-#if F16
+#if F16 || BF16
     float x0 = MergeOne(rec0, stride, 2u * c, zero);
     float x1 = MergeOne(rec0, stride, 2u * c + 1u, zero);
-    COut[(oBase + 2u * c) >> 1] = F2H(x0) | (F2H(x1) << 16);
+    COut[(oBase + 2u * c) >> 1] = F2H16(x0) | (F2H16(x1) << 16);
 #else
     COut[oBase + c] = MergeOne(rec0, stride, c, zero);
 #endif

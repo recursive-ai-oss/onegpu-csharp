@@ -18,7 +18,7 @@
     <OneShader Include="Shaders/Attention.hlsl" Axes="F16;WAVE;HD=D32|D64|D128|D256" Targets="SpirV;Msl" />
     <OneShader Include="Shaders/AttentionCoop.hlsl" Axes="BF16;HD=D32|D64|D128" Targets="SpirV;Msl" Enable16BitTypes="true" />
     <OneShader Include="Shaders/AttentionLoops.hlsl" Axes="F16;WAVE;HD=D32|D64|D128|D256" Targets="Wgsl" />
-    <OneShader Include="Shaders/AttentionCombine.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/AttentionCombine.hlsl" Axes="F16;BF16" />
     <OneShader Include="Shaders/Binary.hlsl" Axes="F16;ACT;RANK=R1|R2|RN" />
     <OneShader Include="Shaders/Cast.hlsl" />
     <OneShader Include="Shaders/Concat.hlsl" Axes="ELEM=W16|W32|W64" />

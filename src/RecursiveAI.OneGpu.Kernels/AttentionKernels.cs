@@ -70,11 +70,12 @@ public sealed class AttentionKernels : IDisposable
 
     readonly GpuDevice _device;
     readonly KernelPipeline?[] _tile = new KernelPipeline?[16];
-    readonly KernelPipeline?[] _coopTile = new KernelPipeline?[3];
+    readonly KernelPipeline?[] _coopTile = new KernelPipeline?[6];
     readonly bool _pairs;
     readonly bool _coop;
+    readonly bool _coopBf16;
     readonly ulong _budget;
-    readonly KernelPipeline?[] _combine = new KernelPipeline?[2];
+    readonly KernelPipeline?[] _combine = new KernelPipeline?[3];
     GpuBuffer<float>? _scratch;
     GpuBuffer<float>? _dummyFloat;
     GpuBuffer<float>? _dummyPart;
@@ -103,13 +104,14 @@ public sealed class AttentionKernels : IDisposable
         // Apple GPUs give a thread about 128 registers before it spills; halving the registers per thread made the kernel 2 to 5 times faster there,
         // and slower on the NVIDIA GPU measured, which has registers to spare.
         const uint AppleVendorId = 0x106B;
-        var matrices = allowMatrixHardware && (variant is GpuAttentionVariant.Auto or GpuAttentionVariant.Cooperative) && CoopFits(device);
+        var matrices = allowMatrixHardware && (variant is GpuAttentionVariant.Auto or GpuAttentionVariant.Cooperative) && CoopFits(device, bfloat16: false);
         if (variant == GpuAttentionVariant.Cooperative && !matrices)
         {
             throw new GpuUnsupportedException("the cooperative-matrix attention kernel needs 16-bit cooperative matrices with a float32 accumulator, 32-wide full subgroups and the shader features of the kernel, which the device does not offer or the caller ruled out");
         }
 
         _coop = matrices;
+        _coopBf16 = matrices && CoopFits(device, bfloat16: true);
         // The scalar kernels still serve float32 tensors and large heads, so they are chosen even when the matrix kernel is.
         _pairs = variant == GpuAttentionVariant.Pairs || ((variant is GpuAttentionVariant.Auto or GpuAttentionVariant.Cooperative) && shuffles && device.Adapter.VendorId == AppleVendorId);
         if (device.Capabilities.Compute.MaxStorageBuffersPerStage is > 0 and < 7)
@@ -161,6 +163,45 @@ public sealed class AttentionKernels : IDisposable
     /// <exception cref="GpuKernelShapeException">A size, stride or offset is invalid, a range reaches past its buffer, a half tensor breaks the alignment rules, the head dimension exceeds <see cref="HeadDimLimit"/>, or the scratch is too small.</exception>
     public void Encode<T>(GpuCommandEncoder encoder, in AttentionProblem problem, GpuBuffer<T> q, GpuBuffer<T> k, GpuBuffer<T> v, GpuBuffer<T> o,
         GpuBuffer<float>? mask = null, GpuBuffer<int>? keyLengths = null, GpuKernelMode mode = GpuKernelMode.Fast, GpuBuffer<float>? scratch = null)
+        where T : unmanaged =>
+        EncodeCore(encoder, problem, q, k, v, o, mask, keyLengths, mode, scratch, bfloat16: false);
+
+    /// <summary>
+    /// Records the attention described by <paramref name="problem"/> for bfloat16 tensors (the 16-bit pattern in a <see cref="ushort"/>), with float32
+    /// accumulation and softmax, on matrix hardware. There is no scalar bfloat16 kernel: the device must offer bfloat16 matrices
+    /// (<see cref="BFloat16Available"/>) and the head dimension must not exceed <see cref="CoopHeadDimLimit"/>. The rules for alignment, special values and
+    /// ordering are those of <see cref="Encode{T}"/> for <see cref="Half"/>.
+    /// </summary>
+    /// <param name="encoder">The encoder to record into.</param>
+    /// <param name="problem">Sizes, layouts and options.</param>
+    /// <param name="q">Queries.</param>
+    /// <param name="k">Keys.</param>
+    /// <param name="v">Values.</param>
+    /// <param name="o">Receives the result, rounded to nearest even.</param>
+    /// <param name="mask">Optional additive float32 mask.</param>
+    /// <param name="keyLengths">Optional number of valid keys per batch entry.</param>
+    /// <param name="mode">Fast or deterministic (the same kernel).</param>
+    /// <param name="scratch">Optional scratch of at least <see cref="ScratchLength"/> floats.</param>
+    /// <exception cref="GpuUnsupportedException">The device has no bfloat16 matrices (or the family was created without matrix hardware), or the head dimension is above <see cref="CoopHeadDimLimit"/>.</exception>
+    /// <exception cref="GpuKernelShapeException">As for <see cref="Encode{T}"/>.</exception>
+    public void EncodeBFloat16(GpuCommandEncoder encoder, in AttentionProblem problem, GpuBuffer<ushort> q, GpuBuffer<ushort> k, GpuBuffer<ushort> v, GpuBuffer<ushort> o,
+        GpuBuffer<float>? mask = null, GpuBuffer<int>? keyLengths = null, GpuKernelMode mode = GpuKernelMode.Fast, GpuBuffer<float>? scratch = null)
+    {
+        if (!_coopBf16)
+        {
+            throw new GpuUnsupportedException("bfloat16 attention needs bfloat16 cooperative matrices, which the device does not offer or the caller ruled out");
+        }
+
+        if (problem.HeadDim > CoopHeadDimLimit)
+        {
+            throw new GpuUnsupportedException($"bfloat16 attention covers head dimensions up to {CoopHeadDimLimit}; {problem.HeadDim} was asked");
+        }
+
+        EncodeCore(encoder, problem, q, k, v, o, mask, keyLengths, mode, scratch, bfloat16: true);
+    }
+
+    void EncodeCore<T>(GpuCommandEncoder encoder, in AttentionProblem problem, GpuBuffer<T> q, GpuBuffer<T> k, GpuBuffer<T> v, GpuBuffer<T> o,
+        GpuBuffer<float>? mask, GpuBuffer<int>? keyLengths, GpuKernelMode mode, GpuBuffer<float>? scratch, bool bfloat16)
         where T : unmanaged
     {
         const string Name = "Attention";
@@ -169,7 +210,7 @@ public sealed class AttentionKernels : IDisposable
         ArgumentNullException.ThrowIfNull(k);
         ArgumentNullException.ThrowIfNull(v);
         ArgumentNullException.ThrowIfNull(o);
-        var half = KernelTypes.IsHalf<T>(Name);
+        var half = bfloat16 || KernelTypes.IsHalf<T>(Name);
         ReduceKernels.CheckMode(Name, mode);
         var p = problem;
         CheckSizes(p);
@@ -192,7 +233,7 @@ public sealed class AttentionKernels : IDisposable
             return;
         }
 
-        var coop = half && _coop && p.HeadDim <= CoopHeadDimLimit;
+        var coop = half && (bfloat16 ? _coopBf16 : _coop) && p.HeadDim <= CoopHeadDimLimit;
         var pairs = _pairs && !coop;
         var (splits, perSplit) = Split(p, pairs);
         var blockRows = pairs ? 32 : 64;
@@ -258,7 +299,7 @@ public sealed class AttentionKernels : IDisposable
         w[31] = (uint)groups;
 
         var dim = p.HeadDim <= 32 ? 0 : (p.HeadDim <= 64 ? 1 : (p.HeadDim <= 128 ? 2 : 3));
-        var tile = coop ? _coopTile[dim] ??= CreateCoopTile(dim) : _tile[dim + (half ? 4 : 0) + (pairs ? 8 : 0)] ??= CreateTile(half, dim);
+        var tile = coop ? _coopTile[dim + (bfloat16 ? 3 : 0)] ??= CreateCoopTile(dim, bfloat16) : _tile[dim + (half ? 4 : 0) + (pairs ? 8 : 0)] ??= CreateTile(half, dim);
         Span<GpuBuffer> bound =
         [
             q.Buffer,
@@ -306,7 +347,7 @@ public sealed class AttentionKernels : IDisposable
         c[8] = (uint)p.O.RowStride;
         c[9] = (uint)p.O.Offset;
         c[10] = cx;
-        var merge = _combine[half ? 1 : 0] ??= CreateCombine(half);
+        var merge = _combine[bfloat16 ? 2 : (half ? 1 : 0)] ??= CreateCombine(half, bfloat16);
         merge.Record(encoder, c, cx, cy, part.Buffer, o.Buffer);
     }
 
@@ -462,7 +503,7 @@ public sealed class AttentionKernels : IDisposable
     // The matrix kernel is written for 32-wide subgroups (four per workgroup) and 16x16x16 fragments of the 16-bit element type with a float32
     // accumulator (8x8x8 simdgroup matrices on Metal, which the shader compiler tiles into 16x16). On Vulkan that means a device whose subgroups are 32
     // wide or can be pinned to 32, that runs pipelines with full subgroups and offers the features the kernel's reflection lists.
-    static bool CoopFits(GpuDevice device)
+    static bool CoopFits(GpuDevice device, bool bfloat16)
     {
         const uint SubgroupSize = 32;
         const uint Invocations = 128;
@@ -480,16 +521,17 @@ public sealed class AttentionKernels : IDisposable
             return false;
         }
 
-        if ((Shaders.AttentionCoop.Variants.Get(new Shaders.AttentionCoop.Key(bf16: false, hd: Shaders.AttentionCoop.HdValue.D64)).AttnCoop.Layout.RequiredFeatures & ~cc.ShaderFeatures) != DeviceFeatures.None)
+        if ((Shaders.AttentionCoop.Variants.Get(new Shaders.AttentionCoop.Key(bf16: bfloat16, hd: Shaders.AttentionCoop.HdValue.D64)).AttnCoop.Layout.RequiredFeatures & ~cc.ShaderFeatures) != DeviceFeatures.None)
         {
             return false;
         }
 
+        var wanted = bfloat16 ? GpuScalarType.BF16 : GpuScalarType.F16;
         var edge = device.Backend == GpuBackend.Metal ? 8u : 16u;
         foreach (var shape in cc.CooperativeMatrices)
         {
             if (shape is { CType: GpuScalarType.F32, ResultType: GpuScalarType.F32, Saturating: false } && shape.M == edge && shape.N == edge && shape.K == edge
-                && shape.AType == GpuScalarType.F16 && shape.BType == GpuScalarType.F16)
+                && shape.AType == wanted && shape.BType == wanted)
             {
                 return true;
             }
@@ -498,16 +540,19 @@ public sealed class AttentionKernels : IDisposable
         return false;
     }
 
-    KernelPipeline CreateCoopTile(int dim)
+    /// <summary>True when <see cref="EncodeBFloat16"/> can run: the device offers bfloat16 matrices with a float32 accumulator and the family may use matrix hardware.</summary>
+    public bool BFloat16Available => _coopBf16;
+
+    KernelPipeline CreateCoopTile(int dim, bool bfloat16)
     {
         var d = dim switch { 0 => Shaders.AttentionCoop.HdValue.D32, 1 => Shaders.AttentionCoop.HdValue.D64, _ => Shaders.AttentionCoop.HdValue.D128 };
-        var e = Shaders.AttentionCoop.Variants.Get(new Shaders.AttentionCoop.Key(bf16: false, hd: d)).AttnCoop;
+        var e = Shaders.AttentionCoop.Variants.Get(new Shaders.AttentionCoop.Key(bf16: bfloat16, hd: d)).AttnCoop;
         return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-coop-tile", requiredSubgroupSize: 32);
     }
 
-    KernelPipeline CreateCombine(bool half)
+    KernelPipeline CreateCombine(bool half, bool bfloat16)
     {
-        var e = AttentionCombine.Variants.Get(new AttentionCombine.Key(f16: half)).AttentionMerge;
+        var e = AttentionCombine.Variants.Get(new AttentionCombine.Key(f16: half && !bfloat16, bf16: bfloat16)).AttentionMerge;
         return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 2, CombineWords, "attention-combine");
     }
 }
