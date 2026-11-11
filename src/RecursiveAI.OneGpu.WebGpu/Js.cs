@@ -3,7 +3,7 @@ using System.Runtime.Versioning;
 
 namespace RecursiveAI.OneGpu.WebGpu;
 
-/// <summary>The functions of <c>onegpu.js</c>. The page registers the script as the module "onegpu" before the game starts.</summary>
+/// <summary>The functions of <c>onegpu.js</c>, registered as the module "onegpu" by the page or, when it did not, by <c>WebGpu.CreateDeviceAsync</c>.</summary>
 [SupportedOSPlatform("browser")]
 internal static partial class Js
 {

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+
+  <!--
+    A minimal browser app that consumes the packed RecursiveAI.OneGpu.WebGpu the way an application would: from a package feed, with no
+    file copied by hand. tools/ci/test-web-package.sh packs the libraries into a scratch feed, publishes this app against it and runs
+    it in Chrome. It is not part of the solution, because it restores from that feed.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <WasmEnableWebcil>false</WasmEnableWebcil>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <OneShaderTargets>Wgsl</OneShaderTargets>
+    <OneShaderNamespace>WebConsumer.Shaders</OneShaderNamespace>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="RecursiveAI.OneGpu.WebGpu" Version="$(OneGpuPackageVersion)" />
+    <PackageReference Include="RecursiveAI.OneShader.Build" Version="1.4.0" PrivateAssets="all" />
+    <OneShader Include="Shaders/*.hlsl" />
+  </ItemGroup>
+
+</Project>

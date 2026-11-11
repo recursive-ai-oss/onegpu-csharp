@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Razor">
 
   <PropertyGroup>
     <Description>WebGPU backend of the GPU layer, for the browser.</Description>
@@ -12,8 +12,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The browser half of the backend; a web export copies it next to the page. -->
-    <None Include="js/**" Pack="false" />
+    <!-- The browser half of the backend. It ships as a static web asset, so an app that references the package publishes it at
+         _content/RecursiveAI.OneGpu.WebGpu/onegpu.js without copying anything by hand. -->
+    <!-- (the default wwwroot/** glob of the Razor SDK picks wwwroot/onegpu.js up) -->
   </ItemGroup>
 
 </Project>

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.JavaScript;
 using System.Text.Json;
 using OneShader.Reflection;
 
@@ -18,11 +19,45 @@ public static class WebGpu
         await Task.Delay(5).ConfigureAwait(true);
     }
 
+    // The package publishes the script at _content/<package id>/onegpu.js. The runtime resolves a module URL against its own folder
+    // (_framework), and a host page that serves the app from a sub-path still reaches _content through the same relative step.
+    static readonly string[] ScriptUrls = ["../_content/RecursiveAI.OneGpu.WebGpu/onegpu.js", "./_content/RecursiveAI.OneGpu.WebGpu/onegpu.js"];
+    static bool _scriptReady;
+
+    // A page that imported onegpu.js itself and registered it as the module "onegpu" marks the global scope (see the script); anything else
+    // gets the copy the package publishes. Calling an import of a module that was never registered ends the runtime, so this must come first.
+    static async Task EnsureScriptAsync()
+    {
+        if (_scriptReady || JSHost.GlobalThis.GetPropertyAsBoolean("__onegpuLoaded"))
+        {
+            _scriptReady = true;
+            return;
+        }
+
+        Exception? last = null;
+        foreach (var url in ScriptUrls)
+        {
+            try
+            {
+                await JSHost.ImportAsync("onegpu", url).ConfigureAwait(true);
+                _scriptReady = true;
+                return;
+            }
+            catch (JSException ex)
+            {
+                last = ex;
+            }
+        }
+
+        throw new GpuUnsupportedException("The page did not register onegpu.js and the copy published with the package could not be loaded: " + last?.Message);
+    }
+
     /// <summary>
     /// Asks the browser for an adapter and a device. The browser answers asynchronously, so a game awaits this before it creates its
     /// instance and hands the device to it.
     /// </summary>
-    /// <exception cref="GpuUnsupportedException">The browser has no WebGPU, or no adapter.</exception>
+    /// <remarks>An app that references the package gets <c>onegpu.js</c> published beside it, and this call loads it unless the page already registered the script as the module "onegpu".</remarks>
+    /// <exception cref="GpuUnsupportedException">The browser has no WebGPU, or no adapter, or the script could not be loaded.</exception>
     public static async Task<GpuDevice> CreateDeviceAsync(GpuDeviceOptions? options = null)
     {
         if (!OperatingSystem.IsBrowser())
@@ -31,6 +66,7 @@ public static class WebGpu
         }
 
         options ??= new GpuDeviceOptions();
+        await EnsureScriptAsync().ConfigureAwait(true);
         string json;
         try
         {
