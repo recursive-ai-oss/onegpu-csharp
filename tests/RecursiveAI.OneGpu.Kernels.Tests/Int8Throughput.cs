@@ -14,6 +14,9 @@ public sealed class Int8Throughput
         ("bert ffn-down 8x128", 1024, 768, 3072),
         ("bert proj 8x128", 1024, 768, 768),
         ("minilm proj 1x128", 128, 384, 384),
+        ("minilm ffn-up 1x128", 128, 1536, 384),
+        ("minilm ffn-down 1x128", 128, 384, 1536),
+        ("minilm ffn-up 8x128", 1024, 1536, 384),
         ("square 2048", 2048, 2048, 2048),
     ];
 
@@ -27,15 +30,47 @@ public sealed class Int8Throughput
 
         using var f = new GemmFixture();
         var d = f.Device;
-        using var gemm = new Int8Gemm(d);
-        foreach (var (name, m, n, k) in Shapes)
+        // Each variant the device can run, with the tile chosen by size (auto) and, for the packed-dot variant, with each tile forced.
+        var gemms = new List<(string Tile, Int8Gemm Gemm)>();
+        var hasDot = d.Capabilities.Compute.Int8DotProduct;
+        foreach (var allowDot in new[] { true, false })
         {
-            var p = new Int8GemmProblem(m, n, k) { Lda = k, Ldb = n };
-            using var a = d.CreateBuffer<sbyte>(m * k);
-            using var b = d.CreateBuffer<sbyte>(k * n);
-            using var c = d.CreateBuffer<int>(m * n);
-            var (gpu, wall) = Time(d, enc => gemm.EncodeInt32(enc, p, a, b, c));
-            Report($"INT8\t{d.Adapter.Name}\t{gemm.Variant}\t{name}\t{gpu / 1000:F1} us gpu\t{wall / 1000:F1} us wall\t{2.0 * m * n * k / gpu / 1000:F2} TOPS gpu\t{2.0 * m * n * k / wall / 1000:F2} TOPS wall");
+            // Without the instruction both rounds run the portable kernel, which has one tile.
+            if (!allowDot && !hasDot)
+            {
+                continue;
+            }
+
+            foreach (var tile in allowDot && hasDot ? new[] { 0, 32, 64 } : new[] { 0 })
+            {
+                var g = new Int8Gemm(d, new Int8GemmOptions { AllowPackedDot = allowDot, Tile = tile });
+                gemms.Add((tile == 0 ? "auto" : $"tile{tile}", g));
+            }
+        }
+
+        foreach (var (tile, gemm) in gemms)
+        {
+            foreach (var (name, m, n, k) in Shapes)
+            {
+                var p = new Int8GemmProblem(m, n, k) { Lda = k, Ldb = n };
+                using var a = d.CreateBuffer<sbyte>(m * k);
+                using var b = d.CreateBuffer<sbyte>(k * n);
+                using var c = d.CreateBuffer<int>(m * n);
+                var (gpu, wall) = Time(d, enc => gemm.EncodeInt32(enc, p, a, b, c));
+                Report($"INT8\t{d.Adapter.Name}\t{gemm.Variant} {tile}\ts8 x s8\t{name}\t{gpu / 1000:F1} us gpu\t{wall / 1000:F1} us wall\t{2.0 * m * n * k / gpu / 1000:F2} TOPS gpu\t{2.0 * m * n * k / wall / 1000:F2} TOPS wall");
+
+                // What a quantized model runs: uint8 activations with a zero point, int8 weights stored N x K.
+                var pt = new Int8GemmProblem(m, n, k) { Lda = k, Ldb = k, TransposeB = true };
+                using var au = d.CreateBuffer<byte>(m * k);
+                using var zp = d.CreateBuffer<byte>(4);
+                var (gpu2, wall2) = Time(d, enc => gemm.EncodeInt32(enc, pt, au, b, c, new Int8Operand<byte>(zp, 0)));
+                Report($"INT8\t{d.Adapter.Name}\t{gemm.Variant} {tile}\tu8+zp x s8 T\t{name}\t{gpu2 / 1000:F1} us gpu\t{wall2 / 1000:F1} us wall\t{2.0 * m * n * k / gpu2 / 1000:F2} TOPS gpu\t{2.0 * m * n * k / wall2 / 1000:F2} TOPS wall");
+            }
+        }
+
+        foreach (var (_, g) in gemms)
+        {
+            g.Dispose();
         }
 
         foreach (var (vocab, hidden, rows) in new[] { (30522, 768, 8 * 512), (250002, 384, 8 * 512) })

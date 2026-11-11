@@ -98,6 +98,7 @@ public static class WebGpu
         var subgroups = features.Contains("subgroups");
         var sgMin = r.TryGetProperty("subgroupMin", out var smin) ? (uint)smin.GetInt32() : 0;
         var sgMax = r.TryGetProperty("subgroupMax", out var smax) ? (uint)smax.GetInt32() : 0;
+        var dot4 = r.TryGetProperty("dot4", out var dot) && dot.GetBoolean();
         var compute = new GpuComputeCapabilities
         {
             SubgroupSize = 0,
@@ -109,9 +110,11 @@ public static class WebGpu
                 : GpuSubgroupOperations.None,
 
             // f16 in WGSL covers storage, uniform and the uniform buffer that stands in for push constants.
-            ShaderFeatures = f16 ? DeviceFeatures.Float16 | DeviceFeatures.StorageBuffer16 | DeviceFeatures.UniformBuffer16 | DeviceFeatures.PushConstant16 : DeviceFeatures.None,
+            // The packed dot product is a WGSL language feature rather than a device feature; kernels that use it are checked against this flag all the same.
+            ShaderFeatures = (f16 ? DeviceFeatures.Float16 | DeviceFeatures.StorageBuffer16 | DeviceFeatures.UniformBuffer16 | DeviceFeatures.PushConstant16 : DeviceFeatures.None)
+                | (dot4 ? DeviceFeatures.IntegerDotProduct : DeviceFeatures.None),
             Integer8 = false,
-            Int8DotProduct = r.TryGetProperty("dot4", out var dot) && dot.GetBoolean(),
+            Int8DotProduct = dot4,
             BFloat16 = false,
             MaxWorkgroupSizeX = Limit("maxComputeWorkgroupSizeX"),
             MaxWorkgroupSizeY = Limit("maxComputeWorkgroupSizeY"),

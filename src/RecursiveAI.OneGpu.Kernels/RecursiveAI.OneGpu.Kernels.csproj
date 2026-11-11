@@ -27,6 +27,7 @@
     <OneShader Include="Shaders/GatherElements.hlsl" Axes="ELEM=W16|W32|W64" />
     <OneShader Include="Shaders/GatherNd.hlsl" Axes="ELEM=W16|W32|W64" />
     <OneShader Include="Shaders/Int8Epilogue.hlsl" />
+    <OneShader Include="Shaders/Int8GemmDot.hlsl" Axes="SMALL" />
     <OneShader Include="Shaders/Int8GemmKernel.hlsl" />
     <OneShader Include="Shaders/Norm.hlsl" Axes="F16;WAVE" />
     <OneShader Include="Shaders/Reduce.hlsl" Axes="F16;WAVE;RRANK=R1|RN" />
