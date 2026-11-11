@@ -96,7 +96,7 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
     internal static VulkanDevice Create(GpuDeviceOptions options, VulkanInstance inst, int adapterIndex)
     {
         var info = inst.Adapters[adapterIndex];
-        var dev = new VulkanDevice(info.Info, inst.Sink)
+        var dev = new VulkanDevice(info.Info, inst.HasMessenger ? new ValidationSink() : null)
         {
             _instance = inst.Handle,
             _physical = info.Physical,
@@ -134,6 +134,11 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
     void AdoptInstance(VulkanInstance inst)
     {
         _owner = inst;
+        if (_sink is not null)
+        {
+            inst.Attach(_sink);
+        }
+
         _global = inst.Global;
         _instanceFns = inst.Fns;
         _messenger = inst.Messenger;
@@ -986,6 +991,11 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
             _memory?.Destroy();
             _deviceFns.vkDestroyDevice(_device, null);
             _device = default;
+        }
+
+        if (_owner is not null && _sink is not null)
+        {
+            _owner.Detach(_sink);
         }
 
         _owner?.Release();

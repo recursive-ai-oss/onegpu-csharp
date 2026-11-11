@@ -15,18 +15,90 @@ internal sealed unsafe class VulkanInstance
     public VkInstance Handle;
     public readonly VkGlobalFns Global = new();
     public readonly VkInstanceFns Fns = new();
-    public ValidationSink? Sink;
+    // Validation messages go to every device attached to the instance (see Attach); the callback's user data is this object.
+    public bool HasMessenger;
     public GCHandle SinkHandle;
+    readonly List<ValidationSink> _sinks = [];
     public VkDebugUtilsMessengerEXT Messenger;
     public bool SurfaceKhr, XlibKhr, WaylandKhr, Win32Khr, AndroidKhr;
     public readonly List<AdapterEntry> Adapters = [];
     int _refs = 1;
+    bool _layerLoaded;
+
+    // Some drivers (NVIDIA 595 is one) refuse new instances after a few dozen create/destroy pairs in one process, so a device does not get an
+    // instance of its own: processes share one per validation setting, kept for the life of the process. Each device still gets its own
+    // message sink.
+    static readonly object SharedLock = new();
+    static VulkanInstance? _sharedPlain;
+    static VulkanInstance? _sharedValidated;
 
     private static int _optionalNoticeShown;
 
     public static bool EnvFlag(string name) => Environment.GetEnvironmentVariable(name) is "1" or "true";
 
-    public static VulkanInstance Create(GpuDeviceOptions options)
+    /// <summary>Returns the process-wide instance for these options, creating it on first use. The caller owns one reference and releases it.</summary>
+    public static VulkanInstance Acquire(GpuDeviceOptions options)
+    {
+        var validated = options.Validation || EnvFlag("ONEGPU_VALIDATION");
+        lock (SharedLock)
+        {
+            var existing = validated ? _sharedValidated : _sharedPlain;
+            if (existing is null)
+            {
+                existing = Create(options);
+                existing._refs++; // the cache's own reference, never released
+                if (validated)
+                {
+                    _sharedValidated = existing;
+                }
+                else
+                {
+                    _sharedPlain = existing;
+                }
+
+                return existing;
+            }
+
+            if (validated && options.RequireValidation && !existing._layerLoaded && !EnvFlag("ONEGPU_VALIDATION_OPTIONAL"))
+            {
+                throw new GpuUnsupportedException("the Vulkan validation layer (VK_LAYER_KHRONOS_validation) is not installed; set VK_ADD_LAYER_PATH to its location");
+            }
+
+            existing.AddRef();
+            return existing;
+        }
+    }
+
+    /// <summary>Starts delivering this instance's validation messages to <paramref name="sink"/>.</summary>
+    public void Attach(ValidationSink sink)
+    {
+        lock (_sinks)
+        {
+            _sinks.Add(sink);
+        }
+    }
+
+    /// <summary>Stops delivering messages to <paramref name="sink"/>.</summary>
+    public void Detach(ValidationSink sink)
+    {
+        lock (_sinks)
+        {
+            _sinks.Remove(sink);
+        }
+    }
+
+    void Broadcast(string text)
+    {
+        lock (_sinks)
+        {
+            foreach (var s in _sinks)
+            {
+                s.Add(text);
+            }
+        }
+    }
+
+    static VulkanInstance Create(GpuDeviceOptions options)
     {
         if (!VulkanLoader.IsAvailable())
         {
@@ -139,6 +211,7 @@ internal sealed unsafe class VulkanInstance
         }
 
         var useValidation = wantValidation && layerPresent;
+        _layerLoaded = useValidation;
         var exts = new List<string>();
         void Want(string name, bool required = false)
         {
@@ -234,8 +307,7 @@ internal sealed unsafe class VulkanInstance
 
         if (debugUtils)
         {
-            Sink = new ValidationSink();
-            SinkHandle = GCHandle.Alloc(Sink);
+            SinkHandle = GCHandle.Alloc(this);
             var mci = new VkDebugUtilsMessengerCreateInfoEXT
             {
                 messageSeverity = VkDebugUtilsMessageSeverityFlagBitsEXT.Warning | VkDebugUtilsMessageSeverityFlagBitsEXT.Error,
@@ -247,6 +319,7 @@ internal sealed unsafe class VulkanInstance
             if (Fns.vkCreateDebugUtilsMessengerEXT(Handle, &mci, null, &m) == VkResult.Success)
             {
                 Messenger = m;
+                HasMessenger = true;
             }
         }
 
@@ -256,11 +329,11 @@ internal sealed unsafe class VulkanInstance
     [UnmanagedCallersOnly]
     static uint DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagBitsEXT types, VkDebugUtilsMessengerCallbackDataEXT* data, void* user)
     {
-        var sink = (ValidationSink?)GCHandle.FromIntPtr((nint)user).Target;
-        if (sink is not null && data != null && data->pMessage != null)
+        var instance = (VulkanInstance?)GCHandle.FromIntPtr((nint)user).Target;
+        if (instance is not null && data != null && data->pMessage != null)
         {
             var text = Marshal.PtrToStringUTF8((nint)data->pMessage) ?? "";
-            sink.Add($"[{severity}] {text}");
+            instance.Broadcast($"[{severity}] {text}");
         }
 
         return 0;
@@ -378,11 +451,11 @@ internal sealed unsafe class VulkanInstance
         return 0;
     }
 
-    public void AddRef() => _refs++;
+    public void AddRef() => Interlocked.Increment(ref _refs);
 
     public void Release()
     {
-        if (--_refs > 0)
+        if (Interlocked.Decrement(ref _refs) > 0)
         {
             return;
         }
