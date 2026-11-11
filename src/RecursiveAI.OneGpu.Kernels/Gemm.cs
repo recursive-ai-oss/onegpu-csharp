@@ -297,9 +297,14 @@ public sealed class Gemm : IDisposable
             throw new GpuKernelShapeException(Name, nameof(epilogue), $"activation {(int)epilogue.Activation} is not a GemmActivation");
         }
 
+        if (!Enum.IsDefined(epilogue.BiasAxis))
+        {
+            throw new GpuKernelShapeException(Name, nameof(epilogue), $"bias axis {(int)epilogue.BiasAxis} is not a GemmBiasAxis");
+        }
+
         if (epilogue.Bias is { } bias && p.M > 0 && p.N > 0)
         {
-            Check.Range(Name, "bias", bias.Length, epilogue.OffsetBias, p.N);
+            Check.Range(Name, "bias", bias.Length, epilogue.OffsetBias, epilogue.BiasAxis == GemmBiasAxis.Row ? p.M : p.N);
         }
 
         if (p.M == 0 || p.N == 0)
@@ -373,10 +378,10 @@ public sealed class Gemm : IDisposable
                     StrideA = (uint)p.StrideA,
                     StrideB = (uint)p.StrideB,
                     StrideC = (uint)p.StrideC,
-                    Flags = (p.TransposeA ? 1u : 0u) | (p.TransposeB ? 2u : 0u) | (epilogue.Bias is null ? 0u : 4u),
+                    Flags = (p.TransposeA ? 1u : 0u) | (p.TransposeB ? 2u : 0u) | (epilogue.Bias is null ? 0u : (epilogue.BiasAxis == GemmBiasAxis.Row ? 12u : 4u)),
                     Alpha = p.Alpha,
                     Beta = p.Beta,
-                    BiasOffset = (uint)epilogue.OffsetBias,
+                    BiasOffset = (uint)(epilogue.OffsetBias + (epilogue.BiasAxis == GemmBiasAxis.Row ? r0 : 0)),
                     Act = (uint)epilogue.Activation,
                 };
                 var pass = encoder.BeginComputePass();

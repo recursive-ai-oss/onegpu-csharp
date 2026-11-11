@@ -48,7 +48,7 @@ struct GemmParams
     uint StrideA;
     uint StrideB;
     uint StrideC;
-    uint Flags;     // bit 0: A is stored K x M (transposed); bit 1: B is stored N x K (transposed); bit 2: add Bias[BiasOffset + column]
+    uint Flags;     // bit 0: A is stored K x M (transposed); bit 1: B is stored N x K (transposed); bit 2: add Bias[BiasOffset + column]; bit 3: the bias is indexed by row instead
     float Alpha;
     float Beta;
     uint BiasOffset;
@@ -77,7 +77,7 @@ void StoreElement(uint baseC, uint row, uint col, float value)
         uint at = baseC + row * P.Ldc + col;
         float r = P.Alpha * value;
         if (P.Beta != 0.0) { r = mad(P.Beta, C[at], r); }
-        C[at] = GemmEpilogue(r, col);
+        C[at] = GemmEpilogue(r, row, col);
     }
 }
 

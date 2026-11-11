@@ -16,21 +16,22 @@ public sealed class GemmEpilogueTests
     };
 
     // Returns (mismatching bits, max |fused - unfused|) for one problem.
-    static async Task<(int Bad, double MaxDiff, string Variant)> Case(GpuDevice d, Gemm gemm, ElementwiseKernels ew, GemmProblem p, GemmActivation act, bool withBias, int biasOffset, int seed)
+    static async Task<(int Bad, double MaxDiff, string Variant)> Case(GpuDevice d, Gemm gemm, ElementwiseKernels ew, GemmProblem p, GemmActivation act, bool withBias, GemmBiasAxis axis, int biasOffset, int seed)
     {
         var lenA = Math.Max(p.OffsetA + ((p.Batch - 1) * p.StrideA) + (p.M * p.K), 1);
         var lenB = Math.Max(p.OffsetB + ((p.Batch - 1) * p.StrideB) + (p.K * p.N), 1);
         var lenC = p.OffsetC + ((p.Batch - 1) * p.StrideC) + (p.M * p.N);
         var a = Rig.Random(lenA, seed, -1f, 1f);
         var b = Rig.Random(lenB, seed + 1, -1f, 1f);
-        var bias = Rig.Random(biasOffset + p.N, seed + 2, -3f, 3f);
+        var biasLength = axis == GemmBiasAxis.Row ? p.M : p.N;
+        var bias = Rig.Random(biasOffset + biasLength, seed + 2, -3f, 3f);
         var c0 = Rig.Random(lenC, seed + 3, -2f, 2f);
         var fused = new float[lenC];
         var plain = new float[lenC];
         using var bb = d.CreateBuffer<float>(bias);
         using var cf = d.CreateBuffer<float>(c0);
         using var cp = d.CreateBuffer<float>(c0);
-        var epilogue = new GemmEpilogue(withBias ? bb : null, biasOffset, act);
+        var epilogue = new GemmEpilogue(withBias ? bb : null, biasOffset, act, axis);
         switch (gemm.ElementType)
         {
             case GemmElementType.F32:
@@ -69,7 +70,7 @@ public sealed class GemmEpilogueTests
             var source = cp;
             if (withBias)
             {
-                Rig.Run(d, e => ew.EncodeBinary(e, GpuBinaryOp.Add, cp, at, [p.M, p.N], bb, biasOffset, [p.N], added, at));
+                Rig.Run(d, e => ew.EncodeBinary(e, GpuBinaryOp.Add, cp, at, [p.M, p.N], bb, biasOffset, axis == GemmBiasAxis.Row ? [p.M, 1] : [p.N], added, at));
                 source = added;
             }
 
@@ -134,14 +135,14 @@ public sealed class GemmEpilogueTests
 
             foreach (var act in Activations)
             {
-                foreach (var withBias in new[] { true, false })
+                foreach (var (withBias, axis) in new[] { (true, GemmBiasAxis.Column), (true, GemmBiasAxis.Row), (false, GemmBiasAxis.Column) })
                 {
                     if (!withBias && act == GemmActivation.None)
                     {
                         continue;
                     }
 
-                    var (b, diff, _) = await Case(d, gemm, ew, p, act, withBias, withBias ? 3 : 0, seed++);
+                    var (b, diff, _) = await Case(d, gemm, ew, p, act, withBias, axis, withBias ? 3 : 0, seed++);
                     bad += b;
                     worst = Math.Max(worst, diff);
                     cases++;
@@ -149,7 +150,7 @@ public sealed class GemmEpilogueTests
             }
         }
 
-        Rig.Row(d, "gemm epilogue", type.ToString(), $"{mode} variant {gemm.Variant}: {cases} problems x bias/activation vs product then elementwise add and activation", $"mismatching elements {bad}, max abs difference {Rig.Sci(worst)}");
+        Rig.Row(d, "gemm epilogue", type.ToString(), $"{mode} variant {gemm.Variant}: {cases} cases (column and row bias, activations) over {Problems().Count()} problems vs product then elementwise add and activation", $"mismatching elements {bad}, max abs difference {Rig.Sci(worst)}");
         Assert.Equal(0, bad);
     }
 
@@ -183,47 +184,50 @@ public sealed class GemmEpilogueTests
             using var gemm = new Gemm(d, type, GpuKernelMode.Deterministic);
             foreach (var act in Activations)
             {
-                var p = new GemmProblem(100, 192, 300);
-                var hashes = new string[2];
-                for (var run = 0; run < 2; run++)
+                foreach (var axisUnderTest in new[] { GemmBiasAxis.Column, GemmBiasAxis.Row })
                 {
-                    var a = Rig.Random(p.M * p.K, 5, -1f, 1f);
-                    var b = Rig.Random(p.K * p.N, 6, -1f, 1f);
-                    var bias = Rig.Random(p.N, 7, -2f, 2f);
-                    using var bb = d.CreateBuffer<float>(bias);
-                    using var c = d.CreateBuffer<float>(p.M * p.N);
-                    var epilogue = new GemmEpilogue(bb, 0, act);
-                    if (type == GemmElementType.F32)
+                    var p = new GemmProblem(100, 192, 300);
+                    var hashes = new string[2];
+                    for (var run = 0; run < 2; run++)
                     {
-                        using var ab = d.CreateBuffer<float>(a);
-                        using var wb = d.CreateBuffer<float>(b);
-                        Rig.Run(d, e => gemm.Encode(e, p, ab, wb, c, epilogue));
-                    }
-                    else if (type == GemmElementType.F16)
-                    {
-                        using var ab = d.CreateBuffer<Half>(Rig.ToHalf(a));
-                        using var wb = d.CreateBuffer<Half>(Rig.ToHalf(b));
-                        Rig.Run(d, e => gemm.Encode(e, p, ab, wb, c, epilogue));
-                    }
-                    else
-                    {
-                        using var ab = d.CreateBuffer<ushort>(a.Select(GemmReference.ToBFloat16).ToArray());
-                        using var wb = d.CreateBuffer<ushort>(b.Select(GemmReference.ToBFloat16).ToArray());
-                        Rig.Run(d, e => gemm.EncodeBFloat16(e, p, ab, wb, c, epilogue));
+                        var a = Rig.Random(p.M * p.K, 5, -1f, 1f);
+                        var b = Rig.Random(p.K * p.N, 6, -1f, 1f);
+                        var bias = Rig.Random(p.N, 7, -2f, 2f);
+                        using var bb = d.CreateBuffer<float>(bias);
+                        using var c = d.CreateBuffer<float>(p.M * p.N);
+                        var epilogue = new GemmEpilogue(bb, 0, act, axisUnderTest);
+                        if (type == GemmElementType.F32)
+                        {
+                            using var ab = d.CreateBuffer<float>(a);
+                            using var wb = d.CreateBuffer<float>(b);
+                            Rig.Run(d, e => gemm.Encode(e, p, ab, wb, c, epilogue));
+                        }
+                        else if (type == GemmElementType.F16)
+                        {
+                            using var ab = d.CreateBuffer<Half>(Rig.ToHalf(a));
+                            using var wb = d.CreateBuffer<Half>(Rig.ToHalf(b));
+                            Rig.Run(d, e => gemm.Encode(e, p, ab, wb, c, epilogue));
+                        }
+                        else
+                        {
+                            using var ab = d.CreateBuffer<ushort>(a.Select(GemmReference.ToBFloat16).ToArray());
+                            using var wb = d.CreateBuffer<ushort>(b.Select(GemmReference.ToBFloat16).ToArray());
+                            Rig.Run(d, e => gemm.EncodeBFloat16(e, p, ab, wb, c, epilogue));
+                        }
+
+                        var got = new float[p.M * p.N];
+                        await c.ReadAsync(got);
+                        hashes[run] = Rig.Hash<float>(got);
+                        gemm.ReleaseBindings();
                     }
 
-                    var got = new float[p.M * p.N];
-                    await c.ReadAsync(got);
-                    hashes[run] = Rig.Hash<float>(got);
-                    gemm.ReleaseBindings();
+                    Assert.Equal(hashes[0], hashes[1]);
+                    report.Add($"{type}/{act}/{axisUnderTest} {hashes[0]}");
                 }
-
-                Assert.Equal(hashes[0], hashes[1]);
-                report.Add($"{type}/{act} {hashes[0]}");
             }
         }
 
-        Rig.Row(d, "gemm epilogue", "f32/f16/bf16", "deterministic variant, bias + each activation, two runs", "hashes equal: " + string.Join(", ", report));
+        Rig.Row(d, "gemm epilogue", "f32/f16/bf16", "deterministic variant, column and row bias + each activation, two runs", "hashes equal: " + string.Join(", ", report));
     }
 
     [Fact]
@@ -357,5 +361,33 @@ public sealed class GemmEpilogueTests
 
         Array.Sort(sums);
         return (sums[Iterations / 2], wall);
+    }
+
+    // A product cut into row pieces (a small submission budget) must give the same row bias per row as the single dispatch.
+    [Fact]
+    public async Task RowBiasFollowsRowsWhenAProductIsSplit()
+    {
+        using var gpu = new GpuFixture();
+        var d = gpu.Device;
+        using var whole = new Gemm(d, GemmElementType.F32);
+        using var split = new Gemm(d, GemmElementType.F32, GpuKernelMode.Fast, new GemmOptions { SubmissionWorkBudget = 3_000_000 });
+        var p = new GemmProblem(300, 70, 100);
+        var a = Rig.Random(p.M * p.K, 21, -1f, 1f);
+        var b = Rig.Random(p.K * p.N, 22, -1f, 1f);
+        var bias = Rig.Random(p.M + 2, 23, -2f, 2f);
+        using var ab = d.CreateBuffer<float>(a);
+        using var wb = d.CreateBuffer<float>(b);
+        using var bb = d.CreateBuffer<float>(bias);
+        using var c1 = d.CreateBuffer<float>(p.M * p.N);
+        using var c2 = d.CreateBuffer<float>(p.M * p.N);
+        var epilogue = new GemmEpilogue(bb, 2, GemmActivation.Relu, GemmBiasAxis.Row);
+        Rig.Run(d, e => whole.Encode(e, p, ab, wb, c1, epilogue));
+        Rig.Run(d, e => split.Encode(e, p, ab, wb, c2, epilogue));
+        var g1 = new float[p.M * p.N];
+        var g2 = new float[p.M * p.N];
+        await c1.ReadAsync(g1);
+        await c2.ReadAsync(g2);
+        Assert.Equal(0, Rig.BitMismatches(g1, g2));
+        Rig.Row(d, "gemm epilogue", "F32", "row bias with a product split into row pieces (budget 3e6 operations) against one dispatch", "mismatching elements 0");
     }
 }
