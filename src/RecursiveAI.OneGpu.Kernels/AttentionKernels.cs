@@ -64,12 +64,16 @@ public sealed class AttentionKernels : IDisposable
     const int MinKeysPerSplit = 128;
     const int TargetGroups = 256;
     const int TileWords = 32;
+    // A workgroup that walks at least this many keys sums blockwise (see Attention.hlsl): the rounding error of one running sum grows with the key
+    // count, while the blockwise form costs registers and with them speed on short key ranges. The value sits above the 512 keys of BERT-class models
+    // and below the 768 per range that a Whisper encoder call gets.
+    const int BlockwiseSumKeys = 640;
     const double ScalarWorkWeight = 4;    // the scalar kernels run an operation several times slower than the matrix path, which the submission budget counts in matrix-path operations
     const double CoopWorkWeight = 1.5;    // the matrix kernel multiplies Q Kᵀ twice
     const int CombineWords = 11;
 
     readonly GpuDevice _device;
-    readonly KernelPipeline?[] _tile = new KernelPipeline?[16];
+    readonly KernelPipeline?[] _tile = new KernelPipeline?[32];
     readonly KernelPipeline?[] _coopTile = new KernelPipeline?[6];
     readonly int _maxBindGroups;
     readonly bool _pairs;
@@ -302,7 +306,7 @@ public sealed class AttentionKernels : IDisposable
         w[30] = (uint)perSplit;
 
         var dim = p.HeadDim <= 32 ? 0 : (p.HeadDim <= 64 ? 1 : (p.HeadDim <= 128 ? 2 : 3));
-        var tile = coop ? _coopTile[dim + (bfloat16 ? 3 : 0)] ??= CreateCoopTile(dim, bfloat16) : _tile[dim + (half ? 4 : 0) + (pairs ? 8 : 0)] ??= CreateTile(half, dim);
+        var tile = coop ? _coopTile[dim + (bfloat16 ? 3 : 0)] ??= CreateCoopTile(dim, bfloat16) : _tile[dim + (half ? 4 : 0) + (pairs ? 8 : 0) + (perSplit >= BlockwiseSumKeys ? 16 : 0)] ??= CreateTile(half, dim, perSplit >= BlockwiseSumKeys);
         Span<GpuBuffer> bound =
         [
             q.Buffer,
@@ -500,17 +504,17 @@ public sealed class AttentionKernels : IDisposable
         }
     }
 
-    KernelPipeline CreateTile(bool half, int dim)
+    KernelPipeline CreateTile(bool half, int dim, bool blockwise)
     {
         var d = dim switch { 0 => Attention.HdValue.D32, 1 => Attention.HdValue.D64, 2 => Attention.HdValue.D128, _ => Attention.HdValue.D256 };
         var wd = dim switch { 0 => AttentionLoops.HdValue.D32, 1 => AttentionLoops.HdValue.D64, 2 => AttentionLoops.HdValue.D128, _ => AttentionLoops.HdValue.D256 };
         if (_device.Backend == GpuBackend.WebGpu)
         {
-            var w = AttentionLoops.Variants.Get(new AttentionLoops.Key(f16: half, wave: _pairs, hd: wd)).AttentionTile;
+            var w = AttentionLoops.Variants.Get(new AttentionLoops.Key(f16: half, wave: _pairs, acc: blockwise, hd: wd)).AttentionTile;
             return new KernelPipeline(_device, KernelSources.Make(w.EntryPoint, default, default, null, w.Wgsl, w.WgslEntryPoint, w.Layout), 7, TileWords, "attention-tile", _maxBindGroups);
         }
 
-        var e = Attention.Variants.Get(new Attention.Key(f16: half, wave: _pairs, hd: d)).AttentionTile;
+        var e = Attention.Variants.Get(new Attention.Key(f16: half, wave: _pairs, acc: blockwise, hd: d)).AttentionTile;
         return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-tile", _maxBindGroups);
     }
 

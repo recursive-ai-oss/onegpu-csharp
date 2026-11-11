@@ -18,6 +18,13 @@
 //   * a row with no visible key gives NaN in every output (Zero flag: 0), as does a row whose score is NaN or +infinity
 //   * F16 builds read and write halves (packed in 32-bit words, see Common.hlsl) and accumulate in float32; they need even offsets and strides.
 //
+// Accuracy at long key lengths: adding one product per key into a single running sum makes the rounding error grow with the number of keys
+// (about 4 times the error of GEMM + softmax + GEMM at 4096 keys). With TILEACC the products of one tile of keys go into a second accumulator
+// that starts at zero, and only the finished tile is added to the main one, after one rescale by exp(old max - max) per tile. Every sum is then
+// over at most BC terms or over the number of tiles, as in a blocked summation, and the error is several times below the unfused path's.
+// It costs PD more registers (on the RTX 4070 a batch of 8 BERT-base inputs ran about 30% slower), so the host picks the ACC build only when a
+// workgroup walks 640 keys or more, where the sequential sum starts to matter, and only for the 32 and 64 wide heads; the wider ones spill already.
+//
 // HD selects the register footprint: the head dimension is rounded up to 32, 64, 128 or 256 and padded with zeros. The key and value tiles
 // share 16 KB of workgroup memory in every build (BC keys of DIM elements each).
 
@@ -52,6 +59,10 @@ typedef float Elem;
 #endif
 
 #define BR (64u / LANES)
+
+#if ACC && (HD_D32 || HD_D64)
+#define TILEACC 1
+#endif
 
 // The shader compiler keeps loops as loops, and a private array indexed by a loop variable lives in slow per-thread memory on some GPUs
 // (Apple's in particular). Every access to q and acc therefore goes through these macros, which write one statement per element with
@@ -195,11 +206,26 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 
     float q[PD];
     float acc[PD];
+#if TILEACC
+    float tacc[PD];
+#define RUN tacc
+#define RUNL lt
+#else
+#define RUN acc
+#define RUNL l
+#endif
 #define INIT_STEP(d) q[d] = 0.0; acc[d] = 0.0; if (dOff + (d) < AP.D) { q[d] = LoadE(AQ, qBase + dOff + (d)); }
     EACH_D(INIT_STEP)
 
     float m = NegInf();
     float l = 0.0;
+#if TILEACC
+    // lt and tacc hold the current tile's sum and products, relative to m; l and acc hold the finished tiles, relative to mAcc.
+    float lt = 0.0;
+    float mAcc = NegInf();
+#define ZERO_STEP(d) tacc[d] = 0.0;
+    EACH_D(ZERO_STEP)
+#endif
     bool bad = false;
 
     // The trip count comes from push constants only, so every barrier in the loop is in uniform control flow, which WGSL requires (the workgroup
@@ -266,8 +292,8 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
                     if (sc > m)
                     {
                         float alpha = IsNegInf(m) ? 0.0 : exp(m - sc);
-                        l *= alpha;
-#define SCALE_STEP(d) acc[d] *= alpha;
+                        RUNL *= alpha;
+#define SCALE_STEP(d) RUN[d] *= alpha;
                         EACH_D(SCALE_STEP)
 
                         m = sc;
@@ -277,12 +303,22 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
                         p = exp(sc - m);
                     }
 
-                    l += p;
-#define FMA_STEP(d) acc[d] = mad(p, gsV[row + dOff + (d)], acc[d]);
+                    RUNL += p;
+#define FMA_STEP(d) RUN[d] = mad(p, gsV[row + dOff + (d)], RUN[d]);
                     EACH_D(FMA_STEP)
                 }
             }
         }
+
+#if TILEACC
+        // Fold the finished tile into the main sums. A tile that never raised the maximum above mAcc needs no rescale (a == 1).
+        float fa = (m == mAcc) ? 1.0 : (IsNegInf(mAcc) ? 0.0 : exp(mAcc - m));
+        l = mad(l, fa, lt);
+        lt = 0.0;
+#define FLUSH_STEP(d) acc[d] = mad(acc[d], fa, tacc[d]); tacc[d] = 0.0;
+        EACH_D(FLUSH_STEP)
+        mAcc = m;
+#endif
     }
 
     if (!live)

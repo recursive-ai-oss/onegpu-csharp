@@ -64,6 +64,16 @@ stopped by the system and leaves the output half written. `Encode` therefore cut
 call equals the whole call bit for bit; the tests compare them on every device. The estimate is `4 · batch · heads · QLen · KLen · HeadDim` operations,
 times 1.5 for the matrix kernel (it multiplies `Q Kᵀ` twice) and times 4 for the scalar kernels (several times slower per operation, measured on the M2).
 
+### Accuracy at long key lengths
+
+Adding one product per key into a single running sum lets the rounding error grow with the number of keys: at 4096 keys with moderately spread
+scores the plain sequential form was several times less accurate than GEMM + softmax + GEMM (whose sums are shorter or tree-shaped). For head
+dimensions 32 and 64 the scalar kernels therefore sum blockwise: the products of one tile of keys go into a second accumulator that starts at zero,
+and each finished tile is added to the main accumulator after one rescale by `exp(old max - max)`. Every sum is over one tile (32 keys) or over the
+tiles, in a fixed order, so determinism is unchanged. The price is `PD` more registers per thread (a batch of 8 BERT-base inputs ran about 30% slower on the RTX 4070), so only workgroups that walk 640 keys or more use it (the cut ranges of a split call are usually shorter), and head dimensions 128 and 256 keep the sequential
+form (they spill already). Rounding the float32 scores themselves is a floor both paths share: with scores spread over a standard deviation of
+about 12 or more, both the fused and the unfused path sit near 1e-5 whatever the summation.
+
 `Fast` and `Deterministic` run the same kernel: every sum has an order the code fixes, there are no atomics and no subgroup arithmetic, and the one
 shuffle adds two numbers (which does not depend on operand order). Two runs on one device and driver give identical bits. `rows` and `pairs` add a
 dot product in a different order, so they may differ from each other, and devices from each other, in the last bits.
