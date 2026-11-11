@@ -23,11 +23,22 @@ internal static class KernelSmoke
         using var elementwise = new ElementwiseKernels(device);
         using var transpose = new TransposeKernels(device);
 
+        // A reduction over one long axis runs in two passes through the family's scratch buffer.
+        var big = new float[20000];
+        for (var i = 0; i < big.Length; i++)
+        {
+            big[i] = (i % 13) / 4f;
+        }
+
+        using var bigInput = device.CreateBuffer<float>(big);
+        using var bigSum = device.CreateBuffer<float>(1);
+
         var commands = device.BeginCommands();
         softmax.Encode(commands, input, 0, [Rows, Len], 1, soft, 0, mode: GpuKernelMode.Deterministic);
         reduce.EncodeReduce(commands, GpuReduceOp.Sum, input, 0, [Rows, Len], [1], sums, 0);
         elementwise.EncodeBinary(commands, GpuBinaryOp.Add, input, 0, [Rows, Len], input, 0, [Rows, Len], added, 0, new GpuActivation(GpuUnaryOp.Relu));
         transpose.Encode(commands, input, 0, [Rows, Len], [1, 0], transposed, 0);
+        reduce.EncodeReduce(commands, GpuReduceOp.Sum, bigInput, 0, [big.Length], [0], bigSum, 0, GpuKernelMode.Deterministic);
         device.Submit(commands);
 
         var gotSoft = new float[x.Length];
@@ -38,6 +49,8 @@ internal static class KernelSmoke
         await sums.ReadAsync(gotSums);
         await added.ReadAsync(gotAdded);
         await transposed.ReadAsync(gotT);
+        var gotBig = new float[1];
+        await bigSum.ReadAsync(gotBig);
 
         var wrong = 0;
         for (var r = 0; r < Rows; r++)
@@ -64,6 +77,7 @@ internal static class KernelSmoke
             wrong += Math.Abs(gotSums[r] - sum) < 1e-3 ? 0 : 1;
         }
 
+        wrong += Math.Abs(gotBig[0] - big.Sum(v => (double)v)) < 1e-2 ? 0 : 1;
         return wrong;
     }
 }
