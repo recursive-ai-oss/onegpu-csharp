@@ -70,6 +70,9 @@ internal static class Results
 
 public static partial class Runner
 {
+    // Assert.Skip throws an exception whose message starts with this marker.
+    private const string DynamicSkipPrefix = "$XunitDynamicSkip$";
+
     // Tests the browser backend cannot run, with the reason.
     private static readonly Dictionary<string, string> Skipped = new(StringComparer.Ordinal)
     {
@@ -117,6 +120,7 @@ public static partial class Runner
 
                     var t0 = sw.ElapsedMilliseconds;
                     string? error = null;
+                    string? skipReason = null;
                     try
                     {
                         var instance = m.IsStatic ? null : Activator.CreateInstance(type, nonPublic: true);
@@ -132,6 +136,11 @@ public static partial class Runner
                             error = "WebGPU reported:\n" + string.Join("\n", late);
                         }
                     }
+                    catch (TargetInvocationException ex) when (ex.InnerException?.Message.StartsWith(DynamicSkipPrefix, StringComparison.Ordinal) == true)
+                    {
+                        // A test that calls Assert.Skip stops there; it is a skip, not a failure.
+                        skipReason = ex.InnerException.Message[DynamicSkipPrefix.Length..];
+                    }
                     catch (TargetInvocationException ex)
                     {
                         error = ex.InnerException?.ToString() ?? ex.Message;
@@ -139,6 +148,15 @@ public static partial class Runner
                     catch (Exception ex)
                     {
                         error = ex.ToString();
+                    }
+
+                    if (skipReason is not null)
+                    {
+                        skipped++;
+                        w.WriteString("status", "skipped");
+                        w.WriteString("reason", skipReason);
+                        w.WriteEndObject();
+                        continue;
                     }
 
                     if (error is null)
