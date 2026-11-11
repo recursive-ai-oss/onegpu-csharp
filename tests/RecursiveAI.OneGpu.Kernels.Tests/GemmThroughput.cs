@@ -29,11 +29,7 @@ public sealed class GemmThroughput
 
         using var f = new GemmFixture();
         var d = f.Device;
-        if (!d.Capabilities.Timestamps)
-        {
-            Assert.Skip("no timestamp queries");
-        }
-
+        var timestamps = d.Capabilities.Timestamps;
         var noHardware = Environment.GetEnvironmentVariable("ONEGPU_GEMM_NO_HARDWARE") == "1";
         foreach (var type in new[] { GemmElementType.F32, GemmElementType.F16, GemmElementType.BF16 })
         {
@@ -56,9 +52,9 @@ public sealed class GemmThroughput
                 using var cb = d.CreateBuffer<float>(lenC);
                 var (median, wall) = type switch
                 {
-                    GemmElementType.F32 => TimeIt(d, gemm, p, d.CreateBuffer<float>(lenA), d.CreateBuffer<float>(lenB), cb, batch),
-                    GemmElementType.F16 => TimeIt(d, gemm, p, d.CreateBuffer<Half>(lenA), d.CreateBuffer<Half>(lenB), cb, batch),
-                    _ => TimeIt(d, gemm, p, d.CreateBuffer<ushort>(lenA), d.CreateBuffer<ushort>(lenB), cb, batch),
+                    GemmElementType.F32 => TimeIt(d, timestamps, gemm, p, d.CreateBuffer<float>(lenA), d.CreateBuffer<float>(lenB), cb, batch),
+                    GemmElementType.F16 => TimeIt(d, timestamps, gemm, p, d.CreateBuffer<Half>(lenA), d.CreateBuffer<Half>(lenB), cb, batch),
+                    _ => TimeIt(d, timestamps, gemm, p, d.CreateBuffer<ushort>(lenA), d.CreateBuffer<ushort>(lenB), cb, batch),
                 };
                 var gflopsGpu = p.Flops / median;      // flop per ns = GFLOP/s
                 var gflopsWall = p.Flops / wall;
@@ -77,8 +73,8 @@ public sealed class GemmThroughput
         }
     }
 
-    // Returns (median GPU ns per dispatch, host ns per dispatch).
-    static (double Gpu, double Wall) TimeIt<T>(GpuDevice d, Gemm gemm, GemmProblem p, GpuBuffer<T> a, GpuBuffer<T> b, GpuBuffer<float> c, int batch)
+    // Returns (median GPU ns per dispatch, host ns per dispatch). Without timestamp queries the GPU figure is the host one.
+    static (double Gpu, double Wall) TimeIt<T>(GpuDevice d, bool timestamps, Gemm gemm, GemmProblem p, GpuBuffer<T> a, GpuBuffer<T> b, GpuBuffer<float> c, int batch)
         where T : unmanaged
     {
         using (a)
@@ -86,7 +82,7 @@ public sealed class GemmThroughput
         {
             const int Warm = 3;
             const int Iterations = 30;
-            using var set = d.CreateTimestampSet(2 * Iterations);
+            using var set = timestamps ? d.CreateTimestampSet(2 * Iterations) : null;
             void Record(GpuCommandEncoder enc)
             {
                 switch (a)
@@ -106,17 +102,30 @@ public sealed class GemmThroughput
 
             d.WaitIdle();
             var enc = d.BeginCommands();
-            enc.BeginPassTiming(new PassTiming(set, 0, Iterations));
+            if (set is not null)
+            {
+                enc.BeginPassTiming(new PassTiming(set, 0, Iterations));
+            }
+
             for (var i = 0; i < Iterations; i++)
             {
                 Record(enc);
             }
 
-            Assert.Equal((uint)Iterations, enc.EndPassTiming());
+            if (set is not null)
+            {
+                Assert.Equal((uint)Iterations, enc.EndPassTiming());
+            }
+
             var sw = Stopwatch.StartNew();
             d.Submit(enc);
             d.WaitIdle();
             var wall = sw.Elapsed.TotalMilliseconds * 1e6 / Iterations;
+            if (set is null)
+            {
+                return (wall, wall);
+            }
+
             var t = new ulong[2 * Iterations];
             Assert.True(d.TryReadTimestamps(set, 0, t));
             var durations = new double[Iterations];

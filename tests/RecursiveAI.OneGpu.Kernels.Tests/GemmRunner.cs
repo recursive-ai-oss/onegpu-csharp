@@ -5,6 +5,19 @@ internal sealed class GemmFixture : IDisposable
 {
     public GpuDevice Device { get; }
 
+#if WEB_BACKEND
+    // The browser runner owns one shared WebGPU device.
+    public GemmFixture()
+    {
+        Device = Vulkan.Tests.GpuFixture.Shared ?? throw new InvalidOperationException("No WebGPU device.");
+    }
+
+    public void Dispose()
+    {
+        var messages = Device.TakeValidationMessages();
+        Assert.True(messages.Length == 0, "WebGPU reported:\n" + string.Join("\n", messages));
+    }
+#else
     public GemmFixture()
     {
         try
@@ -25,6 +38,7 @@ internal sealed class GemmFixture : IDisposable
         Device.Dispose();
         Assert.True(messages.Length == 0, "validation layer reported:\n" + string.Join("\n", messages));
     }
+#endif
 
     public static bool FullSet => Environment.GetEnvironmentVariable("ONEGPU_GEMM_FULL") == "1";
 
@@ -36,7 +50,7 @@ internal sealed class GemmFixture : IDisposable
     };
 
     /// <summary>Runs the case once and returns C as read back, plus the inputs' reference and masks.</summary>
-    public (float[] Gpu, double[] Reference, bool[] Written, string Variant) Run(Gemm gemm, GemmCase c, uint seed, float[]? previousOut = null)
+    public async Task<(float[] Gpu, double[] Reference, bool[] Written, string Variant)> Run(Gemm gemm, GemmCase c, uint seed, float[]? previousOut = null)
     {
         var p = c.Problem;
         var storedColsA = p.TransposeA ? p.M : p.K;
@@ -86,7 +100,6 @@ internal sealed class GemmFixture : IDisposable
                     using var bb = Device.CreateBuffer<float>(b);
                     gemm.Encode(enc, p, ab, bb, cb);
                     Device.Submit(enc);
-                    Device.WaitIdle();
                     break;
                 }
 
@@ -96,7 +109,6 @@ internal sealed class GemmFixture : IDisposable
                     using var bb = Device.CreateBuffer<Half>(b.Select(x => (Half)x).ToArray());
                     gemm.Encode(enc, p, ab, bb, cb);
                     Device.Submit(enc);
-                    Device.WaitIdle();
                     break;
                 }
 
@@ -106,13 +118,12 @@ internal sealed class GemmFixture : IDisposable
                     using var bb = Device.CreateBuffer<ushort>(b.Select(GemmReference.ToBFloat16).ToArray());
                     gemm.EncodeBFloat16(enc, p, ab, bb, cb);
                     Device.Submit(enc);
-                    Device.WaitIdle();
                     break;
                 }
         }
 
         var gpu = new float[lenC];
-        cb.Read(gpu);
+        await cb.ReadAsync(gpu);
         gemm.ReleaseBindings();
         return (gpu, reference, written, gemm.Variant);
     }

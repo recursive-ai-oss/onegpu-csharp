@@ -63,6 +63,18 @@ static const uint TILE_THREADS = 256;
 groupshared float As[BK][BM + 1];
 groupshared float Bs[BK][BN + 1];
 
+// Writes alpha * value + beta * C at (row, col) when the element is inside the matrix.
+void StoreElement(uint baseC, uint row, uint col, float value)
+{
+    if (row < P.M && col < P.N)
+    {
+        uint at = baseC + row * P.Ldc + col;
+        float r = P.Alpha * value;
+        if (P.Beta != 0.0) { r = mad(P.Beta, C[at], r); }
+        C[at] = r;
+    }
+}
+
 void GemmTiledBody(uint3 group, uint tid)
 {
     uint m0 = group.y * BM;
@@ -77,14 +89,9 @@ void GemmTiledBody(uint3 group, uint tid)
     uint tx = tid & 15u;
     uint ty = tid >> 4;
 
-    float acc[4][4];
-    [unroll] for (uint i = 0; i < 4; i++)
-    {
-        [unroll] for (uint j = 0; j < 4; j++)
-        {
-            acc[i][j] = 0.0;
-        }
-    }
+    // The 4 x 4 register tile is sixteen named scalars rather than an array: the Metal output of the shader compiler keeps indexed
+    // arrays in thread-local memory, which made the kernel more than ten times slower there.
+    float c00 = 0.0; float c01 = 0.0; float c02 = 0.0; float c03 = 0.0; float c10 = 0.0; float c11 = 0.0; float c12 = 0.0; float c13 = 0.0; float c20 = 0.0; float c21 = 0.0; float c22 = 0.0; float c23 = 0.0; float c30 = 0.0; float c31 = 0.0; float c32 = 0.0; float c33 = 0.0;
 
     for (uint k0 = 0; k0 < P.K; k0 += BK)
     {
@@ -126,17 +133,30 @@ void GemmTiledBody(uint3 group, uint tid)
 
         [unroll] for (uint kk = 0; kk < BK; kk++)
         {
-            float a[4];
-            float b[4];
-            [unroll] for (uint i = 0; i < 4; i++) { a[i] = As[kk][ty + 16 * i]; }
-            [unroll] for (uint j = 0; j < 4; j++) { b[j] = Bs[kk][tx + 16 * j]; }
-            [unroll] for (uint i2 = 0; i2 < 4; i2++)
-            {
-                [unroll] for (uint j2 = 0; j2 < 4; j2++)
-                {
-                    acc[i2][j2] = mad(a[i2], b[j2], acc[i2][j2]);
-                }
-            }
+            float a0 = As[kk][ty + 0];
+            float a1 = As[kk][ty + 16];
+            float a2 = As[kk][ty + 32];
+            float a3 = As[kk][ty + 48];
+            float b0 = Bs[kk][tx + 0];
+            float b1 = Bs[kk][tx + 16];
+            float b2 = Bs[kk][tx + 32];
+            float b3 = Bs[kk][tx + 48];
+            c00 = mad(a0, b0, c00);
+            c01 = mad(a0, b1, c01);
+            c02 = mad(a0, b2, c02);
+            c03 = mad(a0, b3, c03);
+            c10 = mad(a1, b0, c10);
+            c11 = mad(a1, b1, c11);
+            c12 = mad(a1, b2, c12);
+            c13 = mad(a1, b3, c13);
+            c20 = mad(a2, b0, c20);
+            c21 = mad(a2, b1, c21);
+            c22 = mad(a2, b2, c22);
+            c23 = mad(a2, b3, c23);
+            c30 = mad(a3, b0, c30);
+            c31 = mad(a3, b1, c31);
+            c32 = mad(a3, b2, c32);
+            c33 = mad(a3, b3, c33);
         }
 
         GroupMemoryBarrierWithGroupSync();
@@ -145,21 +165,22 @@ void GemmTiledBody(uint3 group, uint tid)
     // beta == 0 never reads C, so uninitialised output memory (even NaN) is fine, as in BLAS. The bounds are tested with positive
     // conditions around the store rather than a continue: the Metal output of the shader compiler dropped the
     // continue inside the unrolled loops, so the guard never ran.
-    [unroll] for (uint i3 = 0; i3 < 4; i3++)
-    {
-        uint gm = m0 + ty + 16 * i3;
-        [unroll] for (uint j3 = 0; j3 < 4; j3++)
-        {
-            uint gn = n0 + tx + 16 * j3;
-            if (gm < P.M && gn < P.N)
-            {
-                uint at = baseC + gm * P.Ldc + gn;
-                float r = P.Alpha * acc[i3][j3];
-                if (P.Beta != 0.0) { r = mad(P.Beta, C[at], r); }
-                C[at] = r;
-            }
-        }
-    }
+    StoreElement(baseC, m0 + ty + 0, n0 + tx + 0, c00);
+    StoreElement(baseC, m0 + ty + 0, n0 + tx + 16, c01);
+    StoreElement(baseC, m0 + ty + 0, n0 + tx + 32, c02);
+    StoreElement(baseC, m0 + ty + 0, n0 + tx + 48, c03);
+    StoreElement(baseC, m0 + ty + 16, n0 + tx + 0, c10);
+    StoreElement(baseC, m0 + ty + 16, n0 + tx + 16, c11);
+    StoreElement(baseC, m0 + ty + 16, n0 + tx + 32, c12);
+    StoreElement(baseC, m0 + ty + 16, n0 + tx + 48, c13);
+    StoreElement(baseC, m0 + ty + 32, n0 + tx + 0, c20);
+    StoreElement(baseC, m0 + ty + 32, n0 + tx + 16, c21);
+    StoreElement(baseC, m0 + ty + 32, n0 + tx + 32, c22);
+    StoreElement(baseC, m0 + ty + 32, n0 + tx + 48, c23);
+    StoreElement(baseC, m0 + ty + 48, n0 + tx + 0, c30);
+    StoreElement(baseC, m0 + ty + 48, n0 + tx + 16, c31);
+    StoreElement(baseC, m0 + ty + 48, n0 + tx + 32, c32);
+    StoreElement(baseC, m0 + ty + 48, n0 + tx + 48, c33);
 }
 
 [shader("compute")]

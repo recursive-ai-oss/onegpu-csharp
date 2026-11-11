@@ -7,19 +7,28 @@ public sealed class GemmTests
 {
     static void Report(string line)
     {
+#if WEB_BACKEND
+        Vulkan.Tests.Results.Notes.Add(line);
+#else
         Console.WriteLine(line);
         var path = Environment.GetEnvironmentVariable("ONEGPU_REPORT");
         if (!string.IsNullOrEmpty(path))
         {
             File.AppendAllText(path, line + "\n");
         }
+#endif
     }
 
-    static IEnumerable<GemmCase> AllCases() => GemmReference.EdgeCases().Concat(GemmReference.ModelCases(GemmFixture.FullSet));
+    // In the browser the double-precision reference runs on one thread in WebAssembly, so only shapes up to 3e8 multiply-adds are checked there.
+    static IEnumerable<GemmCase> AllCases() => GemmReference.EdgeCases().Concat(GemmReference.ModelCases(GemmFixture.FullSet))
+#if WEB_BACKEND
+        .Where(c => c.Problem.Flops <= 6e8)
+#endif
+        ;
 
     static (bool Hardware, string Tag) Setup() => (Environment.GetEnvironmentVariable("ONEGPU_GEMM_NO_HARDWARE") != "1", Environment.GetEnvironmentVariable("ONEGPU_GEMM_NO_HARDWARE") == "1" ? "forced-portable" : "auto");
 
-    static void Parity(GemmElementType type, GpuKernelMode mode)
+    static async Task Parity(GemmElementType type, GpuKernelMode mode)
     {
         using var f = new GemmFixture();
         var (hw, tag) = Setup();
@@ -32,7 +41,7 @@ public sealed class GemmTests
             (float[] Gpu, double[] Reference, bool[] Written, string Variant) run;
             try
             {
-                run = f.Run(gemm, c, seed++);
+                run = await f.Run(gemm, c, seed++);
             }
             catch (GpuUnsupportedException e) when (e.Capability == nameof(GpuComputeCapabilities.MaxStorageBufferBindingBytes))
             {
@@ -67,20 +76,21 @@ public sealed class GemmTests
         }
     }
 
-    [Fact] public void F32Fast() => Parity(GemmElementType.F32, GpuKernelMode.Fast);
+    [Fact] public Task F32Fast() => Parity(GemmElementType.F32, GpuKernelMode.Fast);
 
-    [Fact] public void F16Fast() => Parity(GemmElementType.F16, GpuKernelMode.Fast);
+    [Fact] public Task F16Fast() => Parity(GemmElementType.F16, GpuKernelMode.Fast);
 
-    [Fact] public void BF16Fast() => Parity(GemmElementType.BF16, GpuKernelMode.Fast);
+    [Fact] public Task BF16Fast() => Parity(GemmElementType.BF16, GpuKernelMode.Fast);
 
-    [Fact] public void F32Deterministic() => Parity(GemmElementType.F32, GpuKernelMode.Deterministic);
+    [Fact] public Task F32Deterministic() => Parity(GemmElementType.F32, GpuKernelMode.Deterministic);
 
-    [Fact] public void F16Deterministic() => Parity(GemmElementType.F16, GpuKernelMode.Deterministic);
+    [Fact] public Task F16Deterministic() => Parity(GemmElementType.F16, GpuKernelMode.Deterministic);
 
-    [Theory]
-    [InlineData(GemmElementType.F32)]
-    [InlineData(GemmElementType.F16)]
-    public void DeterministicRunsAreBitIdentical(GemmElementType type)
+    [Fact] public Task F32DeterministicRunsAreBitIdentical() => BitIdentical(GemmElementType.F32);
+
+    [Fact] public Task F16DeterministicRunsAreBitIdentical() => BitIdentical(GemmElementType.F16);
+
+    static async Task BitIdentical(GemmElementType type)
     {
         using var f = new GemmFixture();
         using var gemm = new Gemm(f.Device, type, GpuKernelMode.Deterministic);
@@ -91,8 +101,8 @@ public sealed class GemmTests
             float[] first, second;
             try
             {
-                first = f.Run(gemm, c, s).Gpu;
-                second = f.Run(gemm, c, s).Gpu;
+                first = (await f.Run(gemm, c, s)).Gpu;
+                second = (await f.Run(gemm, c, s)).Gpu;
             }
             catch (GpuUnsupportedException e) when (e.Capability == nameof(GpuComputeCapabilities.MaxStorageBufferBindingBytes))
             {
