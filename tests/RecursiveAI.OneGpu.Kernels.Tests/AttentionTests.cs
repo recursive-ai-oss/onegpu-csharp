@@ -182,7 +182,7 @@ public sealed class AttentionTests
         var d = gpu.Device;
         Software = d.Adapter.Name.Contains("swiftshader", StringComparison.OrdinalIgnoreCase);
         using var kernels = new Kernels(d);
-        Rig.Row(d, "attention", "-", "variant chosen for Fast and Deterministic", $"{kernels.Auto.Variant}; forced rows: {kernels.Rows.Variant}; forced pairs: {kernels.Pairs?.Variant ?? "not supported on this device"}");
+        Rig.Row(d, "attention", "-", "variant chosen for Fast and Deterministic (half; float32)", $"{kernels.Auto.Variant}; {kernels.Auto.FloatVariant}; forced rows: {kernels.Rows.Variant}; forced pairs: {kernels.Pairs?.Variant ?? "not supported on this device"}; forced matrix hardware: {(kernels.Coop is null ? "not supported on this device" : kernels.Coop.Variant)}; matrix hardware ruled out: {kernels.NoCoop.Variant}");
         await Sweep(d, kernels, SelectedModelCases().ToList(), "model shapes");
     }
 
@@ -202,6 +202,15 @@ public sealed class AttentionTests
         {
             Auto = new AttentionKernels(d);
             Rows = new AttentionKernels(d, variant: GpuAttentionVariant.Rows);
+            NoCoop = new AttentionKernels(d, allowMatrixHardware: false);
+            try
+            {
+                Coop = new AttentionKernels(d, variant: GpuAttentionVariant.Cooperative);
+            }
+            catch (GpuUnsupportedException)
+            {
+            }
+
             try
             {
                 Pairs = new AttentionKernels(d, variant: GpuAttentionVariant.Pairs);
@@ -215,16 +224,28 @@ public sealed class AttentionTests
 
         public AttentionKernels Rows { get; }
 
+        /// <summary>Auto with the matrix kernel ruled out: what a device without matrix hardware runs.</summary>
+        public AttentionKernels NoCoop { get; }
+
+        /// <summary>The matrix kernel forced, or null where the device lacks it.</summary>
+        public AttentionKernels? Coop { get; }
+
         public AttentionKernels? Pairs { get; }
 
         // The system stops a command buffer that keeps an Apple GPU busy for too long ("impacting interactivity"), which leaves the output half written.
         // The one-thread-per-row kernel is the slow one there (and not the one chosen), so it skips the problems of more than 40 million scores.
         public static bool TooSlowForRows(GpuDevice d, Case c) => d.Adapter.VendorId == 0x106B && (long)c.B * c.H * c.Sq * c.Sk > 40_000_000;
 
-        public IEnumerable<(string Name, AttentionKernels K, GpuKernelMode Mode)> All()
+        public IEnumerable<(string Name, AttentionKernels K, GpuKernelMode Mode)> All(bool half)
         {
             yield return ("auto fast", Auto, GpuKernelMode.Fast);
             yield return ("auto deterministic", Auto, GpuKernelMode.Deterministic);
+            if (Coop is not null && half)
+            {
+                yield return ("matrix hardware deterministic", Coop, GpuKernelMode.Deterministic);
+                yield return ("matrix hardware ruled out deterministic", NoCoop, GpuKernelMode.Deterministic);
+            }
+
             yield return ("rows deterministic", Rows, GpuKernelMode.Deterministic);
             if (Pairs is not null)
             {
@@ -235,6 +256,8 @@ public sealed class AttentionTests
         public void Dispose()
         {
             Auto.Dispose();
+            NoCoop.Dispose();
+            Coop?.Dispose();
             Rows.Dispose();
             Pairs?.Dispose();
         }
@@ -253,7 +276,7 @@ public sealed class AttentionTests
                 var prep = Prepare(c, half);
                 var limit = half ? 2e-3 : 1e-5;
                 string? fastHash = null;
-                foreach (var (name, k, mode) in kernels.All())
+                foreach (var (name, k, mode) in kernels.All(half))
                 {
                     if (k.Variant == "rows" && name.StartsWith("rows", StringComparison.Ordinal) && Kernels.TooSlowForRows(d, c))
                     {
@@ -301,7 +324,7 @@ public sealed class AttentionTests
         using var kernels = new Kernels(d);
         foreach (var half in new[] { false, true })
         {
-            foreach (var (name, k, _) in kernels.All().Where(x => x.Name.EndsWith("deterministic", StringComparison.Ordinal)))
+            foreach (var (name, k, _) in kernels.All(half).Where(x => x.Name.EndsWith("deterministic", StringComparison.Ordinal)))
             {
                 var runs = 0;
                 var same = 0;
@@ -327,6 +350,44 @@ public sealed class AttentionTests
 
                 Rig.Row(d, "attention", half ? "f16" : "f32", $"{name} variant run twice per shape (output hashes, first / second run: " + string.Join("; ", samples) + ")", $"{same}/{runs} identical");
                 Assert.True(runs == same, $"{name} {(half ? "f16" : "f32")}: runs differ for: {string.Join(", ", differing)}");
+            }
+        }
+    }
+
+    // A long call is cut into dispatches of whole workgroups so a platform that stops long submissions never sees one; every workgroup works
+    // alone, so the cut must not change a bit. The budget here is tiny, so that even small problems are cut into many pieces.
+    [Fact]
+    public async Task CuttingALongCallIntoPiecesKeepsTheBits()
+    {
+        using var gpu = new GpuFixture();
+        var d = gpu.Device;
+        Software = d.Adapter.Name.Contains("swiftshader", StringComparison.OrdinalIgnoreCase);
+        var cases = new[]
+        {
+            new Case("bert B8 S128", 8, 12, 12, 128, 128, 64, Mask: 3),
+            new Case("minilm B2 S200", 2, 12, 12, 200, 200, 32, Mask: 3),
+            new Case("whisper decoder prefill", 1, 12, 12, 448, 448, 64, Causal: true, Layouts: 1),
+            new Case("cross 1 query, split keys", 2, 6, 6, 1, 1200, 64),
+            new Case("causal with lengths, d128", 2, 3, 3, 70, 300, 128, Causal: true, Lens: true, Layouts: 2),
+        };
+        foreach (var variant in new[] { GpuAttentionVariant.Auto, GpuAttentionVariant.Rows })
+        {
+            using var whole = new AttentionKernels(d, variant: variant, submissionWorkBudget: 0);
+            using var cut = new AttentionKernels(d, variant: variant, submissionWorkBudget: 1UL << 22);
+            foreach (var half in new[] { false, true })
+            {
+                var same = 0;
+                foreach (var c in cases)
+                {
+                    var prep = Prepare(c, half);
+                    var a = await Run(d, whole, c, prep, half, GpuKernelMode.Fast);
+                    var b = await Run(d, cut, c, prep, half, GpuKernelMode.Fast);
+                    Assert.True(a.Hash == b.Hash, $"{variant} {(half ? "f16" : "f32")} {c.Name}: cut and whole calls differ");
+                    Assert.True(b.Scaled <= (half ? 2e-3 : 1e-5), $"{variant} {(half ? "f16" : "f32")} {c.Name}: scaled error {b.Scaled}");
+                    same++;
+                }
+
+                Rig.Row(d, "attention", half ? "f16" : "f32", $"{variant} ({(half ? whole.Variant : whole.FloatVariant)}): output of a call cut into pieces equals the whole call bit for bit", $"{same}/{cases.Length}");
             }
         }
     }
@@ -479,6 +540,23 @@ public sealed class AttentionTests
                 gemm.Encode(e, pv, probs, v, o2);
             }, out var unfusedWall);
             var flops = 4.0 * bh * sq * sk * dd;
+            using var qh = d.CreateBuffer<Half>(Rig.ToHalf(Rig.Random(bh * sq * dd, 1, -2f, 2f)));
+            using var kh = d.CreateBuffer<Half>(Rig.ToHalf(Rig.Random(bh * sk * dd, 2, -2f, 2f)));
+            using var vh = d.CreateBuffer<Half>(Rig.ToHalf(Rig.Random(bh * sk * dd, 3, -1f, 1f)));
+            using var oh = d.CreateBuffer<Half>(Rig.ToHalf(new float[bh * sq * dd]));
+            foreach (var (vname, fk) in new[] { ("rows", kernels.Rows), ("pairs", kernels.Pairs), ("matrix hardware", kernels.Coop) }.Where(x => x.Item2 is not null))
+            {
+                var fusedGpu = Time(d, timestamps, e => fk!.Encode(e, prob, qh, kh, vh, oh), out var fusedWall);
+                var line = $"THROUGHPUT\t{d.Adapter.Name}\t{name}\tf16 {vname}: fused {fusedGpu / 1000:F1} us gpu {fusedWall / 1000:F1} us wall {flops / fusedGpu:F0} GFLOP/s\tunfused f32 {unfusedGpu / 1000:F1} us gpu {unfusedWall / 1000:F1} us wall\tspeed-up {unfusedGpu / fusedGpu:F2}x gpu";
+                Console.WriteLine(line);
+#if !WEB_BACKEND
+                if (Environment.GetEnvironmentVariable("ONEGPU_REPORT") is { Length: > 0 } path)
+                {
+                    File.AppendAllText(path, line + "\n");
+                }
+#endif
+            }
+
             foreach (var (vname, fk) in new[] { ("rows", kernels.Rows), ("pairs", kernels.Pairs) }.Where(x => x.Item2 is not null))
             {
                 var fusedGpu = Time(d, timestamps, e => fk!.Encode(e, prob, q, k, v, o1), out var fusedWall);

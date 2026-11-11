@@ -117,6 +117,11 @@ internal sealed unsafe partial class VulkanDevice
             }
         }
 
+        if (f13.computeFullSubgroups != 0)
+        {
+            shader |= DeviceFeatures.FullSubgroups;
+        }
+
         if (f13.shaderIntegerDotProduct != 0)
         {
             shader |= DeviceFeatures.IntegerDotProduct;

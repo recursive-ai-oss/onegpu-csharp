@@ -146,6 +146,11 @@ internal sealed unsafe partial class MetalDevice
             features |= DeviceFeatures.CooperativeMatrix | DeviceFeatures.VulkanMemoryModel;
         }
 
+        if (simdWidth != 0)
+        {
+            features |= DeviceFeatures.FullSubgroups;
+        }
+
         if (bfloat16)
         {
             features |= DeviceFeatures.BFloat16;

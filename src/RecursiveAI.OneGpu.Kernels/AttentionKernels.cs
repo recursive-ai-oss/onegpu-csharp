@@ -1,3 +1,4 @@
+using OneShader.Reflection;
 using RecursiveAI.OneGpu.Kernels.Shaders;
 
 namespace RecursiveAI.OneGpu.Kernels;
@@ -5,7 +6,10 @@ namespace RecursiveAI.OneGpu.Kernels;
 /// <summary>Which attention kernel an <see cref="AttentionKernels"/> instance uses.</summary>
 public enum GpuAttentionVariant
 {
-    /// <summary>Chosen from the device: <see cref="Pairs"/> on Apple GPUs (which have few registers per thread) when shuffles are available, otherwise <see cref="Rows"/>.</summary>
+    /// <summary>
+    /// Chosen from the device: <see cref="Cooperative"/> for <see cref="Half"/> tensors where the device offers matrix hardware for them; for everything else
+    /// <see cref="Pairs"/> on Apple GPUs (which have few registers per thread) when shuffles are available, otherwise <see cref="Rows"/>.
+    /// </summary>
     Auto = 0,
 
     /// <summary>One thread per query row; needs no subgroup operations.</summary>
@@ -13,6 +17,12 @@ public enum GpuAttentionVariant
 
     /// <summary>Two neighbouring threads per query row, each holding half of the head dimension; needs subgroup shuffles.</summary>
     Pairs = 2,
+
+    /// <summary>
+    /// Q Kᵀ and P V on matrix hardware (cooperative matrices on Vulkan, simdgroup matrices on Metal) for <see cref="Half"/> tensors with head dimension up to 128;
+    /// float32 tensors and larger heads use the kernel <see cref="Auto"/> would pick without it. Throws <see cref="GpuUnsupportedException"/> where the device lacks it.
+    /// </summary>
+    Cooperative = 3,
 }
 
 /// <summary>
@@ -46,16 +56,24 @@ public sealed class AttentionKernels : IDisposable
     /// <summary>The largest head dimension supported.</summary>
     public const int HeadDimLimit = 256;
 
+    /// <summary>The largest head dimension the matrix-hardware kernel covers; larger heads of half tensors use the scalar kernels.</summary>
+    public const int CoopHeadDimLimit = 128;
+
     const int MaxSplit = 16;
     const int SplitGranule = 32;
     const int MinKeysPerSplit = 128;
     const int TargetGroups = 256;
     const int TileWords = 32;
+    const double ScalarWorkWeight = 4;    // the scalar kernels run an operation several times slower than the matrix path, which the submission budget counts in matrix-path operations
+    const double CoopWorkWeight = 1.5;    // the matrix kernel multiplies Q Kᵀ twice
     const int CombineWords = 11;
 
     readonly GpuDevice _device;
     readonly KernelPipeline?[] _tile = new KernelPipeline?[16];
+    readonly KernelPipeline?[] _coopTile = new KernelPipeline?[3];
     readonly bool _pairs;
+    readonly bool _coop;
+    readonly ulong _budget;
     readonly KernelPipeline?[] _combine = new KernelPipeline?[2];
     GpuBuffer<float>? _scratch;
     GpuBuffer<float>? _dummyFloat;
@@ -66,9 +84,12 @@ public sealed class AttentionKernels : IDisposable
     /// <param name="device">The device the buffers belong to.</param>
     /// <param name="allowSubgroups">False keeps the kernels off subgroup shuffles even where the device has them.</param>
     /// <param name="variant">The kernel to use; <see cref="GpuAttentionVariant.Auto"/> picks one for the device.</param>
-    /// <exception cref="GpuUnsupportedException"><see cref="GpuAttentionVariant.Pairs"/> was requested and the device (or <paramref name="allowSubgroups"/>) rules out subgroup shuffles, or the device offers fewer than 7 storage buffers per stage.</exception>
-    public AttentionKernels(GpuDevice device, bool allowSubgroups = true, GpuAttentionVariant variant = GpuAttentionVariant.Auto)
+    /// <param name="submissionWorkBudget">Operations after which a long call is cut into dispatches of whole workgroups with the encoder told the work between them (see <see cref="GpuCommandEncoder.ReportWork"/>); null takes the device's <see cref="GpuComputeCapabilities.SubmissionWorkBudget"/>, 0 never cuts. The cut changes no bit.</param>
+    /// <param name="allowMatrixHardware">False keeps <see cref="GpuAttentionVariant.Auto"/> off the matrix-hardware kernel even where the device has it.</param>
+    /// <exception cref="GpuUnsupportedException"><see cref="GpuAttentionVariant.Pairs"/> was requested and the device (or <paramref name="allowSubgroups"/>) rules out subgroup shuffles; <see cref="GpuAttentionVariant.Cooperative"/> was requested and the device (or <paramref name="allowMatrixHardware"/>) rules out matrix hardware; or the device offers fewer than 7 storage buffers per stage.</exception>
+    public AttentionKernels(GpuDevice device, bool allowSubgroups = true, GpuAttentionVariant variant = GpuAttentionVariant.Auto, bool allowMatrixHardware = true, ulong? submissionWorkBudget = null)
     {
+        _budget = submissionWorkBudget ?? device.Capabilities.Compute.SubmissionWorkBudget;
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
         var c = device.Capabilities.Compute;
@@ -82,7 +103,15 @@ public sealed class AttentionKernels : IDisposable
         // Apple GPUs give a thread about 128 registers before it spills; halving the registers per thread made the kernel 2 to 5 times faster there,
         // and slower on the NVIDIA GPU measured, which has registers to spare.
         const uint AppleVendorId = 0x106B;
-        _pairs = variant == GpuAttentionVariant.Pairs || (variant == GpuAttentionVariant.Auto && shuffles && device.Adapter.VendorId == AppleVendorId);
+        var matrices = allowMatrixHardware && (variant is GpuAttentionVariant.Auto or GpuAttentionVariant.Cooperative) && CoopFits(device);
+        if (variant == GpuAttentionVariant.Cooperative && !matrices)
+        {
+            throw new GpuUnsupportedException("the cooperative-matrix attention kernel needs 16-bit cooperative matrices with a float32 accumulator, 32-wide full subgroups and the shader features of the kernel, which the device does not offer or the caller ruled out");
+        }
+
+        _coop = matrices;
+        // The scalar kernels still serve float32 tensors and large heads, so they are chosen even when the matrix kernel is.
+        _pairs = variant == GpuAttentionVariant.Pairs || ((variant is GpuAttentionVariant.Auto or GpuAttentionVariant.Cooperative) && shuffles && device.Adapter.VendorId == AppleVendorId);
         if (device.Capabilities.Compute.MaxStorageBuffersPerStage is > 0 and < 7)
         {
             throw new GpuUnsupportedException($"attention binds 7 storage buffers per stage; the device allows {device.Capabilities.Compute.MaxStorageBuffersPerStage}");
@@ -90,14 +119,20 @@ public sealed class AttentionKernels : IDisposable
     }
 
     /// <summary>
-    /// The variant <see cref="GpuKernelMode.Fast"/> and <see cref="GpuKernelMode.Deterministic"/> both use: <c>pairs</c> when the device has subgroup
-    /// shuffles (two threads share a query row, each holding half of the head dimension), otherwise <c>rows</c> (one thread per query row).
+    /// The variant <see cref="GpuKernelMode.Fast"/> and <see cref="GpuKernelMode.Deterministic"/> both use for <see cref="Half"/> tensors with a head dimension up to 128:
+    /// <c>cooperative-matrix</c> when the device has matrix hardware for them, otherwise what <see cref="FloatVariant"/> says.
     /// </summary>
-    public string Variant => _pairs ? "pairs" : "rows";
+    public string Variant => _coop ? "cooperative-matrix" : FloatVariant;
+
+    /// <summary>
+    /// The variant used for float32 tensors, and for half tensors when <see cref="Variant"/> is not the matrix kernel: <c>pairs</c> when chosen (two threads
+    /// share a query row, each holding half of the head dimension; Apple GPUs), otherwise <c>rows</c> (one thread per query row).
+    /// </summary>
+    public string FloatVariant => _pairs ? "pairs" : "rows";
 
     /// <summary>
     /// Floats of scratch the problem needs: 0 when the keys are not split, otherwise one (maximum, sum, accumulator) record of <c>HeadDim + 2</c>
-    /// floats per query row and key range.
+    /// floats per query row and key range. When the kernels for float32 and half tensors cut the keys differently, the larger need.
     /// </summary>
     /// <param name="problem">The problem; only its sizes are read.</param>
     /// <returns>The length, in floats, of the <c>scratch</c> buffer <c>Encode</c> would use.</returns>
@@ -105,7 +140,9 @@ public sealed class AttentionKernels : IDisposable
     public long ScratchLength(in AttentionProblem problem)
     {
         CheckSizes(problem);
-        var (splits, _) = Split(problem, _pairs);
+        var (a, _) = Split(problem, _pairs);
+        var (c, _) = _coop && problem.HeadDim <= CoopHeadDimLimit ? Split(problem, false) : (1, 0);
+        var splits = Math.Max(a, c);
         return splits == 1 ? 0 : checked((long)problem.Batch * problem.Heads * problem.QLen * splits * (problem.HeadDim + 2));
     }
 
@@ -155,9 +192,15 @@ public sealed class AttentionKernels : IDisposable
             return;
         }
 
-        var (splits, perSplit) = Split(p, _pairs);
-        var blockRows = _pairs ? 32 : 64;
+        var coop = half && _coop && p.HeadDim <= CoopHeadDimLimit;
+        var pairs = _pairs && !coop;
+        var (splits, perSplit) = Split(p, pairs);
+        var blockRows = pairs ? 32 : 64;
         var groups = checked((long)p.Batch * p.Heads * ((p.QLen + blockRows - 1) / blockRows) * splits);
+        if (groups > int.MaxValue)
+        {
+            throw new GpuKernelShapeException(Name, "sizes", "too many workgroups");
+        }
         // Unused bindings still need a buffer, and a buffer bound both read-only and read-write in one pass is invalid in WebGPU, so each gets its own.
         var unusedMask = _dummyFloat ??= _device.CreateBuffer<float>(4, label: "attention-unused-mask");
         var part = _dummyPart ??= _device.CreateBuffer<float>(4, label: "attention-unused-partials");
@@ -189,35 +232,33 @@ public sealed class AttentionKernels : IDisposable
         var causal = p.Causal;
         var flags = (mask is not null ? 1u : 0u) | (causal ? 2u : 0u) | (keyLengths is not null ? 4u : 0u) | (p.MaskedRows == GpuAttentionMaskedRows.Zero ? 8u : 0u);
         var causalOffset = p.CausalOffset ?? (p.KLen - p.QLen);
-        var (gx, gy) = Grid.For(_device, groups);
         Span<uint> w = stackalloc uint[TileWords];
-        w[0] = (uint)p.Heads;
-        w[1] = (uint)(p.Heads / p.KvHeads);
-        w[2] = (uint)p.QLen;
-        w[3] = (uint)p.KLen;
-        w[4] = (uint)p.HeadDim;
-        w[5] = BitConverter.SingleToUInt32Bits(p.Scale);
-        w[6] = (uint)causalOffset;
-        w[7] = flags;
-        Put(w, 8, p.Q);
-        Put(w, 11, p.K);
-        Put(w, 14, p.V);
-        Put(w, 17, p.O);
-        w[20] = (uint)p.Q.Offset;
-        w[21] = (uint)p.K.Offset;
-        w[22] = (uint)p.V.Offset;
-        w[23] = (uint)p.O.Offset;
-        w[24] = (uint)p.Mask.Offset;
-        w[25] = (uint)p.Mask.BatchStride;
-        w[26] = (uint)p.Mask.HeadStride;
-        w[27] = (uint)p.Mask.RowStride;
-        w[28] = (uint)p.KeyLengthsOffset;
-        w[29] = (uint)splits;
-        w[30] = (uint)perSplit;
-        w[31] = gx;
+        // Push constants are limited to 128 bytes on Vulkan: heads and the group size share a word, as do the head dimension and the flags.
+        w[0] = (uint)p.Heads | ((uint)(p.Heads / p.KvHeads) << 16);
+        w[1] = (uint)p.QLen;
+        w[2] = (uint)p.KLen;
+        w[3] = (uint)p.HeadDim | (flags << 16);
+        w[4] = BitConverter.SingleToUInt32Bits(p.Scale);
+        w[5] = (uint)causalOffset;
+        Put(w, 6, p.Q);
+        Put(w, 9, p.K);
+        Put(w, 12, p.V);
+        Put(w, 15, p.O);
+        w[18] = (uint)p.Q.Offset;
+        w[19] = (uint)p.K.Offset;
+        w[20] = (uint)p.V.Offset;
+        w[21] = (uint)p.O.Offset;
+        w[22] = (uint)p.Mask.Offset;
+        w[23] = (uint)p.Mask.BatchStride;
+        w[24] = (uint)p.Mask.HeadStride;
+        w[25] = (uint)p.Mask.RowStride;
+        w[26] = (uint)p.KeyLengthsOffset;
+        w[27] = (uint)splits;
+        w[28] = (uint)perSplit;
+        w[31] = (uint)groups;
 
         var dim = p.HeadDim <= 32 ? 0 : (p.HeadDim <= 64 ? 1 : (p.HeadDim <= 128 ? 2 : 3));
-        var tile = _tile[dim + (half ? 4 : 0) + (_pairs ? 8 : 0)] ??= CreateTile(half, dim);
+        var tile = coop ? _coopTile[dim] ??= CreateCoopTile(dim) : _tile[dim + (half ? 4 : 0) + (pairs ? 8 : 0)] ??= CreateTile(half, dim);
         Span<GpuBuffer> bound =
         [
             q.Buffer,
@@ -228,7 +269,23 @@ public sealed class AttentionKernels : IDisposable
             o.Buffer,
             part.Buffer,
         ];
-        tile.Record(encoder, w, gx, gy, bound);
+
+        // A submission the platform may stop for running too long is cut between dispatches of whole workgroups; every workgroup computes its rows
+        // independently, so the cut changes no bit. The budget counts operations of the matrix path; the scalar kernels are slower per operation.
+        var ops = 4.0 * p.Batch * p.Heads * p.QLen * p.KLen * p.HeadDim * (coop ? CoopWorkWeight : ScalarWorkWeight);
+        var budget = _budget;
+        var perGroup = ops / groups;
+        var piece = budget == 0 || ops <= budget ? groups : Math.Max(1, (long)(budget / perGroup));
+        for (var first = 0L; first < groups; first += piece)
+        {
+            var n = Math.Min(piece, groups - first);
+            var (gx, gy) = Grid.For(_device, n);
+            w[29] = gx;
+            w[30] = (uint)first;
+            tile.Record(encoder, w, gx, gy, bound);
+            encoder.ReportWork(perGroup * n);
+        }
+
         if (splits == 1)
         {
             return;
@@ -265,6 +322,12 @@ public sealed class AttentionKernels : IDisposable
             }
         }
 
+        foreach (var pipeline in _coopTile)
+        {
+            pipeline?.Dispose();
+        }
+
+        Array.Clear(_coopTile);
         _scratch?.Dispose();
         _scratch = null;
         _dummyFloat?.Dispose();
@@ -313,6 +376,11 @@ public sealed class AttentionKernels : IDisposable
         Positive(Name, nameof(p.QLen), p.QLen);
         Positive(Name, nameof(p.KLen), p.KLen);
         Positive(Name, nameof(p.HeadDim), p.HeadDim);
+        if (p.Heads > ushort.MaxValue)
+        {
+            throw new GpuKernelShapeException(Name, nameof(p.Heads), $"{p.Heads} heads are above the limit of {ushort.MaxValue}");
+        }
+
         if (p.HeadDim > HeadDimLimit)
         {
             throw new GpuKernelShapeException(Name, nameof(p.HeadDim), $"head dimension {p.HeadDim} is above the limit of {HeadDimLimit}");
@@ -389,6 +457,52 @@ public sealed class AttentionKernels : IDisposable
 
         var e = Attention.Variants.Get(new Attention.Key(f16: half, wave: _pairs, hd: d)).AttentionTile;
         return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-tile");
+    }
+
+    // The matrix kernel is written for 32-wide subgroups (four per workgroup) and 16x16x16 fragments of the 16-bit element type with a float32
+    // accumulator (8x8x8 simdgroup matrices on Metal, which the shader compiler tiles into 16x16). On Vulkan that means a device whose subgroups are 32
+    // wide or can be pinned to 32, that runs pipelines with full subgroups and offers the features the kernel's reflection lists.
+    static bool CoopFits(GpuDevice device)
+    {
+        const uint SubgroupSize = 32;
+        const uint Invocations = 128;
+        const uint WorkgroupBytes = (32 * (64 + 8) * 2) + (4 * 256 * 4) + (4 * 16 * 32 * 2);   // the 64-wide head, the largest of the three shapes
+        if (device.Backend is not (GpuBackend.Vulkan or GpuBackend.Metal))
+        {
+            return false;
+        }
+
+        var cc = device.Capabilities.Compute;
+        var sizeOk = cc.SubgroupMinSize <= SubgroupSize && SubgroupSize <= cc.SubgroupMaxSize && (cc.SubgroupMinSize == cc.SubgroupMaxSize || cc.SubgroupSizeControl);
+        if (!sizeOk || !cc.FullSubgroups || cc.MaxWorkgroupInvocations < Invocations || cc.MaxWorkgroupSizeX < Invocations || cc.MaxWorkgroupMemoryBytes < WorkgroupBytes
+            || (cc.SubgroupOperations & GpuSubgroupOperations.Shuffle) == 0)
+        {
+            return false;
+        }
+
+        if ((Shaders.AttentionCoop.Variants.Get(new Shaders.AttentionCoop.Key(bf16: false, hd: Shaders.AttentionCoop.HdValue.D64)).AttnCoop.Layout.RequiredFeatures & ~cc.ShaderFeatures) != DeviceFeatures.None)
+        {
+            return false;
+        }
+
+        var edge = device.Backend == GpuBackend.Metal ? 8u : 16u;
+        foreach (var shape in cc.CooperativeMatrices)
+        {
+            if (shape is { CType: GpuScalarType.F32, ResultType: GpuScalarType.F32, Saturating: false } && shape.M == edge && shape.N == edge && shape.K == edge
+                && shape.AType == GpuScalarType.F16 && shape.BType == GpuScalarType.F16)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    KernelPipeline CreateCoopTile(int dim)
+    {
+        var d = dim switch { 0 => Shaders.AttentionCoop.HdValue.D32, 1 => Shaders.AttentionCoop.HdValue.D64, _ => Shaders.AttentionCoop.HdValue.D128 };
+        var e = Shaders.AttentionCoop.Variants.Get(new Shaders.AttentionCoop.Key(bf16: false, hd: d)).AttnCoop;
+        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-coop-tile", requiredSubgroupSize: 32);
     }
 
     KernelPipeline CreateCombine(bool half)

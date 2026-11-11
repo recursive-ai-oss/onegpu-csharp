@@ -99,6 +99,12 @@ public abstract class GpuGraphicsPipeline : GpuObject
 /// <summary>A compiled compute pipeline.</summary>
 public abstract class GpuComputePipeline : GpuObject
 {
+    /// <summary>
+    /// Bytes of workgroup memory the compiled pipeline reports it uses, or 0 when the backend does not report it. On Metal this is the pipeline's
+    /// <c>staticThreadgroupMemoryLength</c>, which is larger than the declared size while shader validation is on (validation doubles it) and when a
+    /// three-component vector takes 16 bytes; the limit is checked against that figure, so choose between kernel shapes from it, not from a formula.
+    /// </summary>
+    public virtual uint ReportedWorkgroupMemoryBytes => 0;
 }
 
 /// <summary>

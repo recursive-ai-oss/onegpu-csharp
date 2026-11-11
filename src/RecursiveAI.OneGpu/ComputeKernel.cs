@@ -134,8 +134,8 @@ public abstract partial class GpuDevice
         try
         {
             layout = push.Size > 0 ? CreatePipelineLayout(bindings, push) : CreatePipelineLayout(bindings);
-            // Cooperative matrices need full subgroups below SPIR-V 1.6, so a kernel whose reflection lists them gets a full-subgroup pipeline.
-            var full = (reflection.RequiredFeatures & DeviceFeatures.CooperativeMatrix) != 0;
+            // The shader compiler lists FullSubgroups for entry points that use cooperative matrices (they need full subgroups below SPIR-V 1.6).
+            var full = (reflection.RequiredFeatures & DeviceFeatures.FullSubgroups) != 0;
             var pipeline = CreateComputePipeline(new ComputePipelineDesc { Layout = layout, Compute = shader, RequireFullSubgroups = full, RequiredSubgroupSize = requiredSubgroupSize, Label = label ?? source.EntryPoint });
             return new GpuComputeKernel(shader, layout, pipeline, reflection, bindings, push);
         }
@@ -164,7 +164,7 @@ public abstract partial class GpuDevice
                 $"at most {c.MaxWorkgroupInvocations}", $"{(ulong)x * y * z}");
         }
 
-        if ((kernel.RequiredFeatures & DeviceFeatures.CooperativeMatrix) != 0 && c.SubgroupMinSize != 0 && (ulong)x * y * z % c.SubgroupMinSize != 0 && (ulong)x * y * z % c.SubgroupMaxSize != 0)
+        if ((kernel.RequiredFeatures & DeviceFeatures.FullSubgroups) != 0 && c.SubgroupMinSize != 0 && (ulong)x * y * z % c.SubgroupMinSize != 0 && (ulong)x * y * z % c.SubgroupMaxSize != 0)
         {
             throw new GpuUnsupportedException($"kernel {name} uses cooperative matrices with {(ulong)x * y * z} invocations per workgroup, not a whole number of subgroups on {Adapter.Name}", "FullSubgroups",
                 $"a multiple of {c.SubgroupMinSize}", $"{(ulong)x * y * z}");

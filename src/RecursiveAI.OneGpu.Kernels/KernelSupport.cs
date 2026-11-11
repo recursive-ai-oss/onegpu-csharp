@@ -162,10 +162,10 @@ internal sealed class KernelPipeline : IDisposable
     readonly Dictionary<BindKey, GpuBindGroup> _groups = [];
     readonly BindGroupEntry[] _entries;
 
-    public KernelPipeline(GpuDevice device, in ShaderSource source, int bindings, int pushWords, string label)
+    public KernelPipeline(GpuDevice device, in ShaderSource source, int bindings, int pushWords, string label, uint requiredSubgroupSize = 0)
     {
         _device = device;
-        _kernel = device.CreateComputeKernel(source, label);
+        _kernel = device.CreateComputeKernel(source, label, requiredSubgroupSize);
         if (_kernel.Bindings.Count != bindings || _kernel.PushConstants.Size != pushWords * 4)
         {
             var kernel = _kernel;

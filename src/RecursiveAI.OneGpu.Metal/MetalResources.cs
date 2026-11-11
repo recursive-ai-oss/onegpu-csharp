@@ -303,6 +303,8 @@ internal sealed class MetalComputePipeline : GpuComputePipeline
     public (uint X, uint Y, uint Z) Group;
     public int PushIndex = -1;
 
+    public override uint ReportedWorkgroupMemoryBytes => State == 0 ? 0 : (uint)Msg.UL(State, Sel.staticThreadgroupMemoryLength);
+
     public override void Dispose() => Objc.Release(ref State);
 }
 
