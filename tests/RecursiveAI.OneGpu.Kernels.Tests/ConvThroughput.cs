@@ -33,6 +33,11 @@ public sealed class ConvThroughput
                     var byVariant = new Dictionary<ConvVariant, double>();
                     foreach (var l in layers)
                     {
+                        if (Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_ONLY") is { Length: > 0 } only && !l.Name.Contains(only, StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
                         var p = l.P;
                         p.Activation = l.Act;
                         var (g, w) = half ? Time<Half>(d, k, p, l.Bias) : Time<float>(d, k, p, l.Bias);
@@ -43,12 +48,12 @@ public sealed class ConvThroughput
                         byVariant[v] = byVariant.GetValueOrDefault(v) + g * l.Count;
                         if (verbose)
                         {
-                            Console.WriteLine($"LAYER\t{model}\t{(half ? "f16" : "f32")}\tb{batch}\t{l.Name} {p.InChannels}->{p.OutChannels} {p.Height}x{p.Width} k{p.KernelHeight} s{p.StrideHeight} g{p.Groups} x{l.Count}\t{v}\t{g / 1e3:F1} us gpu\t{w / 1e3:F1} us wall\t{p.Flops / g:F0} GFLOP/s");
+                            Rig.Row(d, "conv-bench-layer", half ? "f16" : "f32", $"{model} b{batch} {l.Name} {p.InChannels}->{p.OutChannels} {p.Height}x{p.Width} k{p.KernelHeight} s{p.StrideHeight} g{p.Groups} x{l.Count} [{v}]", $"{g / 1e3:F1} us gpu, {w / 1e3:F1} us wall, {p.Flops / g:F0} GFLOP/s");
                         }
                     }
 
                     var split = string.Join(", ", byVariant.Select(v => $"{v.Key} {v.Value / 1e6:F2} ms"));
-                    Console.WriteLine($"CONVSUM\t{d.Adapter.Name}\t{model}\t{(half ? "f16" : "f32")}\t{(noHardware ? "portable" : "fast")}\tb{batch}\t{gpuTotal / 1e6:F2} ms gpu\t{wallTotal / 1e6:F2} ms wall\t{flops / gpuTotal / 1e3:F2} TFLOP/s gpu\t{flops / wallTotal / 1e3:F2} TFLOP/s wall\t{split}");
+                    Rig.Row(d, "conv-bench-sum", half ? "f16" : "f32", $"{model} {(noHardware ? "portable" : "fast")} b{batch}", $"{gpuTotal / 1e6:F2} ms gpu, {wallTotal / 1e6:F2} ms wall, {flops / gpuTotal / 1e3:F2} TFLOP/s gpu, {flops / wallTotal / 1e3:F2} TFLOP/s wall; {split}");
                 }
             }
         }

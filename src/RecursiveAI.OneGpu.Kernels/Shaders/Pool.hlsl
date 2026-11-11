@@ -55,7 +55,7 @@ float PoolValue(uint e)
 #if F16
     float best = -65504.0;
 #else
-    float best = -3.4028234663852886e38;
+    float best = -asfloat(0x7f7fffffu);
 #endif
     float nanValue = 0.0;
     float sum = 0.0;

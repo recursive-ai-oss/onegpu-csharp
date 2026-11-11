@@ -37,7 +37,7 @@ float PlaneResult(uint plane, uint tid)
 #if F16
     float v = CP.Average != 0u ? 0.0 : -65504.0;
 #else
-    float v = CP.Average != 0u ? 0.0 : -3.4028234663852886e38;
+    float v = CP.Average != 0u ? 0.0 : -asfloat(0x7f7fffffu);
 #endif
     for (uint i = tid; i < CP.Plane; i += WG)
     {

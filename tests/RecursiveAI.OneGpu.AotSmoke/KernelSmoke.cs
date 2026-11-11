@@ -156,7 +156,7 @@ internal static class KernelSmoke
         }
 
         wrong += Math.Abs(gotBig[0] - big.Sum(v => (double)v)) < 1e-2 ? 0 : 1;
-        return wrong + await GatherAndInt8Async(device);
+        return wrong + await GatherAndInt8Async(device) + await VisionAsync(device);
     }
 
     // Embedding-style gather with a negative index, then an int8 GEMM with a zero point and a dynamic quantize, against plain C#.
@@ -259,6 +259,119 @@ internal static class KernelSmoke
         {
             var expect = (byte)Math.Clamp(Math.Round(q[i] / scale, MidpointRounding.ToEven) + gotZero[0], 0, 255);
             wrong += gotQ[i] == expect ? 0 : 1;
+        }
+
+        return wrong;
+    }
+
+    // A padded 3x3 convolution with bias and ReLU, a 2x2 max pooling and a nearest 2x resize, against plain C#.
+    static async Task<int> VisionAsync(GpuDevice device)
+    {
+        var wrong = 0;
+        const int Cin = 2, Cout = 3, H = 5, W = 5;
+        var x = new float[Cin * H * W];
+        var w = new float[Cout * Cin * 9];
+        var bias = new float[Cout];
+        for (var i = 0; i < x.Length; i++)
+        {
+            x[i] = ((i * 31) % 17 - 8) / 8f;
+        }
+
+        for (var i = 0; i < w.Length; i++)
+        {
+            w[i] = ((i * 7) % 11 - 5) / 10f;
+        }
+
+        for (var i = 0; i < Cout; i++)
+        {
+            bias[i] = (i - 1) * 0.1f;
+        }
+
+        var problem = new ConvProblem(1, Cin, H, W, Cout, 3, 3)
+        {
+            StrideHeight = 1,
+            StrideWidth = 1,
+            DilationHeight = 1,
+            DilationWidth = 1,
+            PadTop = 1,
+            PadLeft = 1,
+            PadBottom = 1,
+            PadRight = 1,
+            Activation = new GpuActivation(GpuUnaryOp.Relu),
+        };
+        using var xb = device.CreateBuffer<float>(x);
+        using var wb = device.CreateBuffer<float>(w);
+        using var bb = device.CreateBuffer<float>(bias);
+        using var yb = device.CreateBuffer<float>(Cout * H * W);
+        using var pooled = device.CreateBuffer<float>(Cout * 2 * 2);
+        using var resized = device.CreateBuffer<float>(Cout * 10 * 10);
+        using var conv = new ConvKernels(device);
+        using var pool = new PoolKernels(device);
+        using var resize = new ResizeKernels(device);
+        var pp = new PoolProblem(1, Cout, H, W, 2, 2) { StrideHeight = 2, StrideWidth = 2, DilationHeight = 1, DilationWidth = 1 };
+        using var plan = resize.CreatePlan(new ResizeProblem(Cout, H, W, 10, 10, GpuResizeMode.Nearest));
+        var commands = device.BeginCommands();
+        conv.Encode(commands, problem, xb, wb, bb, null, yb);
+        pool.Encode(commands, pp, GpuPoolKind.Max, yb, pooled);
+        resize.Encode(commands, plan, yb, 0, resized, 0);
+        device.Submit(commands);
+        var y = new float[Cout * H * W];
+        var gotPooled = new float[Cout * 4];
+        var gotResized = new float[Cout * 100];
+        await yb.ReadAsync(y);
+        await pooled.ReadAsync(gotPooled);
+        await resized.ReadAsync(gotResized);
+        for (var o = 0; o < Cout; o++)
+        {
+            for (var r = 0; r < H; r++)
+            {
+                for (var c = 0; c < W; c++)
+                {
+                    double acc = bias[o];
+                    for (var i = 0; i < Cin; i++)
+                    {
+                        for (var kr = 0; kr < 3; kr++)
+                        {
+                            for (var kc = 0; kc < 3; kc++)
+                            {
+                                int ir = r + kr - 1, ic = c + kc - 1;
+                                if (ir >= 0 && ir < H && ic >= 0 && ic < W)
+                                {
+                                    acc += (double)x[(i * H + ir) * W + ic] * w[((o * Cin + i) * 3 + kr) * 3 + kc];
+                                }
+                            }
+                        }
+                    }
+
+                    wrong += Math.Abs(y[(o * H + r) * W + c] - Math.Max(0, acc)) < 1e-4 ? 0 : 1;
+                }
+            }
+
+            for (var r = 0; r < 2; r++)
+            {
+                for (var c = 0; c < 2; c++)
+                {
+                    var m = float.MinValue;
+                    for (var a = 0; a < 2; a++)
+                    {
+                        for (var b = 0; b < 2; b++)
+                        {
+                            m = Math.Max(m, y[(o * H + 2 * r + a) * W + 2 * c + b]);
+                        }
+                    }
+
+                    wrong += gotPooled[(o * 2 + r) * 2 + c] == m ? 0 : 1;
+                }
+            }
+
+            // Scale 2 with half-pixel coordinates repeats every source element twice.
+            for (var r = 0; r < 10; r++)
+            {
+                for (var c = 0; c < 10; c++)
+                {
+                    wrong += gotResized[(o * 10 + r) * 10 + c] == y[(o * H + r / 2) * W + c / 2] ? 0 : 1;
+                }
+            }
         }
 
         return wrong;
