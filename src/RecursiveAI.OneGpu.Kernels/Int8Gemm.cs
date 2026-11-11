@@ -305,7 +305,8 @@ public sealed class Int8Gemm : IDisposable
         Finish(encoder, problem, sums.Buffer, y.Buffer, problem.OffsetC, mode: 2, zeroPointY, intBias, multiplier.Buffer.Buffer, null, multiplier.Offset, (multiplier.IsVector ? 2u : 0u) | (outSigned ? 0u : 8u));
     }
 
-    internal int BindGroupsCreated => WideKernelPipeline.Total(_gemm) + _epilogue.Created;
+    /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
+    public int BindGroupsCreated => WideKernelPipeline.Total(_gemm) + _epilogue.Created;
 
     /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
     public void ReleaseBindings()

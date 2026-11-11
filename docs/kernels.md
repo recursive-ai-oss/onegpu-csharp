@@ -40,10 +40,11 @@ device.Submit(encoder);
 
 | `GatherKernels` | ONNX Gather (any axis, negative indices, int32 or int64 indices; the embedding lookup), GatherElements, GatherND (with batch dimensions), over 8-, 16-, 32- and 64-bit payloads |
 | `ScatterKernels` | ScatterND and ScatterElements with reduction none, add, mul, min or max |
-| `LayoutKernels` | Slice (including negative steps), Expand, Concat (up to four inputs per pass, more by chaining) |
+| `LayoutKernels` | Slice (including negative steps), Expand, Concat (up to four inputs per pass, more by chaining); Expand may run in place (below) |
 | `Int8Gemm` | MatMulInteger (uint8/int8 in any mix, scalar or per-row/column zero points, int32 result), the float-scaled form and the requantized form of QLinearMatMul |
 | `DynamicQuantizeKernels` | DynamicQuantizeLinear (float32 to uint8 with scale and zero point) |
-| `DequantizeKernels` | DequantizeLinear: uint8, int8 or int32 to float32 or Half, per tensor or per axis, optional zero point |
+| `DequantizeKernels` | DequantizeLinear: uint8, int8 or int32 to float32 or Half, per tensor or per axis, optional zero point; QuantizeLinear: float32 or Half to uint8 or int8, per tensor or per axis |
+| `RecurrentKernels` | ONNX RNN, GRU and LSTM over float32 or Half, forward, reverse and bidirectional (see [recurrent.md](recurrent.md)) |
 
 Adding an operation to the element-wise family is a case in `Shaders/Functions.hlsl` and an enum member: the operation is a push constant, not a pipeline.
 
@@ -69,6 +70,13 @@ A family builds a bind group the first time it sees a set of buffers and reuses 
 distinct buffer sets one run records (a smaller bound is correct, only slower: a dropped group is destroyed after the command buffers that refer to it are submitted, in the browser too): a 72-weight transformer touches 72 sets in `Gemm` per pass, and with a bound of 64 every pass rebuilt them all (72, then 144 bind groups over two passes) where a bound of 72 or more builds
 72 once. `ReleaseBindings()` on every family (and `Gemm`) drops the cached groups immediately; call it after disposing buffers that will not be used again, or after replacing a model's buffers, so stale entries do not keep them reachable.
 The pipelines stay, and the next call with a set of buffers builds its group again.
+`BindGroupsCreated` on every family (read-only, never reset) counts the groups built so far, so a consumer can record a run twice and check that the second run adds none; for `RecurrentKernels` it includes the input projection's `Gemm`.
+
+## In place
+
+Slice and Concat refuse an output that is an input buffer. `Expand` accepts one buffer as both input and output (the way a memory plan places two tensors in one arena) when the element ranges are disjoint:
+the input's `offset .. offset + count` and the output's `offset .. offset + total` must not overlap, and for `Half` neither may share a 32-bit word with the other. Overlapping ranges throw
+`GpuKernelShapeException` (operation `Expand`, argument `output`) before anything is recorded. On Vulkan and Metal the same buffer is bound twice in the pass (read-only and read-write); the ranges being disjoint, no thread reads what another writes. A browser refuses one buffer that is both in one dispatch, so there the call expands into a scratch buffer the family keeps (grown on demand) and copies it to the output: two passes instead of one.
 
 ## Half precision
 
@@ -97,6 +105,8 @@ The limits below are what the tests assert; the measured values are far inside t
 | Prod | max(1e-5, 1e-6·√n) for n factors: every multiplication rounds | 2e-3 |
 | Softmax, LogSoftmax | 1e-5 | 2e-3 |
 | Layer and RMS normalisation | 1e-5 | 2e-3 |
+| RNN, GRU, LSTM (Y, Y_h, Y_c) | 1e-5 | 2e-3 |
+| QuantizeLinear | bit-exact | bit-exact (Half input widened exactly) |
 
 Erf is the Abramowitz–Stegun 7.1.26 approximation (absolute error below 1.5e-7); the Gelu erf form uses its complementary function so the negative tail keeps its relative accuracy.
 A float sum of n values has an error of about ε·√n·(Σ|x|/|Σx|) in the worst conditioning: a sum that cancels to almost nothing cannot be accurate in relative terms in any
@@ -123,6 +133,10 @@ The reductions, softmax and normalisation have both modes.
 - **DequantizeLinear** (`DequantizeKernels`) computes `(float)(x - zeroPoint) * scale` as onemodel's CPU kernel does: the subtraction wraps in 32 bits, the conversion rounds to nearest even, one
   float32 multiply follows. float32 output is bit-exact with the CPU on every device tested (including int32 inputs near the extremes); Half output rounds that value to nearest even.
   Per-axis scales and zero points follow the ONNX `axis` attribute; the scale is float32; a zero point has the element type of the input. Blocked quantization and 16-bit inputs are not covered.
+- **QuantizeLinear** (`DequantizeKernels.EncodeQuantize`) computes `saturate(round_half_even(x / scale) + zeroPoint)` as onemodel's CPU kernel does, bit for bit: the division is the correctly rounded float32 division
+  (done in integer arithmetic, as `DynamicQuantizeKernels` does, because a GPU's own division is not promised to be correctly rounded), the rounding is to nearest even (ONNX operator definition), the zero
+  point is added in float32, the result is clamped to the output type's range, and NaN becomes the lowest value. The output is uint8 (`byte`) or int8 (`sbyte`) and so is the zero point; Half input is widened
+  exactly first. Both modes give the same bits. Tested against the CPU formula on ties, saturation, NaN, infinities, subnormals and five scale sets: 0 mismatching bytes on every device.
 
 - **Payloads** are 32-bit (float, int, uint for gather) or 64-bit (long) words, and Half (as 16-bit words). Results are **bit-exact** against the CPU for every
   payload, since these kernels only move values (scatter reductions on floats do one operation per update, in a fixed order).

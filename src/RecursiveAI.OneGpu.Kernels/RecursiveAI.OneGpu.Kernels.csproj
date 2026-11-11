@@ -39,6 +39,10 @@
     <OneShader Include="Shaders/GatherElements.hlsl" Axes="ELEM=W8|W16|W32|W64" />
     <OneShader Include="Shaders/GatherNd.hlsl" Axes="ELEM=W8|W16|W32|W64" />
     <OneShader Include="Shaders/Int8Epilogue.hlsl" />
+    <OneShader Include="Shaders/Quantize.hlsl" Axes="SIGNED;F16" />
+    <OneShader Include="Shaders/RecurrentInit.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/RecurrentOutputs.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/RecurrentStep.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Int8GemmDot.hlsl" Axes="SMALL" />
     <OneShader Include="Shaders/Int8GemmKernel.hlsl" />
     <OneShader Include="Shaders/Norm.hlsl" Axes="F16;WAVE" />

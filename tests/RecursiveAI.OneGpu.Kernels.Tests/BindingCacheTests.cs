@@ -145,6 +145,8 @@ public sealed class BindingCacheTests
         using var layout = new LayoutKernels(d, 8);
         using var dequantize = new DequantizeKernels(d, 8);
         using var gemm = new Gemm(d, GemmElementType.F32, maxCachedBindGroups: 8);
+        using var quantizer = new DequantizeKernels(d, 8);
+        using var recurrent = new RecurrentKernels(d, GpuKernelMode.Fast, null, 8);
         using var f = d.CreateBuffer<float>(4096);
         using var f2 = d.CreateBuffer<float>(4096);
         using var f3 = d.CreateBuffer<float>(4096);
@@ -154,6 +156,9 @@ public sealed class BindingCacheTests
         using var ints = d.CreateBuffer<int>(4096);
         using var ints2 = d.CreateBuffer<int>(4096);
         using var zero = d.CreateBuffer<byte>(8);
+        using var yh = d.CreateBuffer<float>(64);
+        var recurrentProblem = new RecurrentProblem(GpuRecurrentCell.Lstm, 3, 2, 8, 8) { Direction = GpuRecurrentDirection.Bidirectional };
+        var recurrentOperands = new RecurrentOperands<float> { X = new(f), W = new(f2), R = new(f3), Y = new(f4), YH = new(yh) };
 
         var families = new (string Name, Action<GpuCommandEncoder> Record, Func<int> Built, Action Release)[]
         {
@@ -165,6 +170,8 @@ public sealed class BindingCacheTests
             ("layout", e => { layout.EncodeExpand(e, f, 0, [1, 16], [8, 16], f2, 0); layout.EncodeConcat<float>(e, [new(f, 0, 2), new(f2, 0, 2)], [4, 16], 0, f3, 0); }, () => layout.BindGroupsCreated, layout.ReleaseBindings),
             ("dequantize", e => dequantize.Encode<byte, float>(e, bytes, 0, [16, 16], 0, false, f, 0, null, 0, f2, 0), () => dequantize.BindGroupsCreated, dequantize.ReleaseBindings),
             ("gemm with epilogue", e => gemm.Encode(e, new GemmProblem(16, 16, 16), f, f2, f3, new GemmEpilogue(f4, 0, GemmActivation.GeluErf)), () => gemm.BindGroupsCreated, gemm.ReleaseBindings),
+            ("quantize", e => quantizer.EncodeQuantize<float, byte>(e, f, 0, [16, 16], 0, false, f2, 0, null, 0, bytes, 0), () => quantizer.BindGroupsCreated, quantizer.ReleaseBindings),
+            ("recurrent", e => recurrent.Encode(e, recurrentProblem, recurrentOperands), () => recurrent.BindGroupsCreated, recurrent.ReleaseBindings),
         };
 
         var report = new List<string>();
@@ -193,6 +200,7 @@ public sealed class BindingCacheTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new ScatterKernels(d, 0));
         Assert.Throws<ArgumentOutOfRangeException>(() => new LayoutKernels(d, 0));
         Assert.Throws<ArgumentOutOfRangeException>(() => new DequantizeKernels(d, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new RecurrentKernels(d, GpuKernelMode.Fast, null, 0));
     }
 
     // One command buffer records more distinct buffer sets than the cache bound, so the cache evicts (and disposes) bind groups that commands

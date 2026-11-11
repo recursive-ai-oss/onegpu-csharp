@@ -183,6 +183,91 @@ public sealed class LayoutTests
         Assert.Equal(0, bad);
     }
 
+    // One buffer holds both tensors, as a memory plan places them: the input at inOff, the output at outOff, nothing else changes.
+    static async Task<int> InPlaceExpandCase<T>(GpuDevice d, LayoutKernels k, int[] shape, int[] outShape, int inOff, int outOff, int seed)
+        where T : unmanaged
+    {
+        var n = IndexRig.Count(shape);
+        var total = IndexRig.Count(outShape);
+        var arena = new T[IndexRig.Padded<T>(Math.Max(inOff + n, outOff + total) + 4)];
+        var sentinel = IndexRig.Make<T>(-999);
+        Array.Fill(arena, sentinel);
+        var data = IndexRig.Fill<T>(n, seed);
+        Array.Copy(data, 0, arena, inOff, n);
+        using var buffer = d.CreateBuffer<T>(arena);
+        Rig.Run(d, e => k.EncodeExpand(e, buffer, inOff, shape, outShape, buffer, outOff));
+        var got = await Rig.DownloadAsync(buffer);
+        var strides = IndexRig.Strides(shape);
+        var lead = outShape.Length - shape.Length;
+        var bad = 0;
+        for (var j = 0; j < total; j++)
+        {
+            var c = IndexRig.Unravel(outShape, j);
+            long off = 0;
+            for (var i = 0; i < shape.Length; i++)
+            {
+                off += (shape[i] == 1 ? 0 : c[i + lead]) * strides[i];
+            }
+
+            bad += IndexRig.Same(got[outOff + j], data[(int)off]) ? 0 : 1;
+        }
+
+        // The input tensor is untouched and everything else is still the sentinel.
+        for (var j = 0; j < got.Length; j++)
+        {
+            var inInput = j >= inOff && j < inOff + n;
+            var inOutput = j >= outOff && j < outOff + total;
+            if (inInput && !inOutput)
+            {
+                bad += IndexRig.Same(got[j], data[j - inOff]) ? 0 : 1;
+            }
+            else if (!inInput && !inOutput)
+            {
+                bad += IndexRig.Same(got[j], sentinel) ? 0 : 1;
+            }
+        }
+
+        return bad;
+    }
+
+    [Fact]
+    public async Task ExpandRunsInPlaceWhenTheRangesAreDisjoint()
+    {
+        using var gpu = new GpuFixture();
+        var d = gpu.Device;
+        using var k = new LayoutKernels(d);
+        long bad = 0, rows = 0;
+        foreach (var (shape, outShape) in new (int[], int[])[] { ([1, 7], [5, 7]), ([3, 1], [3, 9]), ([4], [6, 4]), ([2, 1, 4], [2, 5, 4]) })
+        {
+            var n = IndexRig.Count(shape);
+            var total = IndexRig.Count(outShape);
+            // Output after the input with an odd gap, adjacent for 32-bit elements, and before the input.
+            var after = ((3 + n + 1) / 2 + 1) * 2 + 1;
+            var before = 3 + total + 5;
+            bad += await InPlaceExpandCase<float>(d, k, shape, outShape, 3, after, 10);
+            bad += await InPlaceExpandCase<float>(d, k, shape, outShape, 3, 3 + n, 11);
+            bad += await InPlaceExpandCase<float>(d, k, shape, outShape, before, 1, 12);
+            bad += await InPlaceExpandCase<Half>(d, k, shape, outShape, 3, after, 13);
+            bad += await InPlaceExpandCase<Half>(d, k, shape, outShape, before | 1, 0, 14);
+            bad += await InPlaceExpandCase<long>(d, k, shape, outShape, 3, 3 + n, 15);
+            rows += 6;
+        }
+
+        // Overlap is refused: element ranges, and 16-bit ranges that share a 32-bit word.
+        using var f = d.CreateBuffer<float>(64);
+        using var h = d.CreateBuffer<Half>(64);
+        var enc = d.BeginCommands();
+        var e1 = Assert.Throws<GpuKernelShapeException>(() => k.EncodeExpand(enc, f, 4, [1, 8], [3, 8], f, 8));
+        Assert.Equal("Expand", e1.Operation);
+        Assert.Equal("output", e1.Argument);
+        Assert.Throws<GpuKernelShapeException>(() => k.EncodeExpand(enc, f, 0, [1, 8], [3, 8], f, 0));
+        Assert.Throws<GpuKernelShapeException>(() => k.EncodeExpand(enc, f, 20, [1, 8], [3, 8], f, 0));
+        Assert.Throws<GpuKernelShapeException>(() => k.EncodeExpand(enc, h, 3, [1, 4], [2, 4], h, 7));
+        d.Submit(enc);
+        Rig.Row(d, "expand", "f32/f16/i64", $"{rows} in-place cases (output after, adjacent to and before the input in one buffer) plus 4 overlap rejections", $"mismatching elements {bad}");
+        Assert.Equal(0, bad);
+    }
+
     static async Task<int> ConcatCase<T>(GpuDevice d, LayoutKernels k, int[] lens, int[] shapeWithoutAxis, int axis, int seed)
         where T : unmanaged
     {

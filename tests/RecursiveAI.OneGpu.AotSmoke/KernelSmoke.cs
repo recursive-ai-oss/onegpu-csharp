@@ -177,7 +177,7 @@ internal static class KernelSmoke
         }
 
         wrong += Math.Abs(gotBig[0] - big.Sum(v => (double)v)) < 1e-2 ? 0 : 1;
-        return wrong + await GatherAndInt8Async(device) + await EpilogueAndDequantizeAsync(device) + await VisionAsync(device);
+        return wrong + await GatherAndInt8Async(device) + await EpilogueAndDequantizeAsync(device) + await VisionAsync(device) + await RecurrentAndQuantizeAsync(device);
     }
 
     // Embedding-style gather with a negative index, then an int8 GEMM with a zero point and a dynamic quantize, against plain C#.
@@ -481,6 +481,128 @@ internal static class KernelSmoke
 
         return wrong;
     }
+
+    // A bidirectional LSTM with a sequence length per row and QuantizeLinear (a tie, a saturating value and NaN), against plain C#.
+    static async Task<int> RecurrentAndQuantizeAsync(GpuDevice device)
+    {
+        var wrong = 0;
+        const int S = 4, B = 2, I = 3, H = 5;
+        var x = new float[S * B * I];
+        var w = new float[2 * 4 * H * I];
+        var r = new float[2 * 4 * H * H];
+        var bias = new float[2 * 8 * H];
+        int[] lens = [4, 2];
+        for (var i = 0; i < x.Length; i++)
+        {
+            x[i] = ((i * 7) % 11 - 5) / 5f;
+        }
+
+        for (var i = 0; i < w.Length; i++)
+        {
+            w[i] = ((i * 5) % 13 - 6) / 12f;
+        }
+
+        for (var i = 0; i < r.Length; i++)
+        {
+            r[i] = ((i * 3) % 17 - 8) / 20f;
+        }
+
+        for (var i = 0; i < bias.Length; i++)
+        {
+            bias[i] = ((i * 11) % 7 - 3) / 10f;
+        }
+
+        using var xb = device.CreateBuffer<float>(x);
+        using var wb = device.CreateBuffer<float>(w);
+        using var rb = device.CreateBuffer<float>(r);
+        using var bb = device.CreateBuffer<float>(bias);
+        using var lb = device.CreateBuffer<int>(lens);
+        using var yb = device.CreateBuffer<float>(S * 2 * B * H);
+        using var yhb = device.CreateBuffer<float>(2 * B * H);
+        using var lstm = new RecurrentKernels(device);
+        float[] q = [1.25f, 2.5f, 1000f, float.NaN, -3.5f, 0.75f];
+        using var qIn = device.CreateBuffer<float>(q);
+        using var qScale = device.CreateBuffer<float>([0.5f]);
+        using var qOut = device.CreateBuffer<sbyte>(GpuKernelBuffers.PaddedBoolLength(q.Length));
+        using var quantize = new DequantizeKernels(device);
+
+        var commands = device.BeginCommands();
+        var problem = new RecurrentProblem(GpuRecurrentCell.Lstm, S, B, I, H) { Direction = GpuRecurrentDirection.Bidirectional };
+        lstm.Encode(commands, problem, new RecurrentOperands<float> { X = new(xb), W = new(wb), R = new(rb), B = new(bb), SequenceLengths = new(lb), Y = new(yb), YH = new(yhb) });
+        quantize.EncodeQuantize<float, sbyte>(commands, qIn, 0, [q.Length], 0, false, qScale, 0, null, 0, qOut, 0);
+        device.Submit(commands);
+
+        var gotY = new float[S * 2 * B * H];
+        var gotYh = new float[2 * B * H];
+        var gotQ = new sbyte[GpuKernelBuffers.PaddedBoolLength(q.Length)];
+        await yb.ReadAsync(gotY);
+        await yhb.ReadAsync(gotYh);
+        await qOut.ReadAsync(gotQ);
+
+        // The reference: ONNX LSTM, gates i, o, f, c, in double precision.
+        var wantY = new double[S * 2 * B * H];
+        var wantYh = new double[2 * B * H];
+        static double Sig(double v) => 1 / (1 + Math.Exp(-v));
+        for (var d = 0; d < 2; d++)
+        {
+            for (var b = 0; b < B; b++)
+            {
+                var h = new double[H];
+                var c = new double[H];
+                for (var s = 0; s < lens[b]; s++)
+                {
+                    var t = d == 1 ? lens[b] - 1 - s : s;
+                    var g = new double[4 * H];
+                    for (var row = 0; row < 4 * H; row++)
+                    {
+                        var acc = (double)bias[d * 8 * H + row] + bias[d * 8 * H + 4 * H + row];
+                        for (var k = 0; k < I; k++)
+                        {
+                            acc += (double)x[(t * B + b) * I + k] * w[(d * 4 * H + row) * I + k];
+                        }
+
+                        for (var k = 0; k < H; k++)
+                        {
+                            acc += h[k] * r[(d * 4 * H + row) * H + k];
+                        }
+
+                        g[row] = acc;
+                    }
+
+                    for (var j = 0; j < H; j++)
+                    {
+                        c[j] = Sig(g[2 * H + j]) * c[j] + Sig(g[j]) * Math.Tanh(g[3 * H + j]);
+                        h[j] = Sig(g[H + j]) * Math.Tanh(c[j]);
+                        wantY[((t * 2 + d) * B + b) * H + j] = h[j];
+                    }
+                }
+
+                for (var j = 0; j < H; j++)
+                {
+                    wantYh[(d * B + b) * H + j] = h[j];
+                }
+            }
+        }
+
+        for (var i = 0; i < wantY.Length; i++)
+        {
+            wrong += Math.Abs(gotY[i] - wantY[i]) < 1e-5 ? 0 : 1;
+        }
+
+        for (var i = 0; i < wantYh.Length; i++)
+        {
+            wrong += Math.Abs(gotYh[i] - wantYh[i]) < 1e-5 ? 0 : 1;
+        }
+
+        sbyte[] wantQ = [2, 5, 127, -128, -7, 2];
+        for (var i = 0; i < q.Length; i++)
+        {
+            wrong += gotQ[i] == wantQ[i] ? 0 : 1;
+        }
+
+        return wrong;
+    }
+
 
     // Abramowitz and Stegun 7.1.26, enough for a 1e-4 smoke check.
     static double Erf(double x)

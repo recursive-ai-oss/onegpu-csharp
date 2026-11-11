@@ -92,7 +92,8 @@ public sealed class DynamicQuantizeKernels : IDisposable
         _quantize.Record(encoder, w, gx, gy, 1, [x.Buffer, _partials.Buffer, y.Buffer, scale.Buffer, zeroPoint.Buffer]);
     }
 
-    internal int BindGroupsCreated => _minMax.Created + _finish.Created + _quantize.Created;
+    /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
+    public int BindGroupsCreated => _minMax.Created + _finish.Created + _quantize.Created;
 
     /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
     public void ReleaseBindings()

@@ -355,7 +355,8 @@ public sealed class AttentionKernels : IDisposable
         merge.Record(encoder, c, cx, cy, part.Buffer, o.Buffer);
     }
 
-    internal int BindGroupsCreated => KernelPipeline.Total(_tile, _combine);
+    /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
+    public int BindGroupsCreated => KernelPipeline.Total(_tile, _combine);
 
     /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
     public void ReleaseBindings()
