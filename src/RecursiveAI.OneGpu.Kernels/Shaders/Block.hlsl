@@ -46,6 +46,10 @@ float Identity(uint kind)
     return kind == 0u ? 0.0 : (kind == 1u ? NegInf() : (kind == 2u ? PosInf() : 1.0));
 }
 
+// One level of the halving tree. The levels are written out instead of looped so that every barrier is visibly in uniform control
+// flow, which WGSL requires.
+#define TREE_STEP(S) if (tid < (S)) { gsF[tid] = Combine(kind, gsF[tid], gsF[tid + (S)]); } GroupMemoryBarrierWithGroupSync();
+
 // The reduction of v over the workgroup, returned to every thread. Every thread of the group must call it.
 float BlockReduce(uint kind, float v, uint tid)
 {
@@ -96,16 +100,14 @@ float BlockReduce(uint kind, float v, uint tid)
 #else
     gsF[tid] = v;
     GroupMemoryBarrierWithGroupSync();
-    for (uint s = 128u; s > 0u; s >>= 1u)
-    {
-        if (tid < s)
-        {
-            gsF[tid] = Combine(kind, gsF[tid], gsF[tid + s]);
-        }
-
-        GroupMemoryBarrierWithGroupSync();
-    }
-
+    TREE_STEP(128u)
+    TREE_STEP(64u)
+    TREE_STEP(32u)
+    TREE_STEP(16u)
+    TREE_STEP(8u)
+    TREE_STEP(4u)
+    TREE_STEP(2u)
+    TREE_STEP(1u)
     float r = gsF[0];
     GroupMemoryBarrierWithGroupSync();
     return r;

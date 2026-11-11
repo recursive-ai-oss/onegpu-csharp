@@ -53,7 +53,7 @@ public sealed class SoftmaxTests
         return y;
     }
 
-    static (double[] Out, string Hash) Run(GpuDevice d, SoftmaxKernels k, float[] x, int[] shape, int axis, bool log, bool half, GpuKernelMode mode)
+    static async Task<(double[] Out, string Hash)> Run(GpuDevice d, SoftmaxKernels k, float[] x, int[] shape, int axis, bool log, bool half, GpuKernelMode mode)
     {
         const int OffIn = 2, OffOut = 4;
         var n = x.Length;
@@ -68,7 +68,7 @@ public sealed class SoftmaxTests
             using var bi = d.CreateBuffer<Half>(hx);
             using var bo = d.CreateBuffer<Half>(GpuKernelBuffers.PaddedHalfLength(n + OffOut + 2));
             Rig.Run(d, e => k.Encode(e, bi, OffIn, shape, axis, bo, OffOut, log, mode));
-            var got = Rig.Download(bo).AsSpan(OffOut, n).ToArray();
+            var got = (await Rig.DownloadAsync(bo)).AsSpan(OffOut, n).ToArray();
             return (Rig.D(got, n), Rig.Hash<Half>(got));
         }
         else
@@ -78,7 +78,7 @@ public sealed class SoftmaxTests
             using var bi = d.CreateBuffer<float>(fx);
             using var bo = d.CreateBuffer<float>(n + OffOut + 2);
             Rig.Run(d, e => k.Encode(e, bi, OffIn, shape, axis, bo, OffOut, log, mode));
-            var got = Rig.Download(bo).AsSpan(OffOut, n).ToArray();
+            var got = (await Rig.DownloadAsync(bo)).AsSpan(OffOut, n).ToArray();
             return (Rig.D(got, n), Rig.Hash<float>(got));
         }
     }
@@ -91,7 +91,7 @@ public sealed class SoftmaxTests
     }
 
     [Fact]
-    public void SoftmaxMatchesTheCpuReference()
+    public async Task SoftmaxMatchesTheCpuReference()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -116,7 +116,7 @@ public sealed class SoftmaxTests
 
                     foreach (var (name, kernels, mode) in new[] { ("fast", withSub, GpuKernelMode.Fast), ("fast-no-subgroups", noSub, GpuKernelMode.Fast), ("deterministic", withSub, GpuKernelMode.Deterministic) })
                     {
-                        var (got, _) = Run(d, kernels, x, c.Shape, c.Axis, log, half, mode);
+                        var (got, _) = await Run(d, kernels, x, c.Shape, c.Axis, log, half, mode);
                         var (scaled, rel) = Rig.Errors(got, want);
                         var limit = half ? 2e-3 : 1e-5;
                         Assert.True(scaled <= limit, $"{(log ? "log" : "")}softmax {(half ? "f16" : "f32")} {name} [{string.Join(",", c.Shape)}] axis {c.Axis}: {scaled}");
@@ -133,7 +133,7 @@ public sealed class SoftmaxTests
     }
 
     [Fact]
-    public void LargeOffsetsAndMasksStayStable()
+    public async Task LargeOffsetsAndMasksStayStable()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -164,7 +164,7 @@ public sealed class SoftmaxTests
 
                 x[3 * len + len / 2] = 3f;
                 var want = Reference(x.Select(v => (double)v).ToArray(), [rows, len], 1, false);
-                var (got, _) = Run(d, k, x, [rows, len], 1, false, false, mode);
+                var (got, _) = await Run(d, k, x, [rows, len], 1, false, false, mode);
                 var (scaled, _) = Rig.Errors(got, want);
                 if (!(scaled <= 1e-5))
                 {
@@ -179,11 +179,16 @@ public sealed class SoftmaxTests
     }
 
     [Fact]
-    public void SpecialRowsGiveNan()
+    public async Task SpecialRowsGiveNan()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
         using var k = new SoftmaxKernels(d);
+        if (Rig.SkipInBrowser(d, "softmax", "rows of all -inf, with NaN and with +inf"))
+        {
+            return;
+        }
+
         var bad = 0;
         foreach (var len in new[] { 6, 300 })
         {
@@ -198,7 +203,7 @@ public sealed class SoftmaxTests
             x[2 * len + 1] = float.PositiveInfinity;
             foreach (var mode in new[] { GpuKernelMode.Fast, GpuKernelMode.Deterministic })
             {
-                var (got, _) = Run(d, k, x, [4, len], 1, false, false, mode);
+                var (got, _) = await Run(d, k, x, [4, len], 1, false, false, mode);
                 for (var i = 0; i < 3 * len; i++)
                 {
                     bad += double.IsNaN(got[i]) ? 0 : 1;
@@ -215,7 +220,7 @@ public sealed class SoftmaxTests
     }
 
     [Fact]
-    public void DeterministicSoftmaxIsBitIdenticalAcrossRuns()
+    public async Task DeterministicSoftmaxIsBitIdenticalAcrossRuns()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -231,8 +236,8 @@ public sealed class SoftmaxTests
                 var x = Rig.Random(n, n + 3, -10f, 10f);
                 foreach (var log in new[] { false, true })
                 {
-                    var (_, h1) = Run(d, k, x, c.Shape, c.Axis, log, half, GpuKernelMode.Deterministic);
-                    var (_, h2) = Run(d, k, x, c.Shape, c.Axis, log, half, GpuKernelMode.Deterministic);
+                    var (_, h1) = await Run(d, k, x, c.Shape, c.Axis, log, half, GpuKernelMode.Deterministic);
+                    var (_, h2) = await Run(d, k, x, c.Shape, c.Axis, log, half, GpuKernelMode.Deterministic);
                     runs++;
                     same += h1 == h2 ? 1 : 0;
                     example = $"[{string.Join(",", c.Shape)}] {h1}/{h2}";
@@ -245,7 +250,7 @@ public sealed class SoftmaxTests
     }
 
     [Fact]
-    public void BadArgumentsAreRejected()
+    public async Task BadArgumentsAreRejected()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;

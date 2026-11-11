@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 
 namespace RecursiveAI.OneGpu.Kernels.Tests;
 
@@ -33,11 +32,12 @@ internal static class Rig
     public static GpuBuffer<T> Upload<T>(GpuDevice d, T[] data)
         where T : unmanaged => d.CreateBuffer<T>(data);
 
-    public static T[] Download<T>(GpuBuffer<T> b, int count = -1)
+    /// <summary>Reads a buffer back without blocking the thread, which is the only way to read in a browser.</summary>
+    public static async Task<T[]> DownloadAsync<T>(GpuBuffer<T> b, int count = -1)
         where T : unmanaged
     {
         var r = new T[count < 0 ? b.Length : count];
-        b.ReadAsync(r).AsTask().GetAwaiter().GetResult();
+        await b.ReadAsync(r);
         return r;
     }
 
@@ -137,11 +137,36 @@ internal static class Rig
         return bad;
     }
 
+    /// <summary>A 64-bit FNV-1a hash of the bytes: enough to tell two outputs apart in a report.</summary>
     public static string Hash<T>(ReadOnlySpan<T> data)
-        where T : unmanaged =>
-        Convert.ToHexString(SHA256.HashData(System.Runtime.InteropServices.MemoryMarshal.AsBytes(data)))[..16];
+        where T : unmanaged
+    {
+        var h = 14695981039346656037UL;
+        foreach (var b in System.Runtime.InteropServices.MemoryMarshal.AsBytes(data))
+        {
+            h = (h ^ b) * 1099511628211UL;
+        }
 
+        return h.ToString("X16", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>True when the tests run in a browser. WGSL does not require NaN or infinity to behave as in IEEE 754, so tests of those values are skipped there.</summary>
+    public static bool Browser => OperatingSystem.IsBrowser();
+
+    /// <summary>Prints a row saying a check does not run in the browser, and returns true there.</summary>
+    public static bool SkipInBrowser(GpuDevice d, string family, string what)
+    {
+        if (Browser)
+        {
+            Row(d, family, "-", what, "skipped in the browser: WGSL does not guarantee IEEE 754 behaviour for NaN and infinity");
+        }
+
+        return Browser;
+    }
+
+#if !WEB_BACKEND
     static readonly object Gate = new();
+#endif
 
     /// <summary>Prints one result row and appends it to the file named by ONEGPU_PARITY_REPORT, so a run on each device leaves a table.</summary>
     public static void Row(GpuDevice d, string family, string dtype, string what, string result)

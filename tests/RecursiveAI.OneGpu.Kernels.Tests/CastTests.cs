@@ -16,13 +16,13 @@ public sealed class CastTests
     ];
 
     [Fact]
-    public void CastsMatchTheCpuBitForBit()
+    public async Task CastsMatchTheCpuBitForBit()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
         using var k = new ElementwiseKernels(d);
         var bad = 0;
-        var checks = 0;
+        var checks = new int[1];
 
         var big = new List<long>(Longs);
         var rnd = Rig.Random(4000, 9, -1f, 1f);
@@ -37,29 +37,34 @@ public sealed class CastTests
 
         // Offsets inside Run are odd on purpose so that half-precision words are shared with untouched neighbours.
         // long -> float, half, int; int -> float, half, long; float -> int, long, half; half -> float, int, long; same-type copies.
-        bad += Run<long, float>(d, k, longs, v => (float)v, (a, b) => Same(a, b), ref checks);
-        bad += Run<long, int>(d, k, longs, v => unchecked((int)v), (a, b) => a == b, ref checks);
-        bad += Run<long, Half>(d, k, longs, v => (Half)(float)v, (a, b) => a == b, ref checks);
-        bad += Run<int, float>(d, k, ints, v => (float)v, (a, b) => Same(a, b), ref checks);
-        bad += Run<int, long>(d, k, ints, v => v, (a, b) => a == b, ref checks);
-        bad += Run<int, Half>(d, k, ints, v => (Half)(float)v, (a, b) => a == b, ref checks);
-        bad += Run<float, int>(d, k, floats, v => (int)v, (a, b) => a == b, ref checks);
-        bad += Run<float, long>(d, k, floats, v => (long)v, (a, b) => a == b, ref checks);
-        bad += Run<float, Half>(d, k, floats, v => (Half)v, (a, b) => Half.IsNaN(a) ? Half.IsNaN(b) : a == b && BitConverter.HalfToUInt16Bits(a) == BitConverter.HalfToUInt16Bits(b), ref checks);
+        bad += await Run<long, float>(d, k, longs, v => (float)v, (a, b) => Same(a, b), checks);
+        bad += await Run<long, int>(d, k, longs, v => unchecked((int)v), (a, b) => a == b, checks);
+        bad += await Run<long, Half>(d, k, longs, v => (Half)(float)v, (a, b) => a == b, checks);
+        bad += await Run<int, float>(d, k, ints, v => (float)v, (a, b) => Same(a, b), checks);
+        bad += await Run<int, long>(d, k, ints, v => v, (a, b) => a == b, checks);
+        bad += await Run<int, Half>(d, k, ints, v => (Half)(float)v, (a, b) => a == b, checks);
+        bad += await Run<float, int>(d, k, floats, SatInt, (a, b) => a == b, checks);
+        bad += await Run<float, long>(d, k, floats, SatLong, (a, b) => a == b, checks);
+        bad += await Run<float, Half>(d, k, floats, v => (Half)v, (a, b) => Half.IsNaN(a) ? Half.IsNaN(b) : a == b && BitConverter.HalfToUInt16Bits(a) == BitConverter.HalfToUInt16Bits(b), checks);
         var halves = floats.Select(v => (Half)v).Concat(Enumerable.Range(0, 65536).Select(i => BitConverter.UInt16BitsToHalf((ushort)i))).ToArray();
-        bad += Run<Half, float>(d, k, halves, v => (float)v, (a, b) => Same(a, b), ref checks);
-        bad += Run<Half, int>(d, k, halves, v => (int)(float)v, (a, b) => a == b, ref checks);
-        bad += Run<Half, long>(d, k, halves.Where(h => !Half.IsNaN(h)).ToArray(), v => (long)(float)v, (a, b) => a == b, ref checks);
-        bad += Run<int, int>(d, k, ints, v => v, (a, b) => a == b, ref checks);
-        bad += Run<Half, Half>(d, k, halves, v => v, (a, b) => Half.IsNaN(a) ? Half.IsNaN(b) : BitConverter.HalfToUInt16Bits(a) == BitConverter.HalfToUInt16Bits(b), ref checks);
+        bad += await Run<Half, float>(d, k, halves, v => (float)v, (a, b) => Same(a, b), checks);
+        bad += await Run<Half, int>(d, k, halves, v => SatInt((float)v), (a, b) => a == b, checks);
+        bad += await Run<Half, long>(d, k, halves, v => SatLong((float)v), (a, b) => a == b, checks);
+        bad += await Run<int, int>(d, k, ints, v => v, (a, b) => a == b, checks);
+        bad += await Run<Half, Half>(d, k, halves, v => v, (a, b) => Half.IsNaN(a) ? Half.IsNaN(b) : BitConverter.HalfToUInt16Bits(a) == BitConverter.HalfToUInt16Bits(b), checks);
 
-        Rig.Row(d, "cast", "f32/f16/i32/i64", $"all 12 pairs plus copies, {checks} values incl. every one of the 65536 half bit patterns", $"mismatches {bad}");
+        Rig.Row(d, "cast", "f32/f16/i32/i64", $"all 12 pairs plus copies, {checks[0]} values incl. every one of the 65536 half bit patterns", $"mismatches {bad}");
         Assert.Equal(0, bad);
     }
 
+    // The saturating conversions the kernel promises, written out: the platform's own float-to-integer cast differs between runtimes.
+    static int SatInt(float v) => float.IsNaN(v) ? 0 : v >= 2147483648f ? int.MaxValue : v <= -2147483648f ? int.MinValue : (int)v;
+
+    static long SatLong(float v) => float.IsNaN(v) ? 0 : v >= 9223372036854775808f ? long.MaxValue : v <= -9223372036854775808f ? long.MinValue : (long)v;
+
     static bool Same(float a, float b) => float.IsNaN(a) ? float.IsNaN(b) : BitConverter.SingleToUInt32Bits(a) == BitConverter.SingleToUInt32Bits(b);
 
-    static int Run<TFrom, TTo>(GpuDevice d, ElementwiseKernels k, TFrom[] input, Func<TFrom, TTo> convert, Func<TTo, TTo, bool> equal, ref int checks)
+    static async Task<int> Run<TFrom, TTo>(GpuDevice d, ElementwiseKernels k, TFrom[] input, Func<TFrom, TTo> convert, Func<TTo, TTo, bool> equal, int[] checks)
         where TFrom : unmanaged
         where TTo : unmanaged
     {
@@ -71,7 +76,7 @@ public sealed class CastTests
         using var bs = Rig.Upload(d, src);
         using var bd = d.CreateBuffer<TTo>(dstLen);
         Rig.Run(d, e => k.EncodeCast(e, bs, OffS, bd, OffD, n));
-        var got = Rig.Download(bd);
+        var got = await Rig.DownloadAsync(bd);
         var bad = 0;
         for (var i = 0; i < n; i++)
         {
@@ -87,7 +92,7 @@ public sealed class CastTests
             }
         }
 
-        checks += n;
+        checks[0] += n;
         return bad;
     }
 }

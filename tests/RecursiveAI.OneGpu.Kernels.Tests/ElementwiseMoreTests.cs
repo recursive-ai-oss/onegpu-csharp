@@ -21,7 +21,7 @@ public sealed class ElementwiseMoreTests
     };
 
     // Runs a unary op over x with odd offsets; returns the outputs as doubles.
-    static double[] RunUnary(GpuDevice d, ElementwiseKernels k, GpuUnaryOp op, float[] x, bool half, int offX = 1, int offY = 3)
+    static async Task<double[]> RunUnary(GpuDevice d, ElementwiseKernels k, GpuUnaryOp op, float[] x, bool half, int offX = 1, int offY = 3)
     {
         var (p0, p1) = Params(op);
         var n = x.Length;
@@ -36,7 +36,7 @@ public sealed class ElementwiseMoreTests
             using var bx = Rig.Upload(d, hx);
             using var by = d.CreateBuffer<Half>(GpuKernelBuffers.PaddedHalfLength(n + offY));
             Rig.Run(d, e => k.EncodeUnary(e, op, bx, offX, by, offY, n, p0, p1));
-            var got = Rig.Download(by);
+            var got = await Rig.DownloadAsync(by);
             return Rig.D(got.AsSpan(offY, n).ToArray(), n);
         }
 
@@ -45,7 +45,7 @@ public sealed class ElementwiseMoreTests
         using var gx = Rig.Upload(d, fx);
         using var gy = d.CreateBuffer<float>(n + offY);
         Rig.Run(d, e => k.EncodeUnary(e, op, gx, offX, gy, offY, n, p0, p1));
-        var r = Rig.Download(gy);
+        var r = await Rig.DownloadAsync(gy);
         return Rig.D(r.AsSpan(offY, n).ToArray(), n);
     }
 
@@ -66,7 +66,7 @@ public sealed class ElementwiseMoreTests
     static double EDouble(GpuUnaryOp op, double x, float p0, float p1) => ElementwiseTests.RefUnary(op, x, p0, p1);
 
     [Fact]
-    public void UnaryFunctionsMatchTheCpuReference()
+    public async Task UnaryFunctionsMatchTheCpuReference()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -82,9 +82,15 @@ public sealed class ElementwiseMoreTests
 
                     // The error is scaled by the largest result, so every input holds one value of ordinary size.
                     x[^1] = 0.75f;
-                    var got = RunUnary(d, k, op, x, half);
+                    var got = await RunUnary(d, k, op, x, half);
                     var want = Reference(op, x, half);
                     var (scaled, rel) = Rig.Errors(got, want);
+                    if (scaled > 1e-3)
+                    {
+                        var first = Enumerable.Range(0, got.Length).Where(i => Math.Abs(got[i] - want[i]) > 1e-3 * Math.Max(1, Math.Abs(want[i]))).Take(4).Select(i => $"[{i}] x={x[i]} gpu={got[i]} cpu={want[i]}");
+                        Console.WriteLine($"{op} {(half ? "f16" : "f32")} n={n}: {string.Join("; ", first)}");
+                    }
+
                     worstScaled = Math.Max(worstScaled, scaled);
                     worstRel = Math.Max(worstRel, rel);
                 }
@@ -98,11 +104,16 @@ public sealed class ElementwiseMoreTests
     }
 
     [Fact]
-    public void UnaryFunctionsFollowIeeeForSpecialValues()
+    public async Task UnaryFunctionsFollowIeeeForSpecialValues()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
         using var k = new ElementwiseKernels(d);
+        if (Rig.SkipInBrowser(d, "elementwise", "unary functions on NaN, infinity and huge inputs"))
+        {
+            return;
+        }
+
         foreach (var half in new[] { false, true })
         {
             var special = half
@@ -111,7 +122,7 @@ public sealed class ElementwiseMoreTests
             var bad = 0;
             foreach (var op in AllUnary)
             {
-                var got = RunUnary(d, k, op, special, half);
+                var got = await RunUnary(d, k, op, special, half);
                 var want = Reference(op, special, half);
                 var (scaled, _) = Rig.Errors(got, want);
                 if (!(scaled <= (half ? 2e-3 : 1e-5)))
@@ -127,7 +138,7 @@ public sealed class ElementwiseMoreTests
     }
 
     [Fact]
-    public void BinaryDivisionAndPowerStayWithinTolerance()
+    public async Task BinaryDivisionAndPowerStayWithinTolerance()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -160,7 +171,7 @@ public sealed class ElementwiseMoreTests
                     using var bb = Rig.Upload(d, hb);
                     using var bo = d.CreateBuffer<Half>(GpuKernelBuffers.PaddedHalfLength(n));
                     Rig.Run(d, e => k.EncodeBinary(e, op, ba, 0, [n], bb, 0, [n], bo, 0));
-                    got = Rig.D(Rig.Download(bo), n);
+                    got = Rig.D((await Rig.DownloadAsync(bo)), n);
                     for (var i = 0; i < n; i++)
                     {
                         want[i] = (double)(Half)RefD(op, (double)ha[i], (double)hb[i]);
@@ -172,7 +183,7 @@ public sealed class ElementwiseMoreTests
                     using var bb = Rig.Upload(d, b);
                     using var bo = d.CreateBuffer<float>(n);
                     Rig.Run(d, e => k.EncodeBinary(e, op, ba, 0, [n], bb, 0, [n], bo, 0));
-                    got = Rig.D(Rig.Download(bo), n);
+                    got = Rig.D((await Rig.DownloadAsync(bo)), n);
                     for (var i = 0; i < n; i++)
                     {
                         want[i] = RefD(op, a[i], b[i]);
@@ -190,11 +201,16 @@ public sealed class ElementwiseMoreTests
     static double RefD(GpuBinaryOp op, double a, double b) => op == GpuBinaryOp.Div ? a / b : Math.Pow(a, b);
 
     [Fact]
-    public void BinaryOpsFollowIeeeForNanAndInfinity()
+    public async Task BinaryOpsFollowIeeeForNanAndInfinity()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
         using var k = new ElementwiseKernels(d);
+        if (Rig.SkipInBrowser(d, "elementwise", "binary operations on NaN and infinity"))
+        {
+            return;
+        }
+
         var v = new[] { float.NaN, float.PositiveInfinity, float.NegativeInfinity, 0f, 1f, -2f };
         var a = new List<float>();
         var b = new List<float>();
@@ -215,7 +231,7 @@ public sealed class ElementwiseMoreTests
         foreach (var op in new[] { GpuBinaryOp.Add, GpuBinaryOp.Sub, GpuBinaryOp.Mul, GpuBinaryOp.Div, GpuBinaryOp.Min, GpuBinaryOp.Max })
         {
             Rig.Run(d, e => k.EncodeBinary(e, op, ba, 0, [n], bb, 0, [n], bo, 0));
-            var got = Rig.Download(bo);
+            var got = await Rig.DownloadAsync(bo);
             for (var i = 0; i < n; i++)
             {
                 float want = op switch
@@ -236,7 +252,7 @@ public sealed class ElementwiseMoreTests
     }
 
     [Fact]
-    public void FusedActivationMatchesTheTwoStepResult()
+    public async Task FusedActivationMatchesTheTwoStepResult()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -251,7 +267,7 @@ public sealed class ElementwiseMoreTests
         {
             var (p0, p1) = Params(op);
             Rig.Run(d, e => k.EncodeBinary(e, GpuBinaryOp.Add, bx, 0, [Rows, Cols], bbias, 0, [Cols], bo, 0, new GpuActivation(op, p0, p1)));
-            var got = Rig.Download(bo);
+            var got = await Rig.DownloadAsync(bo);
             var want = new double[Rows * Cols];
             for (var i = 0; i < want.Length; i++)
             {
@@ -265,7 +281,7 @@ public sealed class ElementwiseMoreTests
     }
 
     [Fact]
-    public void CompareAndWhereMatchTheCpuExactly()
+    public async Task CompareAndWhereMatchTheCpuExactly()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -283,8 +299,12 @@ public sealed class ElementwiseMoreTests
                 // Few distinct values so that equality is common, with a NaN in each operand.
                 var a = Rig.Random(na, cases, 0, 4).Select(v => MathF.Floor(v)).ToArray();
                 var b = Rig.Random(nb, cases + 1, 0, 4).Select(v => MathF.Floor(v)).ToArray();
-                a[0] = float.NaN;
-                b[^1] = float.NaN;
+                if (!Rig.Browser)
+                {
+                    a[0] = float.NaN;
+                    b[^1] = float.NaN;
+                }
+
                 var cond = Rig.Random(n, cases + 2, 0, 2).Select(v => (uint)v).ToArray();
                 var condShape = rs;
                 var ha = Rig.ToHalf(a);
@@ -306,7 +326,7 @@ public sealed class ElementwiseMoreTests
                         Rig.Run(d, e => k.EncodeCompare(e, op, ba, 0, sa, bb, 0, sb, bout, 0));
                     }
 
-                    var got = Rig.Download(bout, n);
+                    var got = await Rig.DownloadAsync(bout, n);
                     for (var i = 0; i < n; i++)
                     {
                         var (x, y) = (Pick(a, sa, rs, i), Pick(b, sb, rs, i));
@@ -322,7 +342,7 @@ public sealed class ElementwiseMoreTests
                     using var bb = Rig.Upload(d, hb);
                     using var bo = d.CreateBuffer<Half>(GpuKernelBuffers.PaddedHalfLength(Math.Max(1, n)));
                     Rig.Run(d, e => k.EncodeWhere(e, bcond, 0, condShape, ba, 0, sa, bb, 0, sb, bo, 0));
-                    var got = Rig.Download(bo, n);
+                    var got = await Rig.DownloadAsync(bo, n);
                     for (var i = 0; i < n; i++)
                     {
                         var want = cond[i] != 0 ? (Half)Pick(a, sa, rs, i) : (Half)Pick(b, sb, rs, i);
@@ -335,7 +355,7 @@ public sealed class ElementwiseMoreTests
                     using var bb = Rig.Upload(d, b);
                     using var bo = d.CreateBuffer<float>(Math.Max(1, n));
                     Rig.Run(d, e => k.EncodeWhere(e, bcond, 0, condShape, ba, 0, sa, bb, 0, sb, bo, 0));
-                    var got = Rig.Download(bo, n);
+                    var got = await Rig.DownloadAsync(bo, n);
                     for (var i = 0; i < n; i++)
                     {
                         var want = cond[i] != 0 ? Pick(a, sa, rs, i) : Pick(b, sb, rs, i);
@@ -373,7 +393,7 @@ public sealed class ElementwiseMoreTests
     }
 
     [Fact]
-    public void BadShapesAreRejectedWithTheOperationAndDimension()
+    public async Task BadShapesAreRejectedWithTheOperationAndDimension()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;

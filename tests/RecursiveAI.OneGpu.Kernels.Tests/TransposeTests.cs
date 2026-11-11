@@ -64,7 +64,7 @@ public sealed class TransposeTests
         return src;
     }
 
-    static int Check<T>(GpuDevice d, TransposeKernels k, int[] shape, int[] perm, Func<int, T> make, Func<T, T, bool> same, Action<GpuCommandEncoder, GpuBuffer<T>, GpuBuffer<T>>? custom = null)
+    static async Task<int> Check<T>(GpuDevice d, TransposeKernels k, int[] shape, int[] perm, Func<int, T> make, Func<T, T, bool> same, Action<GpuCommandEncoder, GpuBuffer<T>, GpuBuffer<T>>? custom = null)
         where T : unmanaged
     {
         const int OffIn = 1, OffOut = 3;
@@ -92,7 +92,7 @@ public sealed class TransposeTests
                 custom(e, bi, bo);
             }
         });
-        var got = Rig.Download(bo);
+        var got = await Rig.DownloadAsync(bo);
         var bad = 0;
         for (var j = 0; j < n; j++)
         {
@@ -113,7 +113,7 @@ public sealed class TransposeTests
     }
 
     [Fact]
-    public void PermutationsAreExact()
+    public async Task PermutationsAreExact()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -126,9 +126,9 @@ public sealed class TransposeTests
             IEnumerable<int[]> perms = shape.Length <= 4 ? Permutations(shape.Length) : Permutations(shape.Length).Where((_, i) => i % 37 == 0);
             foreach (var perm in perms)
             {
-                bad32 += Check<float>(d, k, shape, perm, i => i * 0.5f + 1f, (a, b) => BitConverter.SingleToUInt32Bits(a) == BitConverter.SingleToUInt32Bits(b));
-                bad16 += Check<Half>(d, k, shape, perm, i => BitConverter.UInt16BitsToHalf((ushort)(i * 7 + 1)), (a, b) => BitConverter.HalfToUInt16Bits(a) == BitConverter.HalfToUInt16Bits(b));
-                bad64 += Check<long>(d, k, shape, perm, i => (long)i * 4294967311L + 5, (a, b) => a == b);
+                bad32 += await Check<float>(d, k, shape, perm, i => i * 0.5f + 1f, (a, b) => BitConverter.SingleToUInt32Bits(a) == BitConverter.SingleToUInt32Bits(b));
+                bad16 += await Check<Half>(d, k, shape, perm, i => BitConverter.UInt16BitsToHalf((ushort)(i * 7 + 1)), (a, b) => BitConverter.HalfToUInt16Bits(a) == BitConverter.HalfToUInt16Bits(b));
+                bad64 += await Check<long>(d, k, shape, perm, i => (long)i * 4294967311L + 5, (a, b) => a == b);
                 cases++;
             }
         }
@@ -138,20 +138,20 @@ public sealed class TransposeTests
     }
 
     [Fact]
-    public void LayoutHelpersMatchTheirPermutations()
+    public async Task LayoutHelpersMatchTheirPermutations()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
         using var k = new TransposeKernels(d);
         long bad = 0;
         bool Same(float a, float b) => BitConverter.SingleToUInt32Bits(a) == BitConverter.SingleToUInt32Bits(b);
-        bad += Check<float>(d, k, [2, 3, 17, 19], [0, 2, 3, 1], i => i, Same, (e, i, o) => k.EncodeNchwToNhwc(e, i, 1, 2, 3, 17, 19, o, 3));
-        bad += Check<float>(d, k, [2, 17, 19, 3], [0, 3, 1, 2], i => i, Same, (e, i, o) => k.EncodeNhwcToNchw(e, i, 1, 2, 3, 17, 19, o, 3));
+        bad += await Check<float>(d, k, [2, 3, 17, 19], [0, 2, 3, 1], i => i, Same, (e, i, o) => k.EncodeNchwToNhwc(e, i, 1, 2, 3, 17, 19, o, 3));
+        bad += await Check<float>(d, k, [2, 17, 19, 3], [0, 3, 1, 2], i => i, Same, (e, i, o) => k.EncodeNhwcToNchw(e, i, 1, 2, 3, 17, 19, o, 3));
         foreach (var (b, s, h, dim) in new[] { (1, 128, 12, 64), (2, 7, 12, 32), (1, 1, 6, 64), (3, 512, 12, 64) })
         {
-            bad += Check<float>(d, k, [b, s, h, dim], [0, 2, 1, 3], i => i, Same, (e, i, o) => k.EncodeSplitHeads(e, i, 1, b, s, h, dim, o, 3));
-            bad += Check<float>(d, k, [b, h, s, dim], [0, 2, 1, 3], i => i, Same, (e, i, o) => k.EncodeMergeHeads(e, i, 1, b, s, h, dim, o, 3));
-            bad += Check<Half>(d, k, [b, s, h, dim], [0, 2, 1, 3], i => BitConverter.UInt16BitsToHalf((ushort)(i + 1)), (x, y) => BitConverter.HalfToUInt16Bits(x) == BitConverter.HalfToUInt16Bits(y), (e, i, o) => k.EncodeSplitHeads(e, i, 1, b, s, h, dim, o, 3));
+            bad += await Check<float>(d, k, [b, s, h, dim], [0, 2, 1, 3], i => i, Same, (e, i, o) => k.EncodeSplitHeads(e, i, 1, b, s, h, dim, o, 3));
+            bad += await Check<float>(d, k, [b, h, s, dim], [0, 2, 1, 3], i => i, Same, (e, i, o) => k.EncodeMergeHeads(e, i, 1, b, s, h, dim, o, 3));
+            bad += await Check<Half>(d, k, [b, s, h, dim], [0, 2, 1, 3], i => BitConverter.UInt16BitsToHalf((ushort)(i + 1)), (x, y) => BitConverter.HalfToUInt16Bits(x) == BitConverter.HalfToUInt16Bits(y), (e, i, o) => k.EncodeSplitHeads(e, i, 1, b, s, h, dim, o, 3));
         }
 
         Rig.Row(d, "transpose", "f32/f16", "NCHW<->NHWC and head split/merge for BERT/MiniLM/Whisper-sized shapes", $"mismatching elements {bad}");
@@ -159,7 +159,7 @@ public sealed class TransposeTests
     }
 
     [Fact]
-    public void BadPermutationsAreRejected()
+    public async Task BadPermutationsAreRejected()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;

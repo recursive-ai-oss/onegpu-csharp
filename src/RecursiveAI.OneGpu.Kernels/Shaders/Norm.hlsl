@@ -79,10 +79,12 @@ float Normalise(uint col, float x, float mean, float inv)
 [numthreads(256, 1, 1)]
 void NormBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
+    // No early return before the barriers (see ReduceBlock): a surplus workgroup recomputes row 0 and skips the writes.
     uint row = gid.y * NP.GridX + gid.x;
-    if (row >= NP.Rows)
+    bool live = row < NP.Rows;
+    if (!live)
     {
-        return;
+        row = 0u;
     }
 
     bool rms = (NP.Flags & 4u) != 0u;
@@ -113,7 +115,7 @@ void NormBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 
     uint rowOut = NP.OutOff + row * NP.Len;
 #if F16
-    for (uint w = tid; w < (NP.Len >> 1); w += WG)
+    for (uint w = tid; live && w < (NP.Len >> 1); w += WG)
     {
         uint c = 2u * w;
         uint lo = F2H(Normalise(c, LoadN(rowIn + c), mean, inv));
@@ -121,7 +123,7 @@ void NormBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
         NOut[(rowOut + c) >> 1] = lo | (hi << 16);
     }
 #else
-    for (uint c = tid; c < NP.Len; c += WG)
+    for (uint c = tid; live && c < NP.Len; c += WG)
     {
         NOut[rowOut + c] = Normalise(c, NIn[rowIn + c], mean, inv);
     }

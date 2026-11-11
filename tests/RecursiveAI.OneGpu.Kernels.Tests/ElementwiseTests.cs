@@ -115,7 +115,7 @@ public sealed class ElementwiseTests
     }
 
     [Fact]
-    public void BinaryBroadcastMatchesTheCpuBitForBit()
+    public async Task BinaryBroadcastMatchesTheCpuBitForBit()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -133,11 +133,11 @@ public sealed class ElementwiseTests
                     var n = Count(rs);
                     if (half)
                     {
-                        bad += RunBinary<Half>(d, k, op, Rig.ToHalf(a), sa, Rig.ToHalf(b), sb, rs, n, Rig.ToHalf(a).Select(x => (float)x).ToArray(), Rig.ToHalf(b).Select(x => (float)x).ToArray());
+                        bad += await RunBinary<Half>(d, k, op, Rig.ToHalf(a), sa, Rig.ToHalf(b), sb, rs, n, Rig.ToHalf(a).Select(x => (float)x).ToArray(), Rig.ToHalf(b).Select(x => (float)x).ToArray());
                     }
                     else
                     {
-                        bad += RunBinary<float>(d, k, op, a, sa, b, sb, rs, n, a, b);
+                        bad += await RunBinary<float>(d, k, op, a, sa, b, sb, rs, n, a, b);
                     }
 
                     cases++;
@@ -150,7 +150,7 @@ public sealed class ElementwiseTests
     }
 
     // Offsets are nonzero and odd on purpose: the half kernels write inside shared 32-bit words.
-    static int RunBinary<T>(GpuDevice d, ElementwiseKernels k, GpuBinaryOp op, T[] a, int[] sa, T[] b, int[] sb, int[] rs, int n, float[] af, float[] bf)
+    static async Task<int> RunBinary<T>(GpuDevice d, ElementwiseKernels k, GpuBinaryOp op, T[] a, int[] sa, T[] b, int[] sb, int[] rs, int n, float[] af, float[] bf)
         where T : unmanaged
     {
         const int OffA = 3, OffB = 1, OffO = 5;
@@ -180,7 +180,7 @@ public sealed class ElementwiseTests
 
         bo.Write(fill);
         Rig.Run(d, e => k.EncodeBinary(e, op, ba, OffA, sa, bb, OffB, sb, bo, OffO));
-        var got = Rig.Download(bo);
+        var got = await Rig.DownloadAsync(bo);
         var bad = 0;
         var idx = new int[rs.Length];
         for (var i = 0; i < n; i++)

@@ -115,10 +115,13 @@ void StoreOut(uint o, float v)
 [numthreads(256, 1, 1)]
 void ReduceBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
+    // No early return: a barrier after a return that depends on the workgroup id is rejected by WGSL's uniformity analysis, so a
+    // surplus workgroup does the work of output 0 and only skips the store.
     uint o = gid.y * RP.GridX + gid.x;
-    if (o >= RP.NumOut)
+    bool live = o < RP.NumOut;
+    if (!live)
     {
-        return;
+        o = 0u;
     }
 
     uint kind = KindOf(RP.Op);
@@ -143,7 +146,7 @@ void ReduceBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     acc = Combine(kind, acc, run);
 
     float total = BlockReduce(kind, acc, tid);
-    if (tid == 0u)
+    if (tid == 0u && live)
     {
         StoreOut(o, Finalize(RP.Op, total, RP.R));
     }

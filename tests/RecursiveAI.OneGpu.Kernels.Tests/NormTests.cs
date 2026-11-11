@@ -49,7 +49,7 @@ public sealed class NormTests
         return y;
     }
 
-    static (double[] Out, string Hash) Run(GpuDevice d, NormKernels k, bool rms, float[] x, int rows, int len, float[]? scale, float[]? bias, float eps, bool half, GpuKernelMode mode)
+    static async Task<(double[] Out, string Hash)> Run(GpuDevice d, NormKernels k, bool rms, float[] x, int rows, int len, float[]? scale, float[]? bias, float eps, bool half, GpuKernelMode mode)
     {
         const int OffIn = 2, OffOut = 4, OffS = 2, OffB = 6;
         var n = rows * len;
@@ -71,7 +71,7 @@ public sealed class NormTests
             using var bb = bias is null ? null : d.CreateBuffer<Half>(H(bias, OffB));
             using var bo = d.CreateBuffer<Half>(GpuKernelBuffers.PaddedHalfLength(n + OffOut + 2));
             Rig.Run(d, e => k.Encode(e, rms, bi, OffIn, rows, len, bs, OffS, bb, OffB, bo, OffOut, eps, mode));
-            var got = Rig.Download(bo).AsSpan(OffOut, n).ToArray();
+            var got = (await Rig.DownloadAsync(bo)).AsSpan(OffOut, n).ToArray();
             return (Rig.D(got, n), Rig.Hash<Half>(got));
         }
         else
@@ -88,13 +88,13 @@ public sealed class NormTests
             using var bb = bias is null ? null : d.CreateBuffer<float>(F(bias, OffB));
             using var bo = d.CreateBuffer<float>(n + OffOut + 2);
             Rig.Run(d, e => k.Encode(e, rms, bi, OffIn, rows, len, bs, OffS, bb, OffB, bo, OffOut, eps, mode));
-            var got = Rig.Download(bo).AsSpan(OffOut, n).ToArray();
+            var got = (await Rig.DownloadAsync(bo)).AsSpan(OffOut, n).ToArray();
             return (Rig.D(got, n), Rig.Hash<float>(got));
         }
     }
 
     [Fact]
-    public void NormalisationMatchesTheCpuReference()
+    public async Task NormalisationMatchesTheCpuReference()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -124,7 +124,7 @@ public sealed class NormTests
 
                         foreach (var (name, kernels, mode) in new[] { ("fast", withSub, GpuKernelMode.Fast), ("fast-no-subgroups", noSub, GpuKernelMode.Fast), ("deterministic", withSub, GpuKernelMode.Deterministic) })
                         {
-                            var (got, _) = Run(d, kernels, rms, x, rows, len, scale, bias, eps, half, mode);
+                            var (got, _) = await Run(d, kernels, rms, x, rows, len, scale, bias, eps, half, mode);
                             var (scaled, rel) = Rig.Errors(got, want);
                             var limit = half ? 2e-3 : 1e-5;
                             Assert.True(scaled <= limit, $"{(rms ? "rms" : "layer")} {(half ? "f16" : "f32")} {name} [{rows},{len}] affine {affine}: {scaled}");
@@ -144,7 +144,7 @@ public sealed class NormTests
     }
 
     [Fact]
-    public void DeterministicNormalisationIsBitIdenticalAcrossRuns()
+    public async Task DeterministicNormalisationIsBitIdenticalAcrossRuns()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -160,8 +160,8 @@ public sealed class NormTests
                 var bias = Rig.Random(len, 4, -1f, 1f);
                 foreach (var rms in new[] { false, true })
                 {
-                    var (_, h1) = Run(d, k, rms, x, rows, len, scale, bias, 1e-5f, half, GpuKernelMode.Deterministic);
-                    var (_, h2) = Run(d, k, rms, x, rows, len, scale, bias, 1e-5f, half, GpuKernelMode.Deterministic);
+                    var (_, h1) = await Run(d, k, rms, x, rows, len, scale, bias, 1e-5f, half, GpuKernelMode.Deterministic);
+                    var (_, h2) = await Run(d, k, rms, x, rows, len, scale, bias, 1e-5f, half, GpuKernelMode.Deterministic);
                     runs++;
                     same += h1 == h2 ? 1 : 0;
                 }
@@ -173,7 +173,7 @@ public sealed class NormTests
     }
 
     [Fact]
-    public void BadArgumentsAreRejected()
+    public async Task BadArgumentsAreRejected()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;

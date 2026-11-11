@@ -115,14 +115,27 @@ void WriteRow(uint rowBase, uint first, uint step, float m, float d)
 #endif
 }
 
+// One level of the halving tree, written out so that every barrier is visibly in uniform control flow (WGSL requires it).
+#define MERGE_STEP(S) \
+    if (tid < (S)) \
+    { \
+        float nm, nd; \
+        Merge(gsM[tid], gsD[tid], gsM[tid + (S)], gsD[tid + (S)], nm, nd); \
+        gsM[tid] = nm; \
+        gsD[tid] = nd; \
+    } \
+    GroupMemoryBarrierWithGroupSync();
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void SoftmaxBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
+    // No early return before the barriers (see ReduceBlock): a surplus workgroup recomputes row 0 and skips the writes.
     uint row = gid.y * SP.GridX + gid.x;
-    if (row >= SP.Rows)
+    bool live = row < SP.Rows;
+    if (!live)
     {
-        return;
+        row = 0u;
     }
 
     uint rowBase = RowBase(row);
@@ -164,23 +177,22 @@ void SoftmaxBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     gsM[tid] = m;
     gsD[tid] = d;
     GroupMemoryBarrierWithGroupSync();
-    for (uint s = 128u; s > 0u; s >>= 1u)
-    {
-        if (tid < s)
-        {
-            float nm, nd;
-            Merge(gsM[tid], gsD[tid], gsM[tid + s], gsD[tid + s], nm, nd);
-            gsM[tid] = nm;
-            gsD[tid] = nd;
-        }
-
-        GroupMemoryBarrierWithGroupSync();
-    }
+    MERGE_STEP(128u)
+    MERGE_STEP(64u)
+    MERGE_STEP(32u)
+    MERGE_STEP(16u)
+    MERGE_STEP(8u)
+    MERGE_STEP(4u)
+    MERGE_STEP(2u)
+    MERGE_STEP(1u)
 
     float rm = gsM[0];
     float rd = gsD[0];
 #endif
-    WriteRow(rowBase, tid, WG, rm, rd);
+    if (live)
+    {
+        WriteRow(rowBase, tid, WG, rm, rd);
+    }
 }
 
 [shader("compute")]

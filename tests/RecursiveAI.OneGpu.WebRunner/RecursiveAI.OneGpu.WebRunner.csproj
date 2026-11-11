@@ -22,10 +22,12 @@
 
   <PropertyGroup>
     <Shared>$(MSBuildThisFileDirectory)../RecursiveAI.OneGpu.Vulkan.Tests/</Shared>
+    <KernelTests>$(MSBuildThisFileDirectory)../RecursiveAI.OneGpu.Kernels.Tests/</KernelTests>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="*.cs" />
+    <Compile Include="$(KernelTests)*.cs" Exclude="$(KernelTests)Fixture.cs" />
     <Compile Include="$(Shared)FeatureTests.cs;$(Shared)ComputeTests.cs;$(Shared)RenderTests.cs;$(Shared)Png.cs;$(Shared)ReadHelpers.cs" />
     <OneShader Include="$(Shared)Shaders/*.hlsl" Exclude="$(Shared)Shaders/TextureArray.hlsl" Targets="SpirV;Msl;Wgsl" />
     <EmbeddedResource Include="../../testdata/gpu/*.png" LogicalName="golden/%(Filename)%(Extension)" />
@@ -39,6 +41,7 @@
     <PackageReference Include="xunit.v3.extensibility.core" />
     <ProjectReference Include="../../src/RecursiveAI.OneGpu/RecursiveAI.OneGpu.csproj" />
     <ProjectReference Include="../../src/RecursiveAI.OneGpu.WebGpu/RecursiveAI.OneGpu.WebGpu.csproj" />
+    <ProjectReference Include="../../src/RecursiveAI.OneGpu.Kernels/RecursiveAI.OneGpu.Kernels.csproj" />
   </ItemGroup>
 
 </Project>

@@ -75,7 +75,7 @@ public sealed class ReduceTests
     }
 
     // Runs one reduction; returns the output as doubles and a hash of its raw bits.
-    internal static (double[] Out, string Hash) Run(GpuDevice d, ReduceKernels k, GpuReduceOp op, float[] x, int[] shape, int[] axes, int numOut, bool half, GpuKernelMode mode)
+    internal static async Task<(double[] Out, string Hash)> Run(GpuDevice d, ReduceKernels k, GpuReduceOp op, float[] x, int[] shape, int[] axes, int numOut, bool half, GpuKernelMode mode)
     {
         const int OffIn = 1, OffOut = 3;
         if (half)
@@ -89,7 +89,7 @@ public sealed class ReduceTests
             using var bi = d.CreateBuffer<Half>(hx);
             using var bo = d.CreateBuffer<Half>(GpuKernelBuffers.PaddedHalfLength(numOut + OffOut + 1));
             Rig.Run(d, e => k.EncodeReduce(e, op, bi, OffIn, shape, axes, bo, OffOut, mode));
-            var got = Rig.Download(bo).AsSpan(OffOut, numOut).ToArray();
+            var got = (await Rig.DownloadAsync(bo)).AsSpan(OffOut, numOut).ToArray();
             return (Rig.D(got, numOut), Rig.Hash<Half>(got));
         }
         else
@@ -99,13 +99,13 @@ public sealed class ReduceTests
             using var bi = d.CreateBuffer<float>(fx);
             using var bo = d.CreateBuffer<float>(numOut + OffOut + 1);
             Rig.Run(d, e => k.EncodeReduce(e, op, bi, OffIn, shape, axes, bo, OffOut, mode));
-            var got = Rig.Download(bo).AsSpan(OffOut, numOut).ToArray();
+            var got = (await Rig.DownloadAsync(bo)).AsSpan(OffOut, numOut).ToArray();
             return (Rig.D(got, numOut), Rig.Hash<float>(got));
         }
     }
 
     [Fact]
-    public void ReductionsMatchTheCpuReference()
+    public async Task ReductionsMatchTheCpuReference()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -130,7 +130,7 @@ public sealed class ReduceTests
 
                     foreach (var (name, kernels, mode) in new[] { ("fast", withSub, GpuKernelMode.Fast), ("fast-no-subgroups", noSub, GpuKernelMode.Fast), ("deterministic", withSub, GpuKernelMode.Deterministic) })
                     {
-                        var (got, _) = Run(d, kernels, op, x, shape, axes, numOut, half, mode);
+                        var (got, _) = await Run(d, kernels, op, x, shape, axes, numOut, half, mode);
                         var (scaled, rel) = Rig.Errors(got, want);
                         var limit = half ? 2e-3 : 1e-5;
                         // Max and Min select an input, so they are exact.
@@ -159,11 +159,16 @@ public sealed class ReduceTests
     }
 
     [Fact]
-    public void ReductionsPropagateNanAndInfinity()
+    public async Task ReductionsPropagateNanAndInfinity()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
         using var k = new ReduceKernels(d);
+        if (Rig.SkipInBrowser(d, "reduce", "reductions with NaN and infinity inside a row"))
+        {
+            return;
+        }
+
         var bad = 0;
         foreach (var length in new[] { 5, 300 })
         {
@@ -177,7 +182,7 @@ public sealed class ReduceTests
                     var want = Reference(op, x.Select(v => (double)v).ToArray(), [2, length], [1], out _);
                     foreach (var mode in new[] { GpuKernelMode.Fast, GpuKernelMode.Deterministic })
                     {
-                        var (got, _) = Run(d, k, op, x, [2, length], [1], 2, false, mode);
+                        var (got, _) = await Run(d, k, op, x, [2, length], [1], 2, false, mode);
                         var (scaled, _) = Rig.Errors(got, want);
                         if (!(scaled <= 1e-5))
                         {
@@ -194,7 +199,7 @@ public sealed class ReduceTests
     }
 
     [Fact]
-    public void DeterministicReductionsAreBitIdenticalAcrossRuns()
+    public async Task DeterministicReductionsAreBitIdenticalAcrossRuns()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -211,8 +216,8 @@ public sealed class ReduceTests
                 {
                     var x = Data(op, n, n + 7);
                     var numOut = shape.Select((dim, i) => axes.Length != 0 && !axes.Select(a => a < 0 ? a + shape.Length : a).Contains(i) ? dim : 1).Aggregate(1, (p, q) => p * q);
-                    var (_, h1) = Run(d, k, op, x, shape, axes, numOut, half, GpuKernelMode.Deterministic);
-                    var (_, h2) = Run(d, k, op, x, shape, axes, numOut, half, GpuKernelMode.Deterministic);
+                    var (_, h1) = await Run(d, k, op, x, shape, axes, numOut, half, GpuKernelMode.Deterministic);
+                    var (_, h2) = await Run(d, k, op, x, shape, axes, numOut, half, GpuKernelMode.Deterministic);
                     runs++;
                     same += h1 == h2 ? 1 : 0;
                     if (h1 != h2)
@@ -235,7 +240,7 @@ public sealed class ReduceTests
     }
 
     [Fact]
-    public void ArgMaxAndArgMinMatchTheCpu()
+    public async Task ArgMaxAndArgMinMatchTheCpu()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
@@ -273,7 +278,7 @@ public sealed class ReduceTests
                             Rig.Run(d, e => k.EncodeArg(e, op, bi, 0, shape, axis, bo, 1));
                         }
 
-                        var got = Rig.Download(bo);
+                        var got = await Rig.DownloadAsync(bo);
                         var inner = 1;
                         for (var i = axis + 1; i < shape.Length; i++)
                         {
@@ -321,7 +326,7 @@ public sealed class ReduceTests
     }
 
     [Fact]
-    public void BadAxesAreRejected()
+    public async Task BadAxesAreRejected()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;

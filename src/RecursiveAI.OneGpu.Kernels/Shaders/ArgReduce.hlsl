@@ -70,14 +70,25 @@ float ArgLoad(uint i)
 #endif
 }
 
+// One level of the halving tree, written out so that every barrier is visibly in uniform control flow (WGSL requires it).
+#define ARG_STEP(S) \
+    if (tid < (S) && Beats(gsV[tid + (S)], gsI[tid + (S)], gsV[tid], gsI[tid])) \
+    { \
+        gsV[tid] = gsV[tid + (S)]; \
+        gsI[tid] = gsI[tid + (S)]; \
+    } \
+    GroupMemoryBarrierWithGroupSync();
+
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void ArgBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
 {
+    // No early return before the barriers (see ReduceBlock).
     uint o = gid.y * AP.GridX + gid.x;
-    if (o >= AP.NumOut)
+    bool live = o < AP.NumOut;
+    if (!live)
     {
-        return;
+        o = 0u;
     }
 
     uint baseOff = ArgKeptOffset(o);
@@ -96,18 +107,16 @@ void ArgBlock(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
     gsV[tid] = bv;
     gsI[tid] = bi;
     GroupMemoryBarrierWithGroupSync();
-    for (uint s = 128u; s > 0u; s >>= 1u)
-    {
-        if (tid < s && Beats(gsV[tid + s], gsI[tid + s], gsV[tid], gsI[tid]))
-        {
-            gsV[tid] = gsV[tid + s];
-            gsI[tid] = gsI[tid + s];
-        }
+    ARG_STEP(128u)
+    ARG_STEP(64u)
+    ARG_STEP(32u)
+    ARG_STEP(16u)
+    ARG_STEP(8u)
+    ARG_STEP(4u)
+    ARG_STEP(2u)
+    ARG_STEP(1u)
 
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-    if (tid == 0u)
+    if (tid == 0u && live)
     {
         uint idx = (gsI[0] == 0xFFFFFFFFu) ? 0u : gsI[0];
         AOut[2u * (AP.OutOff + o)] = idx;
