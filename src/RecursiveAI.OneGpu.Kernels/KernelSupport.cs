@@ -127,7 +127,7 @@ internal static class Variants
 
         var c = device.Capabilities.Compute;
         var min = c.SubgroupMinSize != 0 ? c.SubgroupMinSize : c.SubgroupSize;
-        return (c.SubgroupOperations & GpuSubgroupOperations.Arithmetic) != 0 && (c.SubgroupOperations & GpuSubgroupOperations.Basic) != 0 && min >= 4;
+        return (c.SubgroupOperations & GpuSubgroupOperations.Arithmetic) != 0 && (c.SubgroupOperations & GpuSubgroupOperations.Basic) != 0 && (c.SubgroupOperations & GpuSubgroupOperations.Vote) != 0 && min >= 4;
     }
 }
 

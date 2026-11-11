@@ -96,3 +96,8 @@ uint RawH(StructuredBuffer<uint> buf, uint i)
 {
     return (buf[i >> 1] >> ((i & 1u) << 4)) & 0xFFFFu;
 }
+
+float LoadH(StructuredBuffer<uint> buf, uint i)
+{
+    return H2F(RawH(buf, i));
+}

@@ -54,14 +54,14 @@ float Unary(uint op, float x, float p0, float p1)
         case 7u: return Tanh(x);                                                      // Tanh
         case 8u: return Erf(x);                                                       // Erf
         case 9u: return Sigmoid(x);                                                   // Sigmoid
-        case 10u: return (x < 0.0) ? 0.0 : x;                                         // Relu (NaN passes through)
+        case 10u: return IsNaN(x) ? x : ((x < 0.0) ? 0.0 : x);                                      // Relu (NaN passes through)
         case 11u: return 0.5 * x * Erfc(-x * 0.70710678118654752);                        // Gelu, exact form
         case 12u: return x / (1.0 + exp(-1.5957691216057308 * (x + 0.044715 * x * x * x)));  // Gelu, tanh form: 0.5 (1 + tanh u) = 1 / (1 + e^-2u)
         case 13u: return x * Sigmoid(x);                                              // Silu / Swish
         case 14u: return IsNaN(x) ? x : max(0.0, min(1.0, p0 * x + p1));              // HardSigmoid(alpha = p0, beta = p1)
         case 15u: return IsNaN(x) ? x : x * max(0.0, min(1.0, x * (1.0 / 6.0) + 0.5)); // HardSwish
         case 16u: return IsNaN(x) ? x : min(max(x, p0), p1);                          // Clip(min = p0, max = p1)
-        case 17u: return (x < 0.0) ? p0 * x : x;                                      // LeakyRelu(alpha = p0)
+        case 17u: return IsNaN(x) ? x : ((x < 0.0) ? p0 * x : x);                                     // LeakyRelu(alpha = p0)
         default: return x;
     }
 }
@@ -116,9 +116,4 @@ bool Compare(uint op, float a, float b)
         case 4u: return a >= b;
         default: return false;
     }
-}
-
-float LoadH(StructuredBuffer<uint> buf, uint i)
-{
-    return H2F(RawH(buf, i));
 }

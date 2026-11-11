@@ -14,9 +14,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <OneShader Include="Shaders/ArgReduce.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Binary.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Cast.hlsl" />
     <OneShader Include="Shaders/Compare.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/Reduce.hlsl" Axes="F16;WAVE" />
     <OneShader Include="Shaders/Unary.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Where.hlsl" Axes="F16" />
   </ItemGroup>
