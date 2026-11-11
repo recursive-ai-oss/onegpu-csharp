@@ -101,8 +101,16 @@ The reductions, softmax and normalisation have both modes.
 - **Int8 GEMM** computes `sum (a - zeroA) * (b - zeroB)` in int32 (wrapping), so the result is exact and one variant serves both modes; it matches onemodel's CPU int8
   operators bit for bit. The float form is `float(sum + bias) * scale` followed by a separate float bias pass, and the requantized form is
   `clamp(round_half_even(float(sum + bias) * multiplier) + zeroPointY)`; the two float steps are separate passes because HLSL does not promise a multiply and add fuse the same way on every target.
-  `Int8Gemm.Variant` reports the variant: the portable one unpacks bytes with integer arithmetic and runs everywhere. A packed-dot variant is selected once the shader
-  compiler offers the instruction; `Int8GemmOptions.AllowPackedDot = false` forces the portable one.
+  `Int8Gemm.Variant` reports the variant chosen for the device, and `Int8GemmOptions.AllowPackedDot = false` forces the portable one; both give the same bits.
+  - **Packed dot** (`packed-dot-tile64x64x32`): chosen when the device reports an 8-bit dot product (`GpuComputeCapabilities.Int8DotProduct`: Vulkan `shaderIntegerDotProduct`,
+    the browser's `packed_4x8_integer_dot_product`). Four byte pairs are multiplied and summed per instruction (`dot4add_i8packed`). That instruction takes signed bytes only, so
+    unsigned operands are staged as `u - 128` and the zero points move by the same amount; the zero points are then applied after the loop from byte sums collected while staging:
+    `sum (s - z')(t - w') = sum s*t - w' * sum s - z' * sum t + K * z' * w'`, exact modulo 2^32 like the sums themselves (Jacob et al., 2018, section 2.3 rearranges the same product).
+    A byte sum is only collected when the other operand's shifted zero point can be non-zero. Products with fewer than 32 tiles of 64x64 run on 32x32 tiles so that the
+    128-row products of small models still fill the device.
+  - **Portable** (`portable-tile64x64x16`): runs everywhere. Rows are staged a word at a time when the operand's offset, stride and leading dimension are multiples of four, and the products are
+    formed in float, which is exact here (two values in -255..255 multiply to under 65025, so 256 of them sum to under 2^24); the running sums fold into int32 every 128 values of k.
+    Metal has no packed dot product, so Apple GPUs run this one.
 - **DynamicQuantizeLinear** divides in integer arithmetic (a long division of the mantissas with round-to-nearest-even), because the targets' float division is not correctly
   rounded (Vulkan allows a few ulp, Metal compiles with fast math) and the scale and zero point must equal the CPU's bit for bit.
 - **Long submissions on Metal.** The system aborts a command buffer that runs too long (`kIOGPUCommandBufferCallbackErrorImpactingInteractivity`). Encoders accept

@@ -10,6 +10,10 @@ public sealed class Int8GemmOptions
     /// the two or to rule the instruction out when chasing a problem.
     /// </summary>
     public bool AllowPackedDot { get; init; } = true;
+
+    /// <summary>Test hook for the packed-dot variant: 0 chooses the tile by problem size, 32 or 64 forces that tile edge.</summary>
+    internal int Tile { get; init; }
+
 }
 
 /// <summary>A vector or single value operand of an int8 product: a zero point, a scale or a bias.</summary>
@@ -97,8 +101,11 @@ public struct Int8GemmProblem
 /// </para>
 /// <para>
 /// Variants: <see cref="Variant"/> says which was chosen for the device. The portable variant unpacks bytes with integer arithmetic and runs everywhere.
-/// A variant using the device's packed 8-bit dot product is selected when <see cref="GpuComputeCapabilities.Int8DotProduct"/> is true, the options allow it
-/// and the shader build offers the instruction; with the current shader compiler it does not, so every device runs the portable one.
+/// The packed-dot variant, chosen when <see cref="GpuComputeCapabilities.Int8DotProduct"/> is true and the options allow it, multiplies four byte pairs per
+/// instruction: operands are brought to the signed domain (an unsigned byte <c>u</c> is staged as <c>u - 128</c>, shifting its zero point by the same amount) and
+/// the zero points are applied afterwards from byte sums gathered while staging, which gives the same integers modulo 2^32 as the definition.
+/// It uses 64x64 tiles for large products and 32x32 tiles when a 64x64 grid would leave much of the device idle. The portable variant multiplies in float
+/// (exact, because every partial sum stays below 2^24) and folds the sums into int32 often enough to keep them exact.
 /// </para>
 /// Bind groups for buffer sets already seen are cached, so a warm call allocates nothing. Not thread-safe.
 /// </remarks>
@@ -108,12 +115,15 @@ public sealed class Int8Gemm : IDisposable
     const int GemmWords = 14;
     const int EpilogueWords = 11;
 
-    // The packed dot product needs dot4add support in the shader compiler. The variant is chosen from the device's capability and
-    // this switch together; when the compiler offers the instruction a shader permutation and one branch below turn it on.
-    internal const bool PackedDotCompiled = false;
+    // The packed-dot variant runs a product with fewer 64x64 tiles than this on 32x32 tiles, which put four times as many workgroups on the device. The
+    // threshold is below one workgroup per compute unit of a mid-range GPU (an RTX 4070 has 46): there 128 x 384 products gain from the small tile,
+    // while 128 x 1536 (48 tiles of 64 x 64) already do better on the big one, which reuses its loads more.
+    const long SmallTileGroups = 32;
 
     readonly GpuDevice _device;
-    readonly WideKernelPipeline _gemm;
+    readonly bool _dot;
+    readonly int _tile;
+    readonly WideKernelPipeline?[] _gemm = new WideKernelPipeline?[2];
     readonly WideKernelPipeline _epilogue;
     readonly GpuBuffer<uint> _dummy;
     readonly List<GpuBuffer<int>> _scratch = [];
@@ -126,23 +136,36 @@ public sealed class Int8Gemm : IDisposable
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
-        var dot = device.Capabilities.Compute.Int8DotProduct && (options?.AllowPackedDot ?? true) && PackedDotCompiled;
-        Variant = dot ? "packed-dot-tile64x64x16" : "portable-tile64x64x16";
-        _gemm = new WideKernelPipeline(device, KernelSources.Make(Int8GemmKernel.Int8GemmTiled.EntryPoint, Int8GemmKernel.Int8GemmTiled.SpirV, Int8GemmKernel.Int8GemmTiled.Msl, Int8GemmKernel.Int8GemmTiled.MslFunctionName, Int8GemmKernel.Int8GemmTiled.Wgsl, Int8GemmKernel.Int8GemmTiled.WgslEntryPoint, Int8GemmKernel.Int8GemmTiled.Layout), GemmWords, "int8 gemm");
+        _dot = device.Capabilities.Compute.Int8DotProduct && (options?.AllowPackedDot ?? true);
+        _tile = options?.Tile ?? 0;
+        Variant = _dot ? "packed-dot-tile64x64x32" : "portable-tile64x64x16";
         try
         {
+            _gemm[0] = CreateGemm(small: false);
             _epilogue = new WideKernelPipeline(device, KernelSources.Make(Int8Epilogue.Int8EpilogueOp.EntryPoint, Int8Epilogue.Int8EpilogueOp.SpirV, Int8Epilogue.Int8EpilogueOp.Msl, Int8Epilogue.Int8EpilogueOp.MslFunctionName, Int8Epilogue.Int8EpilogueOp.Wgsl, Int8Epilogue.Int8EpilogueOp.WgslEntryPoint, Int8Epilogue.Int8EpilogueOp.Layout), EpilogueWords, "int8 epilogue");
         }
         catch
         {
-            _gemm.Dispose();
+            _gemm[0]?.Dispose();
+            _gemm[1]?.Dispose();
             throw;
         }
 
         _dummy = device.CreateBuffer<uint>(4, label: "int8 gemm unused operand");
     }
 
-    /// <summary>The variant chosen for this device, for logs and diagnostics, for example <c>portable-tile64x64x16</c>.</summary>
+    WideKernelPipeline CreateGemm(bool small)
+    {
+        if (_dot)
+        {
+            var v = Int8GemmDot.Variants.Get(new Int8GemmDot.Key(small: small)).Int8GemmDotTiled;
+            return new WideKernelPipeline(_device, KernelSources.Make(v.EntryPoint, v.SpirV, v.Msl, v.MslFunctionName, v.Wgsl, v.WgslEntryPoint, v.Layout), GemmWords, small ? "int8 dot gemm 32x32" : "int8 dot gemm 64x64");
+        }
+
+        return new WideKernelPipeline(_device, KernelSources.Make(Int8GemmKernel.Int8GemmTiled.EntryPoint, Int8GemmKernel.Int8GemmTiled.SpirV, Int8GemmKernel.Int8GemmTiled.Msl, Int8GemmKernel.Int8GemmTiled.MslFunctionName, Int8GemmKernel.Int8GemmTiled.Wgsl, Int8GemmKernel.Int8GemmTiled.WgslEntryPoint, Int8GemmKernel.Int8GemmTiled.Layout), GemmWords, "int8 gemm");
+    }
+
+    /// <summary>The variant chosen for this device, for logs and diagnostics: <c>packed-dot-tile64x64x32</c> or <c>portable-tile64x64x16</c> (the packed one uses 32x32 tiles for small products).</summary>
     public string Variant { get; }
 
     /// <summary>Records the int32 sums <c>C = (A - zeroA) * (B - zeroB)</c>.</summary>
@@ -277,7 +300,8 @@ public sealed class Int8Gemm : IDisposable
     /// <summary>Releases the pipelines, the scratch buffers and the cached bind groups once the GPU has finished with them.</summary>
     public void Dispose()
     {
-        _gemm.Dispose();
+        _gemm[0]?.Dispose();
+        _gemm[1]?.Dispose();
         _epilogue.Dispose();
         _dummy.Dispose();
         foreach (var s in _scratch)
@@ -418,8 +442,11 @@ public sealed class Int8Gemm : IDisposable
     {
         var lda = p.Lda == 0 ? Math.Max(p.K, 1) : p.Lda;
         var ldb = p.Ldb == 0 ? Math.Max(p.TransposeB ? p.K : p.N, 1) : p.Ldb;
-        var groupsX = (uint)((p.N + 63) / 64);
-        var groupsY = (uint)((p.M + 63) / 64);
+        var big = ((long)((p.N + 63) / 64) * ((p.M + 63) / 64)) * p.Batch;
+        var small = _dot && (_tile == 32 || (_tile == 0 && big < SmallTileGroups));
+        var edge = small ? 32 : 64;
+        var groupsX = (uint)((p.N + edge - 1) / edge);
+        var groupsY = (uint)((p.M + edge - 1) / edge);
         var limit = _device.Capabilities.Compute.MaxWorkgroupCount;
         if (limit != 0 && (groupsX > limit || groupsY > limit || (uint)p.Batch > limit))
         {
@@ -440,6 +467,17 @@ public sealed class Int8Gemm : IDisposable
             offZb = (uint)b1.Offset;
         }
 
+        // Word loads need every row of the operand to start on a word boundary.
+        if (((p.OffsetA | p.StrideA | lda) & 3) == 0)
+        {
+            flags |= 128u;
+        }
+
+        if (((p.OffsetB | p.StrideB | ldb) & 3) == 0)
+        {
+            flags |= 256u;
+        }
+
         Span<uint> w = stackalloc uint[GemmWords];
         w[0] = (uint)p.M;
         w[1] = (uint)p.N;
@@ -456,7 +494,8 @@ public sealed class Int8Gemm : IDisposable
         w[12] = offZa;
         w[13] = offZb;
         var dummy = _dummy.Buffer;
-        _gemm.Record(encoder, w, groupsX, groupsY, (uint)p.Batch, [a, b, c, zaBuffer ?? dummy, zbBuffer ?? dummy]);
+        var pipeline = _gemm[small ? 1 : 0] ??= CreateGemm(small);
+        pipeline.Record(encoder, w, groupsX, groupsY, (uint)p.Batch, [a, b, c, zaBuffer ?? dummy, zbBuffer ?? dummy]);
     }
 
     void Finish(GpuCommandEncoder encoder, in Int8GemmProblem p, GpuBuffer sums, GpuBuffer output, int offsetOutput, uint mode, int zeroPointY, Int8Operand<int>? intBias, GpuBuffer? scale, Int8Operand<float>? floatBias, int offsetScale, uint scaleFlags)

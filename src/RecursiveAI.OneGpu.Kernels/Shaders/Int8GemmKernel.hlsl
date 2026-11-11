@@ -7,8 +7,12 @@
 // This is the portable variant: bytes are unpacked with integer arithmetic. A packed-dot variant replaces the staging and the inner
 // loop where the device has an 8-bit dot product; the sums it gives are the same integers.
 //
-// Tiles follow the float kernel (64x64 per workgroup, k in steps of 16, a 4x4 register tile per thread). Every output element is summed
-// by one thread in increasing k; integer addition is associative, so no order could change the bits anyway.
+// Tiles follow the float kernel (64x64 per workgroup, k in steps of 16, a 4x4 register tile per thread). A and a transposed B are staged four
+// bytes at a time when their rows start on a word boundary (Flags bits 7 and 8). The products run in float: two values in -255..255 multiply to
+// less than 65025, so up to 256 of them add up exactly in a float (every partial sum is an integer below 2^24), and the float units are the
+// fastest multipliers on most GPUs. The running sums are folded into int32 every 128 values of k, which keeps the result the exact integer
+// sum with the 32-bit wrap-around of two's complement. Every output element is summed by one thread in increasing k; integer addition is
+// associative, so no order could change the bits anyway.
 
 #include "Common.hlsl"
 
@@ -25,7 +29,8 @@ struct Int8GemmParams
     uint StrideC;
     uint Lda;
     uint Ldb;
-    uint Flags;     // bit 0 A is int8, bit 1 B is int8, bit 2 B stored N x K, bit 3 zero point of A present, bit 4 one per row, bit 5 of B present, bit 6 one per column
+    uint Flags;     // bit 0 A is int8, bit 1 B is int8, bit 2 B stored N x K, bit 3 zero point of A present, bit 4 one per row, bit 5 of B present, bit 6 one per column,
+                    // bit 7 every row of A (offset, stride, Lda) starts on a word boundary, bit 8 the same for B
     uint OffZA;
     uint OffZB;
 };
@@ -43,12 +48,42 @@ static const uint BN = 64;
 static const uint BK = 16;
 static const uint TILE_THREADS = 256;
 
-groupshared int As[BK][BM + 1];
-groupshared int Bs[BK][BN + 1];
+// Products of two values in -255..255 are below 65025, so up to 256 of them add up exactly in a float (all partial sums are integers
+// below 2^24); the float units are the fastest multipliers on most GPUs. The running float sums are folded into int32 every 128 values of k.
+typedef float TileT;
+typedef float AccT;
+groupshared TileT As[BK][BM + 1];
+groupshared TileT Bs[BK][BN + 1];
 
 int Byte(StructuredBuffer<uint> buf, uint i, bool isSigned)
 {
     uint b = (buf[i >> 2] >> ((i & 3u) << 3)) & 0xFFu;
+    return isSigned ? ((int)(b << 24)) >> 24 : (int)b;
+}
+
+// Four consecutive bytes starting at byte index i, a whole word when the row is aligned and four bytes are valid.
+uint Word4(StructuredBuffer<uint> buf, uint i, uint valid, bool aligned)
+{
+    if (aligned && valid >= 4u)
+    {
+        return buf[i >> 2];
+    }
+
+    uint w = 0;
+    for (uint e = 0; e < 4u; e++)
+    {
+        if (e < valid)
+        {
+            w |= ((buf[(i + e) >> 2] >> (((i + e) & 3u) << 3)) & 0xFFu) << (e * 8u);
+        }
+    }
+
+    return w;
+}
+
+int Lane(uint word, uint e, bool isSigned)
+{
+    uint b = (word >> (e * 8u)) & 0xFFu;
     return isSigned ? ((int)(b << 24)) >> 24 : (int)b;
 }
 
@@ -69,6 +104,8 @@ void Int8GemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     bool rowZA = (P.Flags & 16u) != 0u;
     bool hasZB = (P.Flags & 32u) != 0u;
     bool colZB = (P.Flags & 64u) != 0u;
+    bool alignedA = (P.Flags & 128u) != 0u;
+    bool alignedB = (P.Flags & 256u) != 0u;
     int zaScalar = hasZA && !rowZA ? Byte(ZA, P.OffZA, aSigned) : 0;
     int zbScalar = hasZB && !colZB ? Byte(ZB, P.OffZB, bSigned) : 0;
 
@@ -76,57 +113,84 @@ void Int8GemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     uint ty = tid >> 4;
 
     // Sixteen named scalars rather than an array: indexed arrays live in thread-local memory on Metal.
-    int c00 = 0; int c01 = 0; int c02 = 0; int c03 = 0; int c10 = 0; int c11 = 0; int c12 = 0; int c13 = 0; int c20 = 0; int c21 = 0; int c22 = 0; int c23 = 0; int c30 = 0; int c31 = 0; int c32 = 0; int c33 = 0;
+    AccT c00 = 0; AccT c01 = 0; AccT c02 = 0; AccT c03 = 0; AccT c10 = 0; AccT c11 = 0; AccT c12 = 0; AccT c13 = 0; AccT c20 = 0; AccT c21 = 0; AccT c22 = 0; AccT c23 = 0; AccT c30 = 0; AccT c31 = 0; AccT c32 = 0; AccT c33 = 0;
+    int i00 = 0; int i01 = 0; int i02 = 0; int i03 = 0; int i10 = 0; int i11 = 0; int i12 = 0; int i13 = 0; int i20 = 0; int i21 = 0; int i22 = 0; int i23 = 0; int i30 = 0; int i31 = 0; int i32 = 0; int i33 = 0;
 
     for (uint k0 = 0; k0 < P.K; k0 += BK)
     {
-        [unroll] for (uint e = 0; e < (BM * BK) / TILE_THREADS; e++)
+        // A: one word (four consecutive k) of one row per thread.
+        if (tid < BM * 4u)
         {
-            uint idx = tid + e * TILE_THREADS;
-            uint r = idx / BK;
-            uint k = idx % BK;
+            uint r = tid >> 2;
             uint gm = m0 + r;
-            uint gk = k0 + k;
-            int v = 0;
+            uint gk = k0 + ((tid & 3u) << 2);
+            uint word = 0;
+            int z = 0;
             if (gm < P.M && gk < P.K)
             {
-                int z = rowZA ? Byte(ZA, P.OffZA + gm, aSigned) : zaScalar;
-                v = Byte(A, baseA + gm * P.Lda + gk, aSigned) - z;
+                word = Word4(A, baseA + gm * P.Lda + gk, P.K - gk, alignedA);
+                z = rowZA ? Byte(ZA, P.OffZA + gm, aSigned) : zaScalar;
             }
 
-            As[k][r] = v;
+            [unroll] for (uint e = 0; e < 4u; e++)
+            {
+                As[(tid & 3u) * 4u + e][r] = (TileT)((gm < P.M && gk + e < P.K) ? Lane(word, e, aSigned) - z : 0);
+            }
         }
 
-        [unroll] for (uint f = 0; f < (BK * BN) / TILE_THREADS; f++)
+        if (transB)
         {
-            uint idx = tid + f * TILE_THREADS;
-            uint c, k;
-            if (transB) { c = idx / BK; k = idx % BK; }
-            else { c = idx % BN; k = idx / BN; }
-            uint gn = n0 + c;
-            uint gk = k0 + k;
-            int v = 0;
-            if (gn < P.N && gk < P.K)
+            if (tid < BN * 4u)
             {
-                int z = colZB ? Byte(ZB, P.OffZB + gn, bSigned) : zbScalar;
-                v = Byte(B, baseB + (transB ? gn * P.Ldb + gk : gk * P.Ldb + gn), bSigned) - z;
-            }
+                uint c = tid >> 2;
+                uint gn = n0 + c;
+                uint gk = k0 + ((tid & 3u) << 2);
+                uint word = 0;
+                int z = 0;
+                if (gn < P.N && gk < P.K)
+                {
+                    word = Word4(B, baseB + gn * P.Ldb + gk, P.K - gk, alignedB);
+                    z = colZB ? Byte(ZB, P.OffZB + gn, bSigned) : zbScalar;
+                }
 
-            Bs[k][c] = v;
+                [unroll] for (uint e = 0; e < 4u; e++)
+                {
+                    Bs[(tid & 3u) * 4u + e][c] = (TileT)((gn < P.N && gk + e < P.K) ? Lane(word, e, bSigned) - z : 0);
+                }
+            }
+        }
+        else
+        {
+            [unroll] for (uint f = 0; f < (BK * BN) / TILE_THREADS; f++)
+            {
+                uint idx = tid + f * TILE_THREADS;
+                uint c = idx % BN;
+                uint k = idx / BN;
+                uint gn = n0 + c;
+                uint gk = k0 + k;
+                int v = 0;
+                if (gn < P.N && gk < P.K)
+                {
+                    int z = colZB ? Byte(ZB, P.OffZB + gn, bSigned) : zbScalar;
+                    v = Byte(B, baseB + gk * P.Ldb + gn, bSigned) - z;
+                }
+
+                Bs[k][c] = (TileT)v;
+            }
         }
 
         GroupMemoryBarrierWithGroupSync();
 
         [unroll] for (uint kk = 0; kk < BK; kk++)
         {
-            int a0 = As[kk][ty + 0];
-            int a1 = As[kk][ty + 16];
-            int a2 = As[kk][ty + 32];
-            int a3 = As[kk][ty + 48];
-            int b0 = Bs[kk][tx + 0];
-            int b1 = Bs[kk][tx + 16];
-            int b2 = Bs[kk][tx + 32];
-            int b3 = Bs[kk][tx + 48];
+            TileT a0 = As[kk][ty + 0];
+            TileT a1 = As[kk][ty + 16];
+            TileT a2 = As[kk][ty + 32];
+            TileT a3 = As[kk][ty + 48];
+            TileT b0 = Bs[kk][tx + 0];
+            TileT b1 = Bs[kk][tx + 16];
+            TileT b2 = Bs[kk][tx + 32];
+            TileT b3 = Bs[kk][tx + 48];
             c00 += a0 * b0; c01 += a0 * b1; c02 += a0 * b2; c03 += a0 * b3;
             c10 += a1 * b0; c11 += a1 * b1; c12 += a1 * b2; c13 += a1 * b3;
             c20 += a2 * b0; c21 += a2 * b1; c22 += a2 * b2; c23 += a2 * b3;
@@ -134,12 +198,25 @@ void Int8GemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
         }
 
         GroupMemoryBarrierWithGroupSync();
+
+        if (((k0 >> 4) & 7u) == 7u)
+        {
+            i00 += (int)c00; c00 = 0; i01 += (int)c01; c01 = 0; i02 += (int)c02; c02 = 0; i03 += (int)c03; c03 = 0;
+            i10 += (int)c10; c10 = 0; i11 += (int)c11; c11 = 0; i12 += (int)c12; c12 = 0; i13 += (int)c13; c13 = 0;
+            i20 += (int)c20; c20 = 0; i21 += (int)c21; c21 = 0; i22 += (int)c22; c22 = 0; i23 += (int)c23; c23 = 0;
+            i30 += (int)c30; c30 = 0; i31 += (int)c31; c31 = 0; i32 += (int)c32; c32 = 0; i33 += (int)c33; c33 = 0;
+        }
     }
+
+    i00 += (int)c00; c00 = 0; i01 += (int)c01; c01 = 0; i02 += (int)c02; c02 = 0; i03 += (int)c03; c03 = 0;
+    i10 += (int)c10; c10 = 0; i11 += (int)c11; c11 = 0; i12 += (int)c12; c12 = 0; i13 += (int)c13; c13 = 0;
+    i20 += (int)c20; c20 = 0; i21 += (int)c21; c21 = 0; i22 += (int)c22; c22 = 0; i23 += (int)c23; c23 = 0;
+    i30 += (int)c30; c30 = 0; i31 += (int)c31; c31 = 0; i32 += (int)c32; c32 = 0; i33 += (int)c33; c33 = 0;
 
 #define STORE(DR, DC, V) \
     { uint row = m0 + ty + DR; uint col = n0 + tx + DC; if (row < P.M && col < P.N) { C[baseC + row * P.N + col] = (uint)(V); } }
-    STORE(0, 0, c00) STORE(0, 16, c01) STORE(0, 32, c02) STORE(0, 48, c03)
-    STORE(16, 0, c10) STORE(16, 16, c11) STORE(16, 32, c12) STORE(16, 48, c13)
-    STORE(32, 0, c20) STORE(32, 16, c21) STORE(32, 32, c22) STORE(32, 48, c23)
-    STORE(48, 0, c30) STORE(48, 16, c31) STORE(48, 32, c32) STORE(48, 48, c33)
+    STORE(0, 0, i00) STORE(0, 16, i01) STORE(0, 32, i02) STORE(0, 48, i03)
+    STORE(16, 0, i10) STORE(16, 16, i11) STORE(16, 32, i12) STORE(16, 48, i13)
+    STORE(32, 0, i20) STORE(32, 16, i21) STORE(32, 32, i22) STORE(32, 48, i23)
+    STORE(48, 0, i30) STORE(48, 16, i31) STORE(48, 32, i32) STORE(48, 48, i33)
 }

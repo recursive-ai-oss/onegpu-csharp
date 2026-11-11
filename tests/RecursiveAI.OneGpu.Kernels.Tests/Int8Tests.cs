@@ -20,6 +20,19 @@ public sealed class Int8Tests
         ("bert ffn-down b8x128", 1024, 768, 3072),
     ];
 
+    // Every way the kernel can run on the device: as chosen, the portable variant, and each tile of the packed-dot variant forced.
+    static List<(string Name, Int8Gemm Gemm)> Configs(GpuDevice d, bool all)
+    {
+        var list = new List<(string, Int8Gemm)> { ("default", new Int8Gemm(d)), ("portable", new Int8Gemm(d, new Int8GemmOptions { AllowPackedDot = false })) };
+        if (all)
+        {
+            list.Add(("default tile 32", new Int8Gemm(d, new Int8GemmOptions { Tile = 32 })));
+            list.Add(("default tile 64", new Int8Gemm(d, new Int8GemmOptions { Tile = 64 })));
+        }
+
+        return list;
+    }
+
     static byte[] Bytes(int length, int seed)
     {
         var a = new byte[length];
@@ -89,6 +102,7 @@ public sealed class Int8Tests
         public Int8GemmProblem P;
         public bool ASigned, BSigned;
         public int ZaMode, ZbMode;     // 0 none, 1 scalar, 2 vector
+        public int Fill = -1;          // 0..255: every byte of A, B and the zero points holds this value (extremes), -1 random
     }
 
     static T[] Cast<T>(byte[] data)
@@ -110,6 +124,13 @@ public sealed class Int8Tests
         var b = Bytes(lenB, seed + 1);
         var za = c.ZaMode == 0 ? null : Bytes(1 + (c.ZaMode == 2 ? p.M : 0), seed + 2);
         var zb = c.ZbMode == 0 ? null : Bytes(1 + (c.ZbMode == 2 ? p.N : 0), seed + 3);
+        if (c.Fill >= 0)
+        {
+            Array.Fill(a, (byte)c.Fill);
+            Array.Fill(b, (byte)(c.Fill ^ 0xFF));
+            za?.AsSpan().Fill((byte)c.Fill);
+            zb?.AsSpan().Fill((byte)(c.Fill ^ 0x80));
+        }
         var want = Reference(p, a, c.ASigned, b, c.BSigned, za, c.ZaMode == 2, zb, c.ZbMode == 2);
         var count = want.Length;
         var sentinel = 0x5A5A5A5A;
@@ -127,9 +148,17 @@ public sealed class Int8Tests
         Rig.Run(d, e => Dispatch(gemm, e, p, c, ba8, ba, bb8, bb, bza, bzas, bzb, bzbs, bc));
         var got = await Rig.DownloadAsync(bc);
         var bad = 0;
+        var shown = 0;
         for (var i = 0; i < count; i++)
         {
-            bad += got[p.OffsetC + i] == want[i] ? 0 : 1;
+            if (got[p.OffsetC + i] != want[i])
+            {
+                bad++;
+                if (shown++ < 6)
+                {
+                    Console.WriteLine($"  differs at row {i / p.N} col {i % p.N} (flat {i}): got {got[p.OffsetC + i]} want {want[i]} [{gemm.Variant}]");
+                }
+            }
         }
 
         for (var i = 0; i < p.OffsetC; i++)
@@ -187,9 +216,8 @@ public sealed class Int8Tests
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
-        using var gemm = new Int8Gemm(d);
         var cases = new List<Case>();
-        (int M, int N, int K)[] shapes = [(1, 1, 1), (1, 1, 0), (3, 5, 7), (64, 64, 16), (65, 63, 17), (1, 257, 33), (130, 1, 31), (17, 129, 1), (2, 2, 4096), (33, 31, 300)];
+        (int M, int N, int K)[] shapes = [(1, 1, 1), (1, 1, 0), (3, 5, 7), (64, 64, 16), (65, 63, 17), (1, 257, 33), (130, 1, 31), (17, 129, 1), (2, 2, 4096), (33, 31, 300), (4, 4, 32), (7, 9, 31), (40, 40, 65), (5, 3, 63), (33, 40, 96)];
         var variants = 0;
         foreach (var (m, n, k) in shapes)
         {
@@ -208,22 +236,37 @@ public sealed class Int8Tests
         cases.Add(new Case { Name = "padded rows", P = Problem(21, 22, 23, ldaExtra: 5, ldbExtra: 3, offA: 2, offB: 3), ASigned = true, BSigned = true, ZaMode = 2, ZbMode = 1 });
         cases.Add(new Case { Name = "batch 5 shared B", P = Problem(9, 70, 33, batch: 5, shareB: true, offA: 1, offB: 2), ASigned = false, BSigned = true, ZaMode = 1, ZbMode = 2 });
         cases.Add(new Case { Name = "batch 3", P = Problem(70, 9, 33, batch: 3, offA: 3, offB: 1, offC: 3), ASigned = false, BSigned = false, ZaMode = 2, ZbMode = 1 });
-        long bad = 0;
-        var seed = 1;
-        foreach (var c in cases)
+        // Extreme bytes (-128, 127, 0, 255) with extreme zero points, in every signedness mix, to exercise the signed-domain rewrite.
+        foreach (var fill in new[] { 0x00, 0x7F, 0x80, 0xFF })
         {
-            var (b, v) = await RunInt32(d, gemm, c, seed++);
-            bad += b;
-            if (b != 0)
+            for (var s = 0; s < 4; s++)
             {
-                Console.WriteLine($"MISMATCH {c.Name} signed {c.ASigned}/{c.BSigned} zp {c.ZaMode}/{c.ZbMode}: {b} elements");
+                cases.Add(new Case { Name = $"extreme {fill:X2}", P = Problem(37, 41, 77, transB: (s & 1) != 0), ASigned = (s & 1) != 0, BSigned = (s & 2) != 0, ZaMode = 1 + (s & 1), ZbMode = 2 - (s & 1), Fill = fill });
             }
-
-            variants++;
         }
 
-        Rig.Row(d, "int8 gemm", "u8/i8 mixes", $"{cases.Count} cases (ragged tiles, K 0 to 4096, scalar and vector zero points, transposed B, padded rows, batches, odd offsets), variant {gemm.Variant}", $"mismatching int32 sums {bad}");
-        Assert.Equal(0, bad);
+        foreach (var (name, gemm) in Configs(d, all: true))
+        {
+            using (gemm)
+            {
+                long bad = 0;
+                var seed = 1;
+                foreach (var c in cases)
+                {
+                    var (b, v) = await RunInt32(d, gemm, c, seed++);
+                    bad += b;
+                    if (b != 0)
+                    {
+                        Console.WriteLine($"MISMATCH [{name}] {c.Name} signed {c.ASigned}/{c.BSigned} zp {c.ZaMode}/{c.ZbMode}: {b} elements");
+                    }
+
+                    variants++;
+                }
+
+                Rig.Row(d, "int8 gemm", "u8/i8 mixes", $"{cases.Count} cases (ragged tiles, K 0 to 4096, scalar and vector zero points, transposed B, padded rows, batches, odd offsets, extreme bytes), {name}, variant {gemm.Variant}", $"mismatching int32 sums {bad}");
+                Assert.Equal(0, bad);
+            }
+        }
     }
 
     [Fact]
@@ -231,7 +274,6 @@ public sealed class Int8Tests
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
-        using var gemm = new Int8Gemm(d);
         long bad = 0, sums = 0;
         foreach (var (name, m, n, k) in ModelShapes)
         {
@@ -244,10 +286,17 @@ public sealed class Int8Tests
 #endif
             // Activations are uint8 with a zero point (dynamic quantization), weights int8 per tensor or per output channel with zero point 0.
             var c = new Case { Name = name, P = Problem(m, n, k, transB: true), ASigned = false, BSigned = true, ZaMode = 1, ZbMode = 0 };
-            var (b, _) = await RunInt32(d, gemm, c, m + n + k);
-            bad += b;
-            sums += (long)m * n;
-            Rig.Row(d, "int8 gemm", "u8 x i8", $"{name} (M {m}, N {n}, K {k}, B stored N x K)", $"mismatching int32 sums {b} of {(long)m * n}, variant {gemm.Variant}");
+            // Small products run every tile and both variants; the large ones the default and the portable variant.
+            foreach (var (config, gemm) in Configs(d, all: m <= 128))
+            {
+                using (gemm)
+                {
+                    var (b, _) = await RunInt32(d, gemm, c, m + n + k);
+                    bad += b;
+                    sums += (long)m * n;
+                    Rig.Row(d, "int8 gemm", "u8 x i8", $"{name} (M {m}, N {n}, K {k}, B stored N x K), {config}", $"mismatching int32 sums {b} of {(long)m * n}, variant {gemm.Variant}");
+                }
+            }
         }
 
         Assert.Equal(0, bad);
