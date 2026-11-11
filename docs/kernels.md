@@ -33,6 +33,12 @@ device.Submit(encoder);
 | `NormKernels` | layer normalisation and RMS normalisation over the last axis, optional scale and bias |
 | `TransposeKernels` | N-d permutation, NCHW↔NHWC, split and merge of attention heads |
 
+| `GatherKernels` | ONNX Gather (any axis, negative indices, int32 or int64 indices; the embedding lookup), GatherElements, GatherND (with batch dimensions) |
+| `ScatterKernels` | ScatterND and ScatterElements with reduction none, add, mul, min or max |
+| `LayoutKernels` | Slice (including negative steps), Expand, Concat (up to four inputs per pass, more by chaining) |
+| `Int8Gemm` | MatMulInteger (uint8/int8 in any mix, scalar or per-row/column zero points, int32 result), the float-scaled form and the requantized form of QLinearMatMul |
+| `DynamicQuantizeKernels` | DynamicQuantizeLinear (float32 to uint8 with scale and zero point) |
+
 Adding an operation to the element-wise family is a case in `Shaders/Functions.hlsl` and an enum member: the operation is a push constant, not a pipeline.
 
 ## Half precision
@@ -77,6 +83,30 @@ The reductions, softmax and normalisation have both modes.
 - A softmax row of 16 to 1024 elements gets a power-of-two group of threads (about four elements each), so one workgroup handles 256 / group rows. The statistics are merged by the fixed halving tree in both modes.
 - A reduction with fewer than 128 outputs and at least 16384 reduced elements (a sum over a whole tensor) runs in two passes: the reduced elements are cut into at most 256 contiguous chunks of at least 4096, a workgroup reduces each chunk to a partial result in a scratch buffer of 128 x 256 floats (`ReduceKernels.ScratchLength`; the family keeps its own unless the caller passes one), and one workgroup per output combines the partials in index order. The cut is a function of the shape, so the deterministic mode stays bit-identical run to run.
 - Otherwise a workgroup takes each output. The choice depends on the shape only, never on the device.
+
+## Gather, scatter, layout and int8
+
+- **Payloads** are 32-bit (float, int, uint for gather) or 64-bit (long) words, and Half (as 16-bit words). Results are **bit-exact** against the CPU for every
+  payload, since these kernels only move values (scatter reductions on floats do one operation per update, in a fixed order).
+- **Invalid indices.** A host-side `Validate` helper checks indices before encoding. On the device, an out-of-range index writes zero (gather) or is skipped (scatter),
+  and, when the caller passes a `GpuIndexStatus`, the smallest offending position is recorded; `ThrowIfFailedAsync` raises `GpuKernelIndexException` naming it.
+  Without a status object the zeros are silent.
+- **Scatter reductions are deterministic in both modes.** Duplicate indices combine strictly in index order: every output element has one owner thread that scans the updates
+  in order (a bucketed scheme, so large scatters still run in parallel). There are no floating-point atomics. `indicesAreDistinct: true` selects a plain parallel path
+  when the caller knows no two updates meet. Ties in min/max keep the existing value, NaN propagates, integer add and mul wrap. Half scatter uses AND/OR on whole words,
+  so it needs the same padding as other Half buffers. uint payloads are not supported for scatter.
+- **Int8 GEMM** computes `sum (a - zeroA) * (b - zeroB)` in int32 (wrapping), so the result is exact and one variant serves both modes; it matches onemodel's CPU int8
+  operators bit for bit. The float form is `float(sum + bias) * scale` followed by a separate float bias pass, and the requantized form is
+  `clamp(round_half_even(float(sum + bias) * multiplier) + zeroPointY)`; the two float steps are separate passes because HLSL does not promise a multiply and add fuse the same way on every target.
+  `Int8Gemm.Variant` reports the variant: the portable one unpacks bytes with integer arithmetic and runs everywhere. A packed-dot variant is selected once the shader
+  compiler offers the instruction; `Int8GemmOptions.AllowPackedDot = false` forces the portable one.
+- **DynamicQuantizeLinear** divides in integer arithmetic (a long division of the mantissas with round-to-nearest-even), because the targets' float division is not correctly
+  rounded (Vulkan allows a few ulp, Metal compiles with fast math) and the scale and zero point must equal the CPU's bit for bit.
+- **Long submissions on Metal.** The system aborts a command buffer that runs too long (`kIOGPUCommandBufferCallbackErrorImpactingInteractivity`). Encoders accept
+  `ReportWork(operations)` and `SplitSubmission()`; Metal splits the command buffer at pass boundaries once a budget (`GpuComputeCapabilities.SubmissionWorkBudget`, 2^33 operations) is reached.
+  `Gemm` cuts a product larger than the budget into row or batch pieces with the same accumulation order, so deterministic results are unchanged (`GemmOptions.AllowSplitting`).
+  A command buffer that still fails surfaces as `GpuCommandFailedException` (`Failure` says watchdog, out of memory or invalid resource) from the next submit, wait or readback; never as a silent wrong result.
+  The browser backend has no budget.
 
 ## Special values
 
