@@ -75,6 +75,7 @@ public static partial class Runner
     {
         ["PassTimingWritesStartAndEndTimes"] = "timestamp queries cannot be read without blocking",
         ["SteadyStateFramesAllocateNothing"] = "allocation counts of the native backends",
+        ["PooledEncodersThatRecordedLessEarlierDoNotAllocateOnABusyFrame"] = "allocation counts of the native backends",
         ["ReportNamesGpuTimeForPasses"] = "timestamp queries cannot be read without blocking",
     };
 
