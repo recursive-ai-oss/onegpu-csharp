@@ -106,8 +106,8 @@ The reductions, softmax and normalisation have both modes.
     the browser's `packed_4x8_integer_dot_product`). Four byte pairs are multiplied and summed per instruction (`dot4add_i8packed`). That instruction takes signed bytes only, so
     unsigned operands are staged as `u - 128` and the zero points move by the same amount; the zero points are then applied after the loop from byte sums collected while staging:
     `sum (s - z')(t - w') = sum s*t - w' * sum s - z' * sum t + K * z' * w'`, exact modulo 2^32 like the sums themselves (Jacob et al., 2018, section 2.3 rearranges the same product).
-    A byte sum is only collected when the other operand's shifted zero point can be non-zero. Products with fewer than 32 tiles of 64x64 run on 32x32 tiles so that the
-    128-row products of small models still fill the device.
+    A byte sum is only collected when the other operand's shifted zero point can be non-zero. On a discrete GPU, products with fewer than 32 tiles of 64x64 run on 32x32 tiles so that the
+    128-row products of small models still fill the device (an integrated GPU measured faster on the big tile everywhere).
   - **Portable** (`portable-tile64x64x16`): runs everywhere. Rows are staged a word at a time when the operand's offset, stride and leading dimension are multiples of four, and the products are
     formed in float, which is exact here (two values in -255..255 multiply to under 65025, so 256 of them sum to under 2^24); the running sums fold into int32 every 128 values of k.
     Metal has no packed dot product, so Apple GPUs run this one.
