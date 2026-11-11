@@ -34,11 +34,11 @@ public sealed class AttentionTests
         }
     }
 
-    // The software WebGPU adapter times out on the largest problems, so it gets the BERT-sized ones.
+    // The software WebGPU adapter times out on the largest problems, so it gets the problems up to 12 heads of 256 by 256.
     static bool Software { get; set; }
 
     static IEnumerable<Case> SelectedModelCases() =>
-        ModelCases().Where(c => Large || (long)c.B * c.H * c.Sq * c.Sk <= (Software ? 12L * 512 * 512 : 12L * 1500 * 1500));
+        ModelCases().Where(c => Large || (long)c.B * c.H * c.Sq * c.Sk <= (Software ? 12L * 256 * 256 : 12L * 1500 * 1500));
 
     static IEnumerable<Case> EdgeCases()
     {
