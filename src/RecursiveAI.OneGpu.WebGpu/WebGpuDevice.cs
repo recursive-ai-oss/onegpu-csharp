@@ -252,7 +252,7 @@ internal sealed class WebGpuDevice : GpuDevice
     /// <inheritdoc />
     public override GpuComputePipeline CreateComputePipeline(ComputePipelineDesc desc)
     {
-        ArgumentNullException.ThrowIfNull(desc);
+        CheckSubgroupRequirements(desc);
         var id = NextId();
         _stream.U(Op.CreateComputePipeline).U(id).U(((WebPipelineLayout)desc.Layout).Id).U(((WebShader)desc.Compute).Id).Str(desc.Label);
         return new WebComputePipeline(this, id, (WebPipelineLayout)desc.Layout);

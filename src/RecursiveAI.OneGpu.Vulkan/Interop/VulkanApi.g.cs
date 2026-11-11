@@ -4066,6 +4066,15 @@ internal unsafe struct VkPipelineShaderStageCreateInfo
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal unsafe struct VkPipelineShaderStageRequiredSubgroupSizeCreateInfo
+{
+    public VkStructureType sType;
+    public void* pNext;
+    public uint requiredSubgroupSize;
+    public VkPipelineShaderStageRequiredSubgroupSizeCreateInfo() { sType = VkStructureType.PipelineShaderStageRequiredSubgroupSizeCreateInfo; }
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct VkPipelineTessellationStateCreateInfo
 {
     public VkStructureType sType;

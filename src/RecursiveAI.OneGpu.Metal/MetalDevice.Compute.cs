@@ -139,6 +139,22 @@ internal sealed unsafe partial class MetalDevice
 
         var bfloat16 = Probes("bfloat v = bfloat(i) * bfloat(2.0); out[i] = (uint)float(v);", Msl31);
 
+        // The names are the shader compiler's: a kernel's reflection lists these bits and CreateComputeKernel checks them against this set.
+        // Metal has no separate memory model to enable, so the Vulkan memory model bit that comes with cooperative matrices is met.
+        if (matrices.Count > 0)
+        {
+            features |= DeviceFeatures.CooperativeMatrix | DeviceFeatures.VulkanMemoryModel;
+        }
+
+        if (bfloat16)
+        {
+            features |= DeviceFeatures.BFloat16;
+            if (matrices.Exists(m => m.AType == GpuScalarType.BF16))
+            {
+                features |= DeviceFeatures.BFloat16CooperativeMatrix;
+            }
+        }
+
         var invocationLimit = invocations != 0 ? invocations : 1024;
         return new GpuComputeCapabilities
         {
@@ -146,6 +162,8 @@ internal sealed unsafe partial class MetalDevice
             SubgroupMinSize = simdWidth,
             SubgroupMaxSize = simdWidth,
             SubgroupOperations = ops,
+            FullSubgroups = simdWidth != 0,
+            SubgroupSizeControl = false,
             ShaderFeatures = features,
             Integer8 = true,
             Int8DotProduct = false,

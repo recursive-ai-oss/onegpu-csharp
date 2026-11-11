@@ -15,7 +15,7 @@ internal sealed unsafe partial class VulkanDevice
     /// <summary>Reads the compute capabilities from the adapter's own limits, features and extension properties.</summary>
     GpuComputeCapabilities QueryCompute(VulkanInstance.AdapterEntry info, in VkPhysicalDeviceLimits limits, in VkPhysicalDeviceFeatures features,
         in VkPhysicalDeviceVulkan11Features f11, in VkPhysicalDeviceVulkan12Features f12, in VkPhysicalDeviceVulkan13Features f13,
-        bool nonUniformIndexing, bool cooperativeMatrix, bool bfloat16)
+        bool nonUniformIndexing, bool cooperativeMatrix, bool bfloat16, bool bfloat16CooperativeMatrix)
     {
         var sub = new VkPhysicalDeviceSubgroupProperties();
         var size = new VkPhysicalDeviceSubgroupSizeControlProperties { pNext = &sub };
@@ -98,6 +98,30 @@ internal sealed unsafe partial class VulkanDevice
             }
         }
 
+        // The names are the shader compiler's: a kernel's reflection lists these bits and CreateComputeKernel checks them against this set.
+        if (matrices.Count > 0)
+        {
+            shader |= DeviceFeatures.CooperativeMatrix;
+            if (f12.vulkanMemoryModel != 0)
+            {
+                shader |= DeviceFeatures.VulkanMemoryModel;
+            }
+        }
+
+        if (bfloat16)
+        {
+            shader |= DeviceFeatures.BFloat16;
+            if (bfloat16CooperativeMatrix)
+            {
+                shader |= DeviceFeatures.BFloat16CooperativeMatrix;
+            }
+        }
+
+        if (f13.shaderIntegerDotProduct != 0)
+        {
+            shader |= DeviceFeatures.IntegerDotProduct;
+        }
+
         var counts = limits.maxComputeWorkGroupCount;
         return new GpuComputeCapabilities
         {
@@ -105,6 +129,8 @@ internal sealed unsafe partial class VulkanDevice
             SubgroupMinSize = size.minSubgroupSize != 0 ? size.minSubgroupSize : sub.subgroupSize,
             SubgroupMaxSize = size.maxSubgroupSize != 0 ? size.maxSubgroupSize : sub.subgroupSize,
             SubgroupOperations = ops,
+            FullSubgroups = f13.computeFullSubgroups != 0,
+            SubgroupSizeControl = f13.subgroupSizeControl != 0 && (size.requiredSubgroupSizeStages & VkShaderStageFlagBits.Compute) != 0,
             ShaderFeatures = shader,
             Integer8 = f12.shaderInt8 != 0 && f12.storageBuffer8BitAccess != 0,
             Int8DotProduct = f13.shaderIntegerDotProduct != 0,

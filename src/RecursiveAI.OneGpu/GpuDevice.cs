@@ -118,7 +118,33 @@ public abstract partial class GpuDevice : IDisposable
 
     /// <summary>Creates a compute pipeline.</summary>
     /// <param name="desc">The compute shader and layout.</param>
+    /// <exception cref="GpuUnsupportedException">The description asks for full subgroups or a subgroup size the device cannot provide (<see cref="GpuUnsupportedException.Capability"/> is <c>FullSubgroups</c> or <c>RequiredSubgroupSize</c>).</exception>
     public abstract GpuComputePipeline CreateComputePipeline(ComputePipelineDesc desc);
+
+    /// <summary>Throws the typed error for a subgroup requirement of <paramref name="desc"/> that this device cannot meet. Backends call it first.</summary>
+    /// <param name="desc">The pipeline description.</param>
+    /// <exception cref="GpuUnsupportedException">A requirement is not met.</exception>
+    protected void CheckSubgroupRequirements(ComputePipelineDesc desc)
+    {
+        ArgumentNullException.ThrowIfNull(desc);
+        var c = Capabilities.Compute;
+        if (desc.RequireFullSubgroups && !c.FullSubgroups)
+        {
+            throw new GpuUnsupportedException($"{Adapter.Name} ({Backend}) cannot run compute pipelines with full subgroups", nameof(GpuComputeCapabilities.FullSubgroups), "full subgroups in compute pipelines", "not offered");
+        }
+
+        var size = desc.RequiredSubgroupSize;
+        if (size != 0)
+        {
+            var fixedSize = c.SubgroupMinSize != 0 && c.SubgroupMinSize == c.SubgroupMaxSize;
+            var inRange = c.SubgroupMaxSize != 0 && size >= c.SubgroupMinSize && size <= c.SubgroupMaxSize;
+            if (!inRange || (!fixedSize && !c.SubgroupSizeControl) || (fixedSize && size != c.SubgroupMinSize))
+            {
+                var offered = c.SubgroupMaxSize == 0 ? "no subgroups" : fixedSize ? $"{c.SubgroupMinSize} lanes" : $"{c.SubgroupMinSize} to {c.SubgroupMaxSize} lanes{(c.SubgroupSizeControl ? "" : ", not selectable")}";
+                throw new GpuUnsupportedException($"{Adapter.Name} ({Backend}) cannot run a compute pipeline with subgroup size {size}", nameof(ComputePipelineDesc.RequiredSubgroupSize), $"{size} lanes", offered);
+            }
+        }
+    }
 
     /// <summary>Creates a swapchain: the images presented to a native window.</summary>
     /// <param name="surface">The window, from the platform layer.</param>

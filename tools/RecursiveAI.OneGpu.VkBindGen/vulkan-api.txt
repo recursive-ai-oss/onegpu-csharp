@@ -119,6 +119,7 @@ type VkDebugUtilsMessengerCallbackDataEXT
 # Compute capability queries: subgroup and cooperative-matrix properties and features.
 type VkPhysicalDeviceSubgroupProperties
 type VkPhysicalDeviceSubgroupSizeControlProperties
+type VkPipelineShaderStageRequiredSubgroupSizeCreateInfo
 type VkPhysicalDeviceMaintenance3Properties
 type VkPhysicalDeviceCooperativeMatrixFeaturesKHR
 type VkPhysicalDeviceShaderBfloat16FeaturesKHR

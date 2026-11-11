@@ -708,10 +708,23 @@ internal sealed unsafe partial class VulkanDevice
             throw new ArgumentException("Compute must be a compute shader", nameof(desc));
         }
 
+        CheckSubgroupRequirements(desc);
+
+        // Both requests are core in Vulkan 1.3 (VK_EXT_subgroup_size_control): the flag asks for full subgroups, and a chained structure pins the size.
+        // A device with one fixed size needs no pin, and the checks above have already ruled out a size it cannot give.
+        var fixedSize = Capabilities.Compute.SubgroupMinSize == Capabilities.Compute.SubgroupMaxSize;
+        var pin = new VkPipelineShaderStageRequiredSubgroupSizeCreateInfo { requiredSubgroupSize = desc.RequiredSubgroupSize };
         using var arena = new Arena();
         var ci = new VkComputePipelineCreateInfo
         {
-            stage = new VkPipelineShaderStageCreateInfo { stage = VkShaderStageFlagBits.Compute, module = cs.Handle, pName = arena.Utf8(cs.EntryPoint) },
+            stage = new VkPipelineShaderStageCreateInfo
+            {
+                stage = VkShaderStageFlagBits.Compute,
+                module = cs.Handle,
+                pName = arena.Utf8(cs.EntryPoint),
+                flags = desc.RequireFullSubgroups ? VkPipelineShaderStageCreateFlagBits.RequireFullSubgroups : 0,
+                pNext = desc.RequiredSubgroupSize != 0 && !fixedSize ? &pin : null,
+            },
             layout = layout.Handle,
         };
         VkPipeline pipe;

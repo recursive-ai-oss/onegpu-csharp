@@ -114,9 +114,10 @@ public abstract partial class GpuDevice
     /// </summary>
     /// <param name="source">The entry point, filled from the members the shader build generates; its <see cref="ShaderSource.Layout"/> is required.</param>
     /// <param name="label">Optional name shown in debugging tools.</param>
+    /// <param name="requiredSubgroupSize">Runs the kernel with exactly this subgroup size in lanes (see <see cref="ComputePipelineDesc.RequiredSubgroupSize"/>); 0 leaves it to the driver.</param>
     /// <exception cref="ArgumentException">The source is not a compute entry point or has no layout.</exception>
     /// <exception cref="GpuUnsupportedException">The source has no code for this backend, the device lacks a feature the kernel needs (<see cref="GpuUnsupportedException.Capability"/> names it), or the workgroup exceeds a device limit.</exception>
-    public GpuComputeKernel CreateComputeKernel(in ShaderSource source, string? label = null)
+    public GpuComputeKernel CreateComputeKernel(in ShaderSource source, string? label = null, uint requiredSubgroupSize = 0)
     {
         if (source.Stage != ShaderStage.Compute)
         {
@@ -133,7 +134,9 @@ public abstract partial class GpuDevice
         try
         {
             layout = push.Size > 0 ? CreatePipelineLayout(bindings, push) : CreatePipelineLayout(bindings);
-            var pipeline = CreateComputePipeline(new ComputePipelineDesc { Layout = layout, Compute = shader, Label = label ?? source.EntryPoint });
+            // Cooperative matrices need full subgroups below SPIR-V 1.6, so a kernel whose reflection lists them gets a full-subgroup pipeline.
+            var full = (reflection.RequiredFeatures & DeviceFeatures.CooperativeMatrix) != 0;
+            var pipeline = CreateComputePipeline(new ComputePipelineDesc { Layout = layout, Compute = shader, RequireFullSubgroups = full, RequiredSubgroupSize = requiredSubgroupSize, Label = label ?? source.EntryPoint });
             return new GpuComputeKernel(shader, layout, pipeline, reflection, bindings, push);
         }
         catch
@@ -159,6 +162,12 @@ public abstract partial class GpuDevice
         {
             throw new GpuUnsupportedException($"kernel {name} uses {(ulong)x * y * z} invocations per workgroup, more than {Adapter.Name} allows", nameof(GpuComputeCapabilities.MaxWorkgroupInvocations),
                 $"at most {c.MaxWorkgroupInvocations}", $"{(ulong)x * y * z}");
+        }
+
+        if ((kernel.RequiredFeatures & DeviceFeatures.CooperativeMatrix) != 0 && c.SubgroupMinSize != 0 && (ulong)x * y * z % c.SubgroupMinSize != 0 && (ulong)x * y * z % c.SubgroupMaxSize != 0)
+        {
+            throw new GpuUnsupportedException($"kernel {name} uses cooperative matrices with {(ulong)x * y * z} invocations per workgroup, not a whole number of subgroups on {Adapter.Name}", "FullSubgroups",
+                $"a multiple of {c.SubgroupMinSize}", $"{(ulong)x * y * z}");
         }
 
         var missing = kernel.RequiredFeatures & ~c.ShaderFeatures;
