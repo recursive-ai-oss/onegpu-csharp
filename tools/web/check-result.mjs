@@ -12,5 +12,6 @@ for (const t of r.tests || []) {
   else if (t.status === 'skipped') console.log('skipped ' + t.name + ': ' + t.reason);
 }
 for (const n of r.notes || []) console.log(n);
+if (r.capabilities) console.log(r.adapter + ' compute capabilities:\n' + r.capabilities);
 console.log(`${r.adapter}: ${r.passed} passed, ${r.failed} failed, ${r.skipped} skipped`);
 process.exit(r.failed > 0 || r.passed === 0 ? 1 : 0);

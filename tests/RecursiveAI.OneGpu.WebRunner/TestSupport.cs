@@ -91,6 +91,7 @@ public static partial class Runner
         {
             w.WriteStartObject();
             w.WriteString("adapter", device.Adapter.Name);
+            w.WriteString("capabilities", device.Capabilities.Compute.Describe());
             w.WriteStartArray("tests");
             int passed = 0, failed = 0, skipped = 0;
             foreach (var type in typeof(Runner).Assembly.GetTypes().OrderBy(t => t.FullName, StringComparer.Ordinal))
