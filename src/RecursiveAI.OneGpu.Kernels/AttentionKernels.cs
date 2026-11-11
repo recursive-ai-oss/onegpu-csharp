@@ -2,6 +2,19 @@ using RecursiveAI.OneGpu.Kernels.Shaders;
 
 namespace RecursiveAI.OneGpu.Kernels;
 
+/// <summary>Which attention kernel an <see cref="AttentionKernels"/> instance uses.</summary>
+public enum GpuAttentionVariant
+{
+    /// <summary>Chosen from the device: <see cref="Pairs"/> on Apple GPUs (which have few registers per thread) when shuffles are available, otherwise <see cref="Rows"/>.</summary>
+    Auto = 0,
+
+    /// <summary>One thread per query row; needs no subgroup operations.</summary>
+    Rows = 1,
+
+    /// <summary>Two neighbouring threads per query row, each holding half of the head dimension; needs subgroup shuffles.</summary>
+    Pairs = 2,
+}
+
 /// <summary>
 /// Fused scaled dot-product attention, <c>O = softmax(Scale * Q Kᵀ + Mask) V</c>, that never writes the score matrix to memory: the keys are
 /// visited in tiles with the online softmax normaliser (Dao et al., "FlashAttention", 2022; Milakov and Gimelshein, 2018).
@@ -16,13 +29,16 @@ namespace RecursiveAI.OneGpu.Kernels;
 /// <para><b>Special values.</b> A key hidden by the mask (-infinity), the key lengths or the causal rule gets weight 0. A row without any visible
 /// key gives NaN, or zeros with <see cref="GpuAttentionMaskedRows.Zero"/>. A row with a NaN or +infinity score gives NaN. The values V are not
 /// inspected: a NaN in a V element of a visible key reaches the output, and one in a hidden key does not.</para>
-/// <para><b>Variants.</b> One thread owns one query row of a 64-row block, and the head dimension is rounded up to 32, 64, 128 or 256 (<see cref="HeadDimLimit"/>;
-/// above 64 the register file spills, so 128 and 256 are correct but slow). When the problem has too few blocks to occupy a GPU, the keys are cut into
-/// up to 16 contiguous ranges of a multiple of 32 keys (the cut depends only on the shape) whose partial results a second pass merges in range order
-/// through a scratch buffer (<see cref="ScratchLength"/>). Every sum is a sequential loop in a fixed order, with no atomics and no subgroup operations,
-/// so <see cref="GpuKernelMode.Fast"/> and <see cref="GpuKernelMode.Deterministic"/> run the same code and give identical bits on one device and driver.
-/// Results may differ in the last bits between devices. A cooperative-matrix variant would plug in beside the tiled one, chosen in <c>Create</c>
-/// from the device capabilities.</para>
+/// <para><b>Variants.</b> Keys are folded into each query row one at a time with the online normaliser, in increasing key order, from key and value tiles in
+/// workgroup memory. With subgroup shuffles (<see cref="Variant"/> <c>pairs</c>) two neighbouring threads share a row and each holds half of the head
+/// dimension, which halves the registers per thread (this matters on Apple GPUs); the halves of a dot product are added after one shuffle, and a sum of two
+/// numbers does not depend on operand order. Without shuffles (<c>rows</c>) one thread owns a row. The head dimension is rounded up to 32, 64, 128 or 256
+/// (<see cref="HeadDimLimit"/>; above 64 the register file spills, so 128 and 256 are correct but slow). When the problem has too few query blocks to occupy
+/// a GPU, the keys are cut into up to 16 contiguous ranges of a multiple of 32 keys (the cut depends only on the shape) whose partial results a second pass
+/// merges in range order through a scratch buffer (<see cref="ScratchLength"/>). There are no atomics and no subgroup arithmetic, and every order is fixed by
+/// the code, so <see cref="GpuKernelMode.Fast"/> and <see cref="GpuKernelMode.Deterministic"/> run the same kernel and give identical bits on one device and
+/// driver; <c>pairs</c> and <c>rows</c> may differ from each other in the last bits, and so may devices. A cooperative-matrix variant would plug in beside
+/// these, chosen in the constructor from the device capabilities.</para>
 /// <para>Not thread-safe. Q, K and V may share one buffer; O must not overlap them.</para>
 /// </remarks>
 public sealed class AttentionKernels : IDisposable
@@ -30,7 +46,6 @@ public sealed class AttentionKernels : IDisposable
     /// <summary>The largest head dimension supported.</summary>
     public const int HeadDimLimit = 256;
 
-    const int BlockRows = 64;
     const int MaxSplit = 16;
     const int SplitGranule = 32;
     const int MinKeysPerSplit = 128;
@@ -39,7 +54,8 @@ public sealed class AttentionKernels : IDisposable
     const int CombineWords = 11;
 
     readonly GpuDevice _device;
-    readonly KernelPipeline?[] _tile = new KernelPipeline?[8];
+    readonly KernelPipeline?[] _tile = new KernelPipeline?[16];
+    readonly bool _pairs;
     readonly KernelPipeline?[] _combine = new KernelPipeline?[2];
     GpuBuffer<float>? _scratch;
     GpuBuffer<float>? _dummyFloat;
@@ -47,20 +63,36 @@ public sealed class AttentionKernels : IDisposable
 
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
-    /// <param name="allowSubgroups">Accepted for symmetry with the other families; the attention kernels do not use subgroup operations, so it changes nothing.</param>
-    public AttentionKernels(GpuDevice device, bool allowSubgroups = true)
+    /// <param name="allowSubgroups">False keeps the kernels off subgroup shuffles even where the device has them.</param>
+    /// <param name="variant">The kernel to use; <see cref="GpuAttentionVariant.Auto"/> picks one for the device.</param>
+    /// <exception cref="GpuUnsupportedException"><see cref="GpuAttentionVariant.Pairs"/> was requested and the device (or <paramref name="allowSubgroups"/>) rules out subgroup shuffles, or the device offers fewer than 7 storage buffers per stage.</exception>
+    public AttentionKernels(GpuDevice device, bool allowSubgroups = true, GpuAttentionVariant variant = GpuAttentionVariant.Auto)
     {
         ArgumentNullException.ThrowIfNull(device);
-        _ = allowSubgroups;
         _device = device;
+        var c = device.Capabilities.Compute;
+        var min = c.SubgroupMinSize != 0 ? c.SubgroupMinSize : c.SubgroupSize;
+        var shuffles = allowSubgroups && (c.SubgroupOperations & GpuSubgroupOperations.Basic) != 0 && (c.SubgroupOperations & GpuSubgroupOperations.Shuffle) != 0 && min >= 2;
+        if (variant == GpuAttentionVariant.Pairs && !shuffles)
+        {
+            throw new GpuUnsupportedException("the pairs attention kernel needs subgroup shuffles, which the device does not offer or the caller ruled out");
+        }
+
+        // Apple GPUs give a thread about 128 registers before it spills; halving the registers per thread made the kernel 2 to 5 times faster there,
+        // and slower on the NVIDIA GPU measured, which has registers to spare.
+        const uint AppleVendorId = 0x106B;
+        _pairs = variant == GpuAttentionVariant.Pairs || (variant == GpuAttentionVariant.Auto && shuffles && device.Adapter.VendorId == AppleVendorId);
         if (device.Capabilities.Compute.MaxStorageBuffersPerStage is > 0 and < 7)
         {
             throw new GpuUnsupportedException($"attention binds 7 storage buffers per stage; the device allows {device.Capabilities.Compute.MaxStorageBuffersPerStage}");
         }
     }
 
-    /// <summary>The variant <see cref="GpuKernelMode.Fast"/> and <see cref="GpuKernelMode.Deterministic"/> use: <c>tiled</c> (one thread per query row, shared-memory key tiles).</summary>
-    public static string Variant => "tiled";
+    /// <summary>
+    /// The variant <see cref="GpuKernelMode.Fast"/> and <see cref="GpuKernelMode.Deterministic"/> both use: <c>pairs</c> when the device has subgroup
+    /// shuffles (two threads share a query row, each holding half of the head dimension), otherwise <c>rows</c> (one thread per query row).
+    /// </summary>
+    public string Variant => _pairs ? "pairs" : "rows";
 
     /// <summary>
     /// Floats of scratch the problem needs: 0 when the keys are not split, otherwise one (maximum, sum, accumulator) record of <c>HeadDim + 2</c>
@@ -69,10 +101,10 @@ public sealed class AttentionKernels : IDisposable
     /// <param name="problem">The problem; only its sizes are read.</param>
     /// <returns>The length, in floats, of the <c>scratch</c> buffer <c>Encode</c> would use.</returns>
     /// <exception cref="GpuKernelShapeException">A size is negative or too large.</exception>
-    public static long ScratchLength(in AttentionProblem problem)
+    public long ScratchLength(in AttentionProblem problem)
     {
         CheckSizes(problem);
-        var (splits, _) = Split(problem);
+        var (splits, _) = Split(problem, _pairs);
         return splits == 1 ? 0 : checked((long)problem.Batch * problem.Heads * problem.QLen * splits * (problem.HeadDim + 2));
     }
 
@@ -122,8 +154,9 @@ public sealed class AttentionKernels : IDisposable
             return;
         }
 
-        var (splits, perSplit) = Split(p);
-        var groups = checked((long)p.Batch * p.Heads * ((p.QLen + BlockRows - 1) / BlockRows) * splits);
+        var (splits, perSplit) = Split(p, _pairs);
+        var blockRows = _pairs ? 32 : 64;
+        var groups = checked((long)p.Batch * p.Heads * ((p.QLen + blockRows - 1) / blockRows) * splits);
         var part = _dummyFloat ??= _device.CreateBuffer<float>(4, label: "attention-unused");
         if (splits > 1)
         {
@@ -181,7 +214,7 @@ public sealed class AttentionKernels : IDisposable
         w[31] = gx;
 
         var dim = p.HeadDim <= 32 ? 0 : (p.HeadDim <= 64 ? 1 : (p.HeadDim <= 128 ? 2 : 3));
-        var tile = _tile[dim + (half ? 4 : 0)] ??= CreateTile(half, dim);
+        var tile = _tile[dim + (half ? 4 : 0) + (_pairs ? 8 : 0)] ??= CreateTile(half, dim);
         Span<GpuBuffer> bound =
         [
             q.Buffer,
@@ -245,14 +278,15 @@ public sealed class AttentionKernels : IDisposable
     }
 
     // How many key ranges, and how many keys in each. Depends only on the shape, so both modes and every device cut alike.
-    static (int Splits, int PerSplit) Split(in AttentionProblem p)
+    static (int Splits, int PerSplit) Split(in AttentionProblem p, bool pairs)
     {
         if (p.Batch == 0 || p.Heads == 0 || p.QLen == 0 || p.KLen < 2 * MinKeysPerSplit)
         {
             return (1, Math.Max(p.KLen, 1));
         }
 
-        var blocks = (long)p.Batch * p.Heads * ((p.QLen + BlockRows - 1) / BlockRows);
+        var blockRows = pairs ? 32 : 64;
+        var blocks = (long)p.Batch * p.Heads * ((p.QLen + blockRows - 1) / blockRows);
         var want = (int)Math.Min(MaxSplit, (TargetGroups + blocks - 1) / blocks);
         var splits = Math.Min(want, p.KLen / MinKeysPerSplit);
         if (splits <= 1)
@@ -341,7 +375,7 @@ public sealed class AttentionKernels : IDisposable
     KernelPipeline CreateTile(bool half, int dim)
     {
         var d = dim switch { 0 => Attention.HdValue.D32, 1 => Attention.HdValue.D64, 2 => Attention.HdValue.D128, _ => Attention.HdValue.D256 };
-        var e = Attention.Variants.Get(new Attention.Key(f16: half, hd: d)).AttentionTile;
+        var e = Attention.Variants.Get(new Attention.Key(f16: half, wave: _pairs, hd: d)).AttentionTile;
         return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 7, TileWords, "attention-tile");
     }
 

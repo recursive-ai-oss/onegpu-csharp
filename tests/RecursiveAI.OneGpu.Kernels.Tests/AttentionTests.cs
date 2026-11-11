@@ -178,10 +178,9 @@ public sealed class AttentionTests
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
-        using var fast = new AttentionKernels(d);
-        using var noSub = new AttentionKernels(d, allowSubgroups: false);
-        Rig.Row(d, "attention", "-", "variant chosen for Fast", $"{AttentionKernels.Variant} (forced-off instance: {AttentionKernels.Variant}); no subgroup operations are used");
-        await Sweep(d, fast, noSub, SelectedModelCases().ToList(), "model shapes");
+        using var kernels = new Kernels(d);
+        Rig.Row(d, "attention", "-", "variant chosen for Fast and Deterministic", $"{kernels.Auto.Variant}; forced rows: {kernels.Rows.Variant}; forced pairs: {kernels.Pairs?.Variant ?? "not supported on this device"}");
+        await Sweep(d, kernels, SelectedModelCases().ToList(), "model shapes");
     }
 
     [Fact]
@@ -189,12 +188,52 @@ public sealed class AttentionTests
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
-        using var fast = new AttentionKernels(d);
-        using var noSub = new AttentionKernels(d, allowSubgroups: false);
-        await Sweep(d, fast, noSub, EdgeCases().ToList(), "edge shapes");
+        using var kernels = new Kernels(d);
+        await Sweep(d, kernels, EdgeCases().ToList(), "edge shapes");
     }
 
-    static async Task Sweep(GpuDevice d, AttentionKernels fast, AttentionKernels noSub, List<Case> cases, string what)
+    /// <summary>The instances every sweep runs: the device's choice, and each variant forced (pairs only where the device has shuffles).</summary>
+    sealed class Kernels : IDisposable
+    {
+        public Kernels(GpuDevice d)
+        {
+            Auto = new AttentionKernels(d);
+            Rows = new AttentionKernels(d, variant: GpuAttentionVariant.Rows);
+            try
+            {
+                Pairs = new AttentionKernels(d, variant: GpuAttentionVariant.Pairs);
+            }
+            catch (GpuUnsupportedException)
+            {
+            }
+        }
+
+        public AttentionKernels Auto { get; }
+
+        public AttentionKernels Rows { get; }
+
+        public AttentionKernels? Pairs { get; }
+
+        public IEnumerable<(string Name, AttentionKernels K, GpuKernelMode Mode)> All()
+        {
+            yield return ("auto fast", Auto, GpuKernelMode.Fast);
+            yield return ("auto deterministic", Auto, GpuKernelMode.Deterministic);
+            yield return ("rows deterministic", Rows, GpuKernelMode.Deterministic);
+            if (Pairs is not null)
+            {
+                yield return ("pairs deterministic", Pairs, GpuKernelMode.Deterministic);
+            }
+        }
+
+        public void Dispose()
+        {
+            Auto.Dispose();
+            Rows.Dispose();
+            Pairs?.Dispose();
+        }
+    }
+
+    static async Task Sweep(GpuDevice d, Kernels kernels, List<Case> cases, string what)
     {
         foreach (var half in new[] { false, true })
         {
@@ -206,10 +245,10 @@ public sealed class AttentionTests
             {
                 var prep = Prepare(c, half);
                 var limit = half ? 2e-3 : 1e-5;
-                string? firstHash = null;
-                foreach (var (name, kernels, mode) in new[] { ("fast", fast, GpuKernelMode.Fast), ("fast-no-subgroups", noSub, GpuKernelMode.Fast), ("deterministic", fast, GpuKernelMode.Deterministic) })
+                string? fastHash = null;
+                foreach (var (name, k, mode) in kernels.All())
                 {
-                    var o = await Run(d, kernels, c, prep, half, mode);
+                    var o = await Run(d, k, c, prep, half, mode);
                     Assert.True(o.Stray == 0, $"{c.Name} {(half ? "f16" : "f32")} {name}: {o.Stray} elements outside the output tensor were written");
                     Assert.True(o.Scaled <= limit, $"{c.Name} {(half ? "f16" : "f32")} {name}: scaled error {o.Scaled}");
                     if (!worst.TryGetValue(name, out var w))
@@ -218,9 +257,16 @@ public sealed class AttentionTests
                     }
 
                     worst[name] = (Math.Max(w.Scaled, o.Scaled), Math.Max(w.Rel, o.Rel), o.Scaled > w.Scaled ? c.Name : w.At);
-                    firstHash ??= o.Hash;
-                    same += o.Hash == firstHash ? 1 : 0;
-                    runs++;
+                    // Fast and deterministic run the same kernel, so their bits are equal.
+                    if (name == "auto fast")
+                    {
+                        fastHash = o.Hash;
+                    }
+                    else if (name == "auto deterministic")
+                    {
+                        same += o.Hash == fastHash ? 1 : 0;
+                        runs++;
+                    }
                 }
             }
 
@@ -229,7 +275,7 @@ public sealed class AttentionTests
                 Rig.Row(d, "attention", half ? "f16" : "f32", $"{what}, {name}, {used.Count} cases", $"max scaled error {Rig.Sci(scaled)} (at {at}), max relative {Rig.Sci(rel)}");
             }
 
-            Rig.Row(d, "attention", half ? "f16" : "f32", $"{what}: fast, forced-off and deterministic outputs equal bit for bit", $"{same}/{runs}");
+            Rig.Row(d, "attention", half ? "f16" : "f32", $"{what}: fast and deterministic outputs equal bit for bit", $"{same}/{runs}");
             Assert.Equal(runs, same);
         }
     }
@@ -239,27 +285,30 @@ public sealed class AttentionTests
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
-        using var k = new AttentionKernels(d);
+        using var kernels = new Kernels(d);
         foreach (var half in new[] { false, true })
         {
-            var runs = 0;
-            var same = 0;
-            var samples = new List<string>();
-            foreach (var c in SelectedModelCases().Concat(EdgeCases()).Where(c => Applies(c, half)))
+            foreach (var (name, k, _) in kernels.All().Where(x => x.Name.EndsWith("deterministic", StringComparison.Ordinal)))
             {
-                var prep = Prepare(c, half);
-                var o1 = await Run(d, k, c, prep, half, GpuKernelMode.Deterministic);
-                var o2 = await Run(d, k, c, prep, half, GpuKernelMode.Deterministic);
-                runs++;
-                same += o1.Hash == o2.Hash ? 1 : 0;
-                if (c.Name is "bert B1 S512" or "whisper decoder self B1 cache448" or "whisper encoder B1 S1500")
+                var runs = 0;
+                var same = 0;
+                var samples = new List<string>();
+                foreach (var c in SelectedModelCases().Concat(EdgeCases()).Where(c => Applies(c, half)))
                 {
-                    samples.Add($"{c.Name}: {o1.Hash} / {o2.Hash}");
+                    var prep = Prepare(c, half);
+                    var o1 = await Run(d, k, c, prep, half, GpuKernelMode.Deterministic);
+                    var o2 = await Run(d, k, c, prep, half, GpuKernelMode.Deterministic);
+                    runs++;
+                    same += o1.Hash == o2.Hash ? 1 : 0;
+                    if (c.Name is "bert B1 S512" or "whisper decoder self B1 cache448" or "whisper encoder B1 S1500")
+                    {
+                        samples.Add($"{c.Name}: {o1.Hash} / {o2.Hash}");
+                    }
                 }
-            }
 
-            Rig.Row(d, "attention", half ? "f16" : "f32", "deterministic variant run twice per shape (output hashes, first / second run: " + string.Join("; ", samples) + ")", $"{same}/{runs} identical");
-            Assert.Equal(runs, same);
+                Rig.Row(d, "attention", half ? "f16" : "f32", $"{name} variant run twice per shape (output hashes, first / second run: " + string.Join("; ", samples) + ")", $"{same}/{runs} identical");
+                Assert.Equal(runs, same);
+            }
         }
     }
 
@@ -384,7 +433,7 @@ public sealed class AttentionTests
         using var gpu = new GpuFixture();
         var d = gpu.Device;
         var timestamps = d.Capabilities.Timestamps;
-        using var fused = new AttentionKernels(d);
+        using var kernels = new Kernels(d);
         using var gemm = new Gemm(d, GemmElementType.F32);
         using var soft = new SoftmaxKernels(d);
         foreach (var (name, b, h, sq, sk, dd, causal) in new[]
@@ -404,7 +453,6 @@ public sealed class AttentionTests
             var s = new GemmProblem(sq, sk, dd) { Batch = bh, TransposeB = true, Alpha = 1f / MathF.Sqrt(dd), Lda = dd, Ldb = dd, Ldc = sk, StrideA = sq * dd, StrideB = sk * dd, StrideC = sq * sk };
             var pv = new GemmProblem(sq, dd, sk) { Batch = bh, Lda = sk, Ldb = dd, Ldc = dd, StrideA = sq * sk, StrideB = sk * dd, StrideC = sq * dd };
             var prob = new AttentionProblem(b, h, sq, sk, dd) { Causal = causal };
-            var fusedGpu = Time(d, timestamps, e => fused.Encode(e, prob, q, k, v, o1), out var fusedWall);
             var unfusedGpu = Time(d, timestamps, e =>
             {
                 gemm.Encode(e, s, q, k, scores);
@@ -412,14 +460,19 @@ public sealed class AttentionTests
                 gemm.Encode(e, pv, probs, v, o2);
             }, out var unfusedWall);
             var flops = 4.0 * bh * sq * sk * dd;
-            var line = $"THROUGHPUT\t{d.Adapter.Name}\t{name}\tfused {fusedGpu / 1000:F1} us gpu {fusedWall / 1000:F1} us wall {flops / fusedGpu:F0} GFLOP/s\tunfused {unfusedGpu / 1000:F1} us gpu {unfusedWall / 1000:F1} us wall\tspeed-up {unfusedGpu / fusedGpu:F2}x gpu";
-            Console.WriteLine(line);
-#if !WEB_BACKEND
-            if (Environment.GetEnvironmentVariable("ONEGPU_REPORT") is { Length: > 0 } path)
+            foreach (var (vname, fk) in new[] { ("rows", kernels.Rows), ("pairs", kernels.Pairs) }.Where(x => x.Item2 is not null))
             {
-                File.AppendAllText(path, line + "\n");
-            }
+                var fusedGpu = Time(d, timestamps, e => fk!.Encode(e, prob, q, k, v, o1), out var fusedWall);
+                var auto = fk!.Variant == kernels.Auto.Variant ? " (auto)" : string.Empty;
+                var line = $"THROUGHPUT\t{d.Adapter.Name}\t{name}\t{vname}{auto}: fused {fusedGpu / 1000:F1} us gpu {fusedWall / 1000:F1} us wall {flops / fusedGpu:F0} GFLOP/s\tunfused {unfusedGpu / 1000:F1} us gpu {unfusedWall / 1000:F1} us wall\tspeed-up {unfusedGpu / fusedGpu:F2}x gpu";
+                Console.WriteLine(line);
+#if !WEB_BACKEND
+                if (Environment.GetEnvironmentVariable("ONEGPU_REPORT") is { Length: > 0 } path)
+                {
+                    File.AppendAllText(path, line + "\n");
+                }
 #endif
+            }
         }
     }
 

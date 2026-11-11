@@ -41,18 +41,30 @@ device.Submit(encoder);
 
 ## Variants and ordering
 
-One tiled kernel serves both modes. A thread owns a query row, so every sum (the dot products over the head dimension, the normaliser, the `P V`
-accumulation over keys) is a sequential loop in increasing index order; there are no atomics and no subgroup operations. `GpuKernelMode.Fast` and
-`GpuKernelMode.Deterministic` therefore give identical bits, on one device and driver, run to run, and the forced-off instance
-(`allowSubgroups: false`) too. Results may differ in the last bits between devices because the compilers contract multiply-adds differently.
+Keys are folded into each query row one at a time, in increasing key order, with the online normaliser, from key and value tiles held in workgroup
+memory. Two kernels share that structure (`AttentionKernels.Variant`, chosen once in the constructor):
+
+- **`rows`**: one thread owns a query row (64 rows per workgroup). Needs nothing from the device.
+- **`pairs`**: two neighbouring threads own a row, each the half of the head dimension, and add their halves of a dot product after one subgroup shuffle
+  (32 rows per workgroup). This halves the registers per thread. Chosen automatically on Apple GPUs, which spill past about 128 registers per thread
+  (a 64-wide head needs 128 for the query and the accumulator); on the RTX 4070 it was slower for large problems and faster for small ones, so `Auto`
+  picks `rows` there. `GpuAttentionVariant` forces either; `allowSubgroups: false` rules out `pairs`.
+
+The compiler keeps loops as loops and a thread-local array indexed by a loop variable can live in slow memory (Apple's compiler does that), so the
+kernel writes every access to the query and accumulator registers as a separate statement with a literal index (macros in `Attention.hlsl`).
+
+`Fast` and `Deterministic` run the same kernel: every sum has an order the code fixes, there are no atomics and no subgroup arithmetic, and the one
+shuffle adds two numbers (which does not depend on operand order). Two runs on one device and driver give identical bits. `rows` and `pairs` add a
+dot product in a different order, so they may differ from each other, and devices from each other, in the last bits.
 
 When a problem has too few query blocks to fill a GPU, the keys are cut into at most 16 contiguous ranges of a multiple of 32 keys (at least 128 keys
 each, enough ranges for about 256 workgroups); each range stores its partial (maximum, sum, accumulator) in a scratch buffer and a second pass merges them
-in range order. The cut depends only on the shape. `AttentionKernels.ScratchLength(problem)` says how many floats are needed (0 without a cut); pass a
-buffer as `scratch`, or leave it null and the family keeps one of its own.
+in range order. The cut depends only on the shape. `ScratchLength(problem)` says how many floats are needed (0 without a cut); pass a
+buffer as `scratch`, or leave it null and the family keeps one of its own and releases it on `Dispose`.
 
-A cooperative-matrix variant (`Q Kᵀ` and `P V` on matrix hardware) would be chosen next to the tiled one in `AttentionKernels` when the device reports the
-shapes; it waits for matrix types in the shader compiler.
+A cooperative-matrix variant (`Q Kᵀ` and `P V` on matrix hardware) would be chosen next to these in the constructor when the device reports the shapes;
+it waits for matrix types in the shader compiler. On Apple GPUs, where the GEMM family already uses simdgroup matrices, the unfused path
+(GEMM, add, softmax, GEMM) is currently faster than the fused kernel for 64-wide heads; see the timings in the project notes.
 
 ## Tolerances
 
