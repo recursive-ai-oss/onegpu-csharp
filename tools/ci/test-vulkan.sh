@@ -3,5 +3,6 @@
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
 dotnet build -c Release tests/RecursiveAI.OneGpu.Vulkan.Tests
+dotnet build -c Release tests/RecursiveAI.OneGpu.Tests
 dotnet test --no-build -c Release --project tests/RecursiveAI.OneGpu.Vulkan.Tests
 dotnet test --no-build -c Release --project tests/RecursiveAI.OneGpu.Tests
