@@ -28,6 +28,7 @@ typedef bfloat16_t Elem;
 [[vk::binding(1, 0)]] StructuredBuffer<Elem> B;
 Elem LoadElement(StructuredBuffer<Elem> buf, uint i) { return buf[i]; }
 [[vk::binding(2, 0)]] RWStructuredBuffer<float> C;
+[[vk::binding(3, 0)]] StructuredBuffer<float> Bias;   // read only when Flags bit 2 is set; declared before the push constants so Metal numbers it before them
 
 struct GemmParams
 {
@@ -43,12 +44,17 @@ struct GemmParams
     uint StrideA;
     uint StrideB;
     uint StrideC;
-    uint Flags;     // bit 0: A is stored K x M (transposed); bit 1: B is stored N x K (transposed)
+    uint Flags;     // bit 0: A is stored K x M (transposed); bit 1: B is stored N x K (transposed); bit 2: add Bias[BiasOffset + column]; bit 3: the bias is indexed by row instead
     float Alpha;
     float Beta;
+    uint BiasOffset;
+    uint Act;
 };
 
 [[vk::push_constant]] ConstantBuffer<GemmParams> P;
+
+#include "Functions.hlsl"
+#include "GemmEpilogue.hlsli"
 
 static const uint BM = 64;
 static const uint BN = 64;
@@ -88,7 +94,7 @@ typedef CooperativeMatrix<float, 16, 16, MatrixUse::Accumulator> MatC;
             uint at = baseC + gm * P.Ldc + gn;                                                       \
             float r = P.Alpha * TileC[sg * 256 + ei];                                                \
             if (P.Beta != 0.0) { r = mad(P.Beta, C[at], r); }                                        \
-            C[at] = r;                                                                               \
+            C[at] = GemmEpilogue(r, gm, gn);                                                          \
         }                                                                                            \
     }                                                                                                \
     GroupMemoryBarrierWithGroupSync();

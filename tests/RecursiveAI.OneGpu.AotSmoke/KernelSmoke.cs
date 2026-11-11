@@ -177,7 +177,7 @@ internal static class KernelSmoke
         }
 
         wrong += Math.Abs(gotBig[0] - big.Sum(v => (double)v)) < 1e-2 ? 0 : 1;
-        return wrong + await GatherAndInt8Async(device);
+        return wrong + await GatherAndInt8Async(device) + await EpilogueAndDequantizeAsync(device);
     }
 
     // Embedding-style gather with a negative index, then an int8 GEMM with a zero point and a dynamic quantize, against plain C#.
@@ -283,5 +283,97 @@ internal static class KernelSmoke
         }
 
         return wrong;
+    }
+
+    // A product with a column bias and GELU in one dispatch, an 8-bit gather and DequantizeLinear, against plain C#.
+    static async Task<int> EpilogueAndDequantizeAsync(GpuDevice device)
+    {
+        var wrong = 0;
+        const int M = 5, N = 6, K = 4;
+        var a = new float[M * K];
+        var b = new float[K * N];
+        var bias = new float[N];
+        for (var i = 0; i < a.Length; i++)
+        {
+            a[i] = ((i * 7) % 11 - 5) / 4f;
+        }
+
+        for (var i = 0; i < b.Length; i++)
+        {
+            b[i] = ((i * 5) % 13 - 6) / 8f;
+        }
+
+        for (var i = 0; i < N; i++)
+        {
+            bias[i] = (i - 2) / 4f;
+        }
+
+        byte[] table = Enumerable.Range(0, 64).Select(i => (byte)(i * 7)).ToArray();
+        int[] ids = [3, 0, 7];
+        byte[] quantized = Enumerable.Range(0, 20).Select(i => (byte)(i * 13)).ToArray();
+        float[] scales = [0.5f, 0.25f];
+        using var ab = device.CreateBuffer<float>(a);
+        using var bb = device.CreateBuffer<float>(b);
+        using var biasBuf = device.CreateBuffer<float>(bias);
+        using var c = device.CreateBuffer<float>(M * N);
+        using var tableBuf = device.CreateBuffer<byte>(table);
+        using var idBuf = device.CreateBuffer<int>(ids);
+        using var gathered = device.CreateBuffer<byte>(GpuKernelBuffers.PaddedBoolLength(ids.Length * 8));
+        using var qBuf = device.CreateBuffer<byte>([.. quantized, 0, 0, 0, 0]);
+        using var scaleBuf = device.CreateBuffer<float>(scales);
+        using var dequantized = device.CreateBuffer<float>(quantized.Length);
+        using var gemm = new Gemm(device, GemmElementType.F32);
+        using var gather = new GatherKernels(device);
+        using var dequantize = new DequantizeKernels(device);
+
+        var commands = device.BeginCommands();
+        gemm.Encode(commands, new GemmProblem(M, N, K), ab, bb, c, new GemmEpilogue(biasBuf, 0, GemmActivation.GeluErf));
+        gather.EncodeGather(commands, tableBuf, 0, [8, 8], 0, idBuf, 0, ids.Length, gathered, 0);
+        dequantize.Encode<byte, float>(commands, qBuf, 0, [2, 10], 0, true, scaleBuf, 0, null, 0, dequantized, 0);
+        device.Submit(commands);
+
+        var gotC = new float[M * N];
+        var gotG = new byte[GpuKernelBuffers.PaddedBoolLength(ids.Length * 8)];
+        var gotD = new float[quantized.Length];
+        await c.ReadAsync(gotC);
+        await gathered.ReadAsync(gotG);
+        await dequantized.ReadAsync(gotD);
+        for (var m = 0; m < M; m++)
+        {
+            for (var n = 0; n < N; n++)
+            {
+                double sum = bias[n];
+                for (var k = 0; k < K; k++)
+                {
+                    sum += (double)a[m * K + k] * b[k * N + n];
+                }
+
+                var want = 0.5 * sum * (1 + Erf(sum / Math.Sqrt(2)));
+                wrong += Math.Abs(gotC[m * N + n] - want) < 1e-4 ? 0 : 1;
+            }
+        }
+
+        for (var r = 0; r < ids.Length; r++)
+        {
+            for (var h = 0; h < 8; h++)
+            {
+                wrong += gotG[r * 8 + h] == table[ids[r] * 8 + h] ? 0 : 1;
+            }
+        }
+
+        for (var i = 0; i < quantized.Length; i++)
+        {
+            wrong += gotD[i] == (float)quantized[i] * scales[i / 10] ? 0 : 1;
+        }
+
+        return wrong;
+    }
+
+    // Abramowitz and Stegun 7.1.26, enough for a 1e-4 smoke check.
+    static double Erf(double x)
+    {
+        var t = 1 / (1 + 0.3275911 * Math.Abs(x));
+        var y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.Exp(-x * x);
+        return x >= 0 ? y : -y;
     }
 }

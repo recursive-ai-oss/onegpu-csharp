@@ -3,10 +3,15 @@ namespace RecursiveAI.OneGpu.Kernels;
 /// <summary>Element and index handling shared by the gather, scatter and layout kernels.</summary>
 internal static class IndexSupport
 {
-    /// <summary>Selects the element width of a payload: 0 for halves, 1 for 4-byte values, 2 for 8-byte values.</summary>
-    public static int Width<T>(string operation, bool allowUnsigned = true)
+    /// <summary>Selects the element width of a payload: 0 for halves, 1 for 4-byte values, 2 for 8-byte values, 3 for single bytes (uint8 and int8, when <paramref name="allowBytes"/>).</summary>
+    public static int Width<T>(string operation, bool allowUnsigned = true, bool allowBytes = false)
         where T : unmanaged
     {
+        if (typeof(T) == typeof(byte) || typeof(T) == typeof(sbyte))
+        {
+            return allowBytes ? 3 : throw new GpuKernelShapeException(operation, "T", $"element type {typeof(T).Name} is not supported here");
+        }
+
         var kind = KernelTypes.Of<T>(operation);
         if (kind == ElementKind.U32 && !allowUnsigned)
         {
@@ -51,7 +56,25 @@ internal static class IndexSupport
 
     /// <summary>The element count of one buffer range in 32-bit-word units a half buffer needs: threads for a dense output of <paramref name="count"/> elements.</summary>
     public static long Threads(int width, int offset, long count) =>
-        width == 0 ? (((long)offset + count - 1) >> 1) - (offset >> 1) + 1 : count;
+        width switch
+        {
+            0 => (((long)offset + count - 1) >> 1) - (offset >> 1) + 1,
+            3 => (((long)offset + count - 1) >> 2) - (offset >> 2) + 1,
+            _ => count,
+        };
+
+    /// <summary>Checks a buffer range for a payload of the given width: halves and bytes are packed into 32-bit words, so the last word must lie inside the buffer.</summary>
+    public static void Range(string operation, string name, int width, int bufferLength, int offset, long extent)
+    {
+        if (width == 3)
+        {
+            Check.RangeBytes(operation, name, bufferLength, offset, extent);
+        }
+        else
+        {
+            Check.Range(operation, name, bufferLength, offset, extent, width == 0);
+        }
+    }
 
     public static int RowMajorStrides(ReadOnlySpan<int> shape, Span<long> strides)
     {

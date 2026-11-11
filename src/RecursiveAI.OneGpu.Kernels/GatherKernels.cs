@@ -9,7 +9,7 @@ namespace RecursiveAI.OneGpu.Kernels;
 /// <remarks>
 /// <para>
 /// Payload types are <see cref="float"/>, <see cref="int"/>, <see cref="uint"/> (4 bytes), <see cref="Half"/> (2 bytes; buffers must end on a
-/// 32-bit word, see <see cref="GpuKernelBuffers.PaddedHalfLength"/>) and <see cref="long"/> (8 bytes). Indices are <see cref="int"/> or
+/// 32-bit word, see <see cref="GpuKernelBuffers.PaddedHalfLength"/>), <see cref="byte"/> and <see cref="sbyte"/> (1 byte; likewise, see <see cref="GpuKernelBuffers.PaddedBoolLength"/>) and <see cref="long"/> (8 bytes). Indices are <see cref="int"/> or
 /// <see cref="long"/>; a negative index counts from the end of its axis, as in ONNX. The output must not overlap the data.
 /// </para>
 /// <para>
@@ -26,24 +26,27 @@ public sealed class GatherKernels : IDisposable
     const int NdWords = 22;
 
     readonly GpuDevice _device;
-    readonly WideKernelPipeline?[] _gather = new WideKernelPipeline?[3];
-    readonly WideKernelPipeline?[] _elements = new WideKernelPipeline?[3];
-    readonly WideKernelPipeline?[] _nd = new WideKernelPipeline?[3];
+    readonly WideKernelPipeline?[] _gather = new WideKernelPipeline?[4];
+    readonly WideKernelPipeline?[] _elements = new WideKernelPipeline?[4];
+    readonly WideKernelPipeline?[] _nd = new WideKernelPipeline?[4];
+    readonly int _maxBindGroups;
     GpuBuffer<uint>? _scratchStatus;
 
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
-    public GatherKernels(GpuDevice device)
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
+    public GatherKernels(GpuDevice device, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
     }
 
     /// <summary>
     /// Records ONNX <c>Gather</c>: the data tensor is <c>[outer, axisLength, inner]</c> around <paramref name="axis"/>, and
     /// <c>output[o, i, n] = data[o, indices[i], n]</c>, so the output shape is the data shape with the axis replaced by the shape of the indices.
     /// </summary>
-    /// <typeparam name="T">A payload type: <see cref="float"/>, <see cref="Half"/>, <see cref="int"/>, <see cref="uint"/> or <see cref="long"/>.</typeparam>
+    /// <typeparam name="T">A payload type: <see cref="float"/>, <see cref="Half"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/>, <see cref="byte"/> or <see cref="sbyte"/>.</typeparam>
     /// <typeparam name="TIndex"><see cref="int"/> or <see cref="long"/>.</typeparam>
     /// <param name="encoder">The encoder to record into.</param>
     /// <param name="data">The data tensor, dense row-major.</param>
@@ -66,7 +69,7 @@ public sealed class GatherKernels : IDisposable
         ArgumentNullException.ThrowIfNull(data);
         ArgumentNullException.ThrowIfNull(indices);
         ArgumentNullException.ThrowIfNull(output);
-        var width = IndexSupport.Width<T>(Name);
+        var width = IndexSupport.Width<T>(Name, allowBytes: true);
         var wide = IndexSupport.WideIndex<TIndex>(Name);
         var rank = dataShape.Length;
         if (rank == 0)
@@ -100,11 +103,10 @@ public sealed class GatherKernels : IDisposable
             throw new GpuKernelShapeException(Name, nameof(indexCount), $"the output holds {total} elements, more than the {Check.MaxElements} the kernels address");
         }
 
-        var half = width == 0;
         var elemWidth = width == 2 ? 2L : 1L;
-        Check.Range(Name, nameof(data), data.Length, offsetData, dataCount, half);
+        IndexSupport.Range(Name, nameof(data), width, data.Length, offsetData, dataCount);
         Check.Range(Name, nameof(indices), indices.Length, offsetIndices, indexCount);
-        Check.Range(Name, nameof(output), output.Length, offsetOutput, total, half);
+        IndexSupport.Range(Name, nameof(output), width, output.Length, offsetOutput, total);
         CheckAddressable(Name, dataCount * elemWidth, total * elemWidth, (long)indexCount * (wide ? 2 : 1));
         if (total == 0)
         {
@@ -132,7 +134,7 @@ public sealed class GatherKernels : IDisposable
     /// The output has the shape of the indices; the data and the indices have the same rank and agree on every dimension except the axis,
     /// where the indices' dimension may be anything (the data's dimension bounds the index values), and may be smaller on the other dimensions.
     /// </summary>
-    /// <typeparam name="T">A payload type: <see cref="float"/>, <see cref="Half"/>, <see cref="int"/>, <see cref="uint"/> or <see cref="long"/>.</typeparam>
+    /// <typeparam name="T">A payload type: <see cref="float"/>, <see cref="Half"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/>, <see cref="byte"/> or <see cref="sbyte"/>.</typeparam>
     /// <typeparam name="TIndex"><see cref="int"/> or <see cref="long"/>.</typeparam>
     /// <param name="encoder">The encoder to record into.</param>
     /// <param name="data">The data tensor, dense row-major.</param>
@@ -155,7 +157,7 @@ public sealed class GatherKernels : IDisposable
         ArgumentNullException.ThrowIfNull(data);
         ArgumentNullException.ThrowIfNull(indices);
         ArgumentNullException.ThrowIfNull(output);
-        var width = IndexSupport.Width<T>(Name);
+        var width = IndexSupport.Width<T>(Name, allowBytes: true);
         var wide = IndexSupport.WideIndex<TIndex>(Name);
         var rank = dataShape.Length;
         if (rank == 0 || rank > 8)
@@ -179,11 +181,10 @@ public sealed class GatherKernels : IDisposable
 
         var dataCount = Check.Product(Name, nameof(dataShape), dataShape);
         var total = Check.Product(Name, nameof(indicesShape), indicesShape);
-        var half = width == 0;
         var elemWidth = width == 2 ? 2L : 1L;
-        Check.Range(Name, nameof(data), data.Length, offsetData, dataCount, half);
+        IndexSupport.Range(Name, nameof(data), width, data.Length, offsetData, dataCount);
         Check.Range(Name, nameof(indices), indices.Length, offsetIndices, total);
-        Check.Range(Name, nameof(output), output.Length, offsetOutput, total, half);
+        IndexSupport.Range(Name, nameof(output), width, output.Length, offsetOutput, total);
         CheckAddressable(Name, dataCount * elemWidth, total * elemWidth, total * (wide ? 2 : 1));
         if (total == 0)
         {
@@ -221,7 +222,7 @@ public sealed class GatherKernels : IDisposable
     /// Records ONNX <c>GatherND</c>: the last dimension of the indices holds coordinates into the data after <paramref name="batchDims"/> leading
     /// dimensions that data and indices share; the output is <c>indices.shape[:-1] + data.shape[batchDims + last:]</c>.
     /// </summary>
-    /// <typeparam name="T">A payload type: <see cref="float"/>, <see cref="Half"/>, <see cref="int"/>, <see cref="uint"/> or <see cref="long"/>.</typeparam>
+    /// <typeparam name="T">A payload type: <see cref="float"/>, <see cref="Half"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/>, <see cref="byte"/> or <see cref="sbyte"/>.</typeparam>
     /// <typeparam name="TIndex"><see cref="int"/> or <see cref="long"/>.</typeparam>
     /// <param name="encoder">The encoder to record into.</param>
     /// <param name="data">The data tensor, dense row-major.</param>
@@ -244,7 +245,7 @@ public sealed class GatherKernels : IDisposable
         ArgumentNullException.ThrowIfNull(data);
         ArgumentNullException.ThrowIfNull(indices);
         ArgumentNullException.ThrowIfNull(output);
-        var width = IndexSupport.Width<T>(Name);
+        var width = IndexSupport.Width<T>(Name, allowBytes: true);
         var wide = IndexSupport.WideIndex<TIndex>(Name);
         NdGeometry(Name, dataShape, indicesShape, batchDims, out var last, out var tuples, out var slice, out var perBatch, out var batchStride);
         var dataCount = Check.Product(Name, nameof(dataShape), dataShape);
@@ -254,12 +255,11 @@ public sealed class GatherKernels : IDisposable
             throw new GpuKernelShapeException(Name, nameof(indicesShape), $"the output holds {total} elements, more than the {Check.MaxElements} the kernels address");
         }
 
-        var half = width == 0;
         var elemWidth = width == 2 ? 2L : 1L;
         var indexCount = checked(tuples * last);
-        Check.Range(Name, nameof(data), data.Length, offsetData, dataCount, half);
+        IndexSupport.Range(Name, nameof(data), width, data.Length, offsetData, dataCount);
         Check.Range(Name, nameof(indices), indices.Length, offsetIndices, indexCount);
-        Check.Range(Name, nameof(output), output.Length, offsetOutput, total, half);
+        IndexSupport.Range(Name, nameof(output), width, output.Length, offsetOutput, total);
         CheckAddressable(Name, dataCount * elemWidth, total * elemWidth, indexCount * (wide ? 2 : 1));
         if (total == 0)
         {
@@ -282,6 +282,20 @@ public sealed class GatherKernels : IDisposable
         FillNdDims(w[10..], dataShape, batchDims, last);
         var pipeline = _nd[width] ??= Create(width, 2, NdWords);
         pipeline.Record(encoder, w, gx, gy, 1, [data.Buffer, indices.Buffer, output.Buffer, StatusBuffer(status)]);
+    }
+
+    internal int BindGroupsCreated => WideKernelPipeline.Total(_gather, _elements, _nd);
+
+    /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
+    public void ReleaseBindings()
+    {
+        foreach (var set in new[] { _gather, _elements, _nd })
+        {
+            for (var i = 0; i < set.Length; i++)
+            {
+                set[i]?.ReleaseBindings();
+            }
+        }
     }
 
     /// <summary>Releases the pipelines and bind groups once the GPU has finished with them.</summary>
@@ -400,20 +414,20 @@ public sealed class GatherKernels : IDisposable
         {
             case 0:
                 {
-                    var e = Gather.Variants.Get(new Gather.Key(elem: width switch { 0 => Gather.ElemValue.W16, 2 => Gather.ElemValue.W64, _ => Gather.ElemValue.W32 })).GatherOp;
-                    return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), words, "gather");
+                    var e = Gather.Variants.Get(new Gather.Key(elem: width switch { 3 => Gather.ElemValue.W8, 0 => Gather.ElemValue.W16, 2 => Gather.ElemValue.W64, _ => Gather.ElemValue.W32 })).GatherOp;
+                    return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), words, "gather", _maxBindGroups);
                 }
 
             case 1:
                 {
-                    var e = GatherElements.Variants.Get(new GatherElements.Key(elem: width switch { 0 => GatherElements.ElemValue.W16, 2 => GatherElements.ElemValue.W64, _ => GatherElements.ElemValue.W32 })).GatherElementsOp;
-                    return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), words, "gather elements");
+                    var e = GatherElements.Variants.Get(new GatherElements.Key(elem: width switch { 3 => GatherElements.ElemValue.W8, 0 => GatherElements.ElemValue.W16, 2 => GatherElements.ElemValue.W64, _ => GatherElements.ElemValue.W32 })).GatherElementsOp;
+                    return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), words, "gather elements", _maxBindGroups);
                 }
 
             default:
                 {
-                    var e = GatherNd.Variants.Get(new GatherNd.Key(elem: width switch { 0 => GatherNd.ElemValue.W16, 2 => GatherNd.ElemValue.W64, _ => GatherNd.ElemValue.W32 })).GatherNdOp;
-                    return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), words, "gather nd");
+                    var e = GatherNd.Variants.Get(new GatherNd.Key(elem: width switch { 3 => GatherNd.ElemValue.W8, 0 => GatherNd.ElemValue.W16, 2 => GatherNd.ElemValue.W64, _ => GatherNd.ElemValue.W32 })).GatherNdOp;
+                    return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), words, "gather nd", _maxBindGroups);
                 }
         }
     }

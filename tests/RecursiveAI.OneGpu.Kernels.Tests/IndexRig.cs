@@ -11,7 +11,7 @@ internal static class IndexRig
 
     /// <summary>A buffer length that keeps half-precision buffers on a 32-bit word.</summary>
     public static int Padded<T>(int n)
-        where T : unmanaged => typeof(T) == typeof(Half) ? GpuKernelBuffers.PaddedHalfLength(n) : n;
+        where T : unmanaged => typeof(T) == typeof(Half) ? GpuKernelBuffers.PaddedHalfLength(n) : (typeof(T) == typeof(byte) || typeof(T) == typeof(sbyte)) ? GpuKernelBuffers.PaddedBoolLength(Math.Max(n, 1)) : n;
 
     /// <summary>A pseudo-random payload element: all bit patterns of the type's width are possible except NaN halves and floats, which are made finite.</summary>
     public static T Make<T>(int i)
@@ -39,6 +39,16 @@ internal static class IndexRig
         if (typeof(T) == typeof(uint))
         {
             return (T)(object)h;
+        }
+
+        if (typeof(T) == typeof(byte))
+        {
+            return (T)(object)(byte)(h >> 8);
+        }
+
+        if (typeof(T) == typeof(sbyte))
+        {
+            return (T)(object)(sbyte)(h >> 8);
         }
 
         if (typeof(T) == typeof(long))

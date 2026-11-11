@@ -35,11 +35,12 @@ device.Submit(encoder);
 | `TransposeKernels` | N-d permutation, NCHW↔NHWC, split and merge of attention heads |
 | `AttentionKernels` | fused scaled dot-product attention with masks, key lengths, causal rule and grouped heads (see [attention.md](attention.md)) |
 
-| `GatherKernels` | ONNX Gather (any axis, negative indices, int32 or int64 indices; the embedding lookup), GatherElements, GatherND (with batch dimensions) |
+| `GatherKernels` | ONNX Gather (any axis, negative indices, int32 or int64 indices; the embedding lookup), GatherElements, GatherND (with batch dimensions), over 8-, 16-, 32- and 64-bit payloads |
 | `ScatterKernels` | ScatterND and ScatterElements with reduction none, add, mul, min or max |
 | `LayoutKernels` | Slice (including negative steps), Expand, Concat (up to four inputs per pass, more by chaining) |
 | `Int8Gemm` | MatMulInteger (uint8/int8 in any mix, scalar or per-row/column zero points, int32 result), the float-scaled form and the requantized form of QLinearMatMul |
 | `DynamicQuantizeKernels` | DynamicQuantizeLinear (float32 to uint8 with scale and zero point) |
+| `DequantizeKernels` | DequantizeLinear: uint8, int8 or int32 to float32 or Half, per tensor or per axis, optional zero point |
 
 Adding an operation to the element-wise family is a case in `Shaders/Functions.hlsl` and an enum member: the operation is a push constant, not a pipeline.
 
@@ -62,7 +63,7 @@ Adding an operation to the element-wise family is a case in `Shaders/Functions.h
 
 A family builds a bind group the first time it sees a set of buffers and reuses it on every later call with the same set, so a warm call allocates nothing. Every family constructor takes
 `maxCachedBindGroups` (default `GpuKernelBindings.DefaultMaxCachedBindGroups`, 1024). When a family has seen more sets than that it drops all of them and starts again, so the bound should exceed the number of
-distinct buffer sets one run records: a 72-weight transformer touches 72 sets in `Gemm` per pass, and with a bound of 64 every pass rebuilt them all (72, then 144 bind groups over two passes) where a bound of 72 or more builds
+distinct buffer sets one run records (a smaller bound is correct, only slower: a dropped group is destroyed after the command buffers that refer to it are submitted, in the browser too): a 72-weight transformer touches 72 sets in `Gemm` per pass, and with a bound of 64 every pass rebuilt them all (72, then 144 bind groups over two passes) where a bound of 72 or more builds
 72 once. `ReleaseBindings()` on every family (and `Gemm`) drops the cached groups immediately; call it after disposing buffers that will not be used again, or after replacing a model's buffers, so stale entries do not keep them reachable.
 The pipelines stay, and the next call with a set of buffers builds its group again.
 
@@ -113,6 +114,12 @@ The reductions, softmax and normalisation have both modes.
   a per-thread bounds flag instead, because its rows differ between the threads of one workgroup.
 
 ## Gather, scatter, layout and int8
+
+- **8-bit payloads.** `GatherKernels` also copies `byte` (uint8) and `sbyte` (int8) elements, for int8 embedding tables. They are packed four to a 32-bit word like bool tensors (allocate
+  `GpuKernelBuffers.PaddedBoolLength`), one thread owns an output word, and the result is bit-exact. Scatter, concat and the other layout kernels do not take them.
+- **DequantizeLinear** (`DequantizeKernels`) computes `(float)(x - zeroPoint) * scale` as onemodel's CPU kernel does: the subtraction wraps in 32 bits, the conversion rounds to nearest even, one
+  float32 multiply follows. float32 output is bit-exact with the CPU on every device tested (including int32 inputs near the extremes); Half output rounds that value to nearest even.
+  Per-axis scales and zero points follow the ONNX `axis` attribute; the scale is float32; a zero point has the element type of the input. Blocked quantization and 16-bit inputs are not covered.
 
 - **Payloads** are 32-bit (float, int, uint for gather) or 64-bit (long) words, and Half (as 16-bit words). Results are **bit-exact** against the CPU for every
   payload, since these kernels only move values (scatter reductions on floats do one operation per update, in a fixed order).

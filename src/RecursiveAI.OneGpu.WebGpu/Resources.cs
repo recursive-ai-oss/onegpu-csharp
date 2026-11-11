@@ -179,12 +179,30 @@ internal sealed class WebBindGroup : GpuBindGroup, IWebGpuObject
 
     public int Id { get; }
 
+    // Commands that name a bind group are only run when their encoder is submitted, and the browser forbids destroying an object
+    // commands still refer to. So an encoder pins every group it records; a group disposed meanwhile is destroyed when its last
+    // encoder has been submitted (the destroy then follows that encoder's commands in the stream).
+    private int _pins;
+
+    internal void Pin() => _pins++;
+
+    internal void Unpin()
+    {
+        if (--_pins == 0 && _disposed)
+        {
+            _device.Destroy(Id, 0);
+        }
+    }
+
     public override void Dispose()
     {
         if (!_disposed)
         {
             _disposed = true;
-            _device.Destroy(Id, 0);
+            if (_pins == 0)
+            {
+                _device.Destroy(Id, 0);
+            }
         }
     }
 }

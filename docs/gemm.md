@@ -48,6 +48,15 @@ runs on one device and driver give the same bits. Different devices and drivers 
 contraction and rounding of the compiler's output are theirs). `Fast` may use another summation order and the matrix-hardware variants, so
 `Fast` and `Deterministic` results differ by rounding.
 
+## Bias and activation epilogue
+
+`Encode` takes an optional `GemmEpilogue`: a float32 bias vector (element `j` is added to column `j` of every row of every product in the batch, from an element offset) and an activation
+(`Relu`, `GeluErf`, `GeluTanh`), applied to each result element after `Alpha * product + Beta * C`, in the same dispatch and by every variant (portable, cooperative-matrix, simdgroup-matrix).
+The activations are the functions `ElementwiseKernels` runs (`GpuUnaryOp.Relu`, `GeluErf`, `GeluTanh`), and the bias is one float32 add, so the fused result is the result of the product followed by those kernels:
+the tests compare the two bit for bit (every dtype, variant, mode, activation, with and without bias) and the comparison is exact on every device tested. Where a compiler fuses
+`Alpha * product` with the bias add into one fused multiply-add, the last bit can differ for an `Alpha` that is neither 1 nor a power of two; none of the devices tested did. Bias and activation are push
+constants plus one more binding, not pipeline variants, so the deterministic variant stays deterministic (the epilogue is per element). The bias is float32 whatever the input type, because C is float32.
+
 ## Accuracy
 
 Metric: `max |gpu - ref| / max |ref|` over the output, with the reference computed in double from the inputs after rounding to the input

@@ -71,6 +71,7 @@ public sealed class AttentionKernels : IDisposable
     readonly GpuDevice _device;
     readonly KernelPipeline?[] _tile = new KernelPipeline?[16];
     readonly KernelPipeline?[] _coopTile = new KernelPipeline?[6];
+    readonly int _maxBindGroups;
     readonly bool _pairs;
     readonly bool _coop;
     readonly bool _coopBf16;
@@ -87,12 +88,14 @@ public sealed class AttentionKernels : IDisposable
     /// <param name="variant">The kernel to use; <see cref="GpuAttentionVariant.Auto"/> picks one for the device.</param>
     /// <param name="submissionWorkBudget">Operations after which a long call is cut into dispatches of whole workgroups with the encoder told the work between them (see <see cref="GpuCommandEncoder.ReportWork"/>); null takes the device's <see cref="GpuComputeCapabilities.SubmissionWorkBudget"/>, 0 never cuts. The cut changes no bit.</param>
     /// <param name="allowMatrixHardware">False keeps <see cref="GpuAttentionVariant.Auto"/> off the matrix-hardware kernel even where the device has it.</param>
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
     /// <exception cref="GpuUnsupportedException"><see cref="GpuAttentionVariant.Pairs"/> was requested and the device (or <paramref name="allowSubgroups"/>) rules out subgroup shuffles; <see cref="GpuAttentionVariant.Cooperative"/> was requested and the device (or <paramref name="allowMatrixHardware"/>) rules out matrix hardware; or the device offers fewer than 7 storage buffers per stage.</exception>
-    public AttentionKernels(GpuDevice device, bool allowSubgroups = true, GpuAttentionVariant variant = GpuAttentionVariant.Auto, bool allowMatrixHardware = true, ulong? submissionWorkBudget = null)
+    public AttentionKernels(GpuDevice device, bool allowSubgroups = true, GpuAttentionVariant variant = GpuAttentionVariant.Auto, bool allowMatrixHardware = true, ulong? submissionWorkBudget = null, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         _budget = submissionWorkBudget ?? device.Capabilities.Compute.SubmissionWorkBudget;
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
         var c = device.Capabilities.Compute;
         var min = c.SubgroupMinSize != 0 ? c.SubgroupMinSize : c.SubgroupSize;
         var shuffles = allowSubgroups && (c.SubgroupOperations & GpuSubgroupOperations.Basic) != 0 && (c.SubgroupOperations & GpuSubgroupOperations.Shuffle) != 0 && min >= 2;
@@ -352,6 +355,20 @@ public sealed class AttentionKernels : IDisposable
         merge.Record(encoder, c, cx, cy, part.Buffer, o.Buffer);
     }
 
+    internal int BindGroupsCreated => KernelPipeline.Total(_tile, _combine);
+
+    /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
+    public void ReleaseBindings()
+    {
+        foreach (var set in new[] { _tile, _coopTile, _combine })
+        {
+            for (var i = 0; i < set.Length; i++)
+            {
+                set[i]?.ReleaseBindings();
+            }
+        }
+    }
+
     /// <summary>Releases the pipelines, bind groups and the family's own scratch once the GPU has finished with them.</summary>
     public void Dispose()
     {
@@ -489,11 +506,11 @@ public sealed class AttentionKernels : IDisposable
         if (_device.Backend == GpuBackend.WebGpu)
         {
             var w = AttentionLoops.Variants.Get(new AttentionLoops.Key(f16: half, wave: _pairs, hd: wd)).AttentionTile;
-            return new KernelPipeline(_device, KernelSources.Make(w.EntryPoint, default, default, null, w.Wgsl, w.WgslEntryPoint, w.Layout), 7, TileWords, "attention-tile");
+            return new KernelPipeline(_device, KernelSources.Make(w.EntryPoint, default, default, null, w.Wgsl, w.WgslEntryPoint, w.Layout), 7, TileWords, "attention-tile", _maxBindGroups);
         }
 
         var e = Attention.Variants.Get(new Attention.Key(f16: half, wave: _pairs, hd: d)).AttentionTile;
-        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-tile");
+        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-tile", _maxBindGroups);
     }
 
     // The matrix kernel is written for 32-wide subgroups (four per workgroup) and 16x16x16 fragments of the 16-bit element type with a float32
@@ -543,12 +560,12 @@ public sealed class AttentionKernels : IDisposable
     {
         var d = dim switch { 0 => Shaders.AttentionCoop.HdValue.D32, 1 => Shaders.AttentionCoop.HdValue.D64, _ => Shaders.AttentionCoop.HdValue.D128 };
         var e = Shaders.AttentionCoop.Variants.Get(new Shaders.AttentionCoop.Key(bf16: bfloat16, hd: d)).AttnCoop;
-        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-coop-tile", requiredSubgroupSize: 32);
+        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-coop-tile", _maxBindGroups, requiredSubgroupSize: 32);
     }
 
     KernelPipeline CreateCombine(bool half, bool bfloat16)
     {
         var e = AttentionCombine.Variants.Get(new AttentionCombine.Key(f16: half && !bfloat16, bf16: bfloat16)).AttentionMerge;
-        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 2, CombineWords, "attention-combine");
+        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 2, CombineWords, "attention-combine", _maxBindGroups);
     }
 }

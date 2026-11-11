@@ -92,10 +92,12 @@ public sealed class GatherTests
             bad += await GatherCase<uint, long>(d, k, shape, axis, count, seed++);
             bad += await GatherCase<long, int>(d, k, shape, axis, count, seed++);
             bad += await GatherCase<long, long>(d, k, shape, axis, count, seed++);
-            rows += 8;
+            bad += await GatherCase<byte, int>(d, k, shape, axis, count, seed++);
+            bad += await GatherCase<sbyte, long>(d, k, shape, axis, count, seed++);
+            rows += 10;
         }
 
-        Rig.Row(d, "gather", "f32/f16/i32/u32/i64", $"{rows} cases ({cases.Length} shapes x payload x int32/int64 indices, negative indices, odd offsets)", $"mismatching elements {bad}");
+        Rig.Row(d, "gather", "f32/f16/i32/u32/i64/u8/i8", $"{rows} cases ({cases.Length} shapes x payload x int32/int64 indices, negative indices, odd offsets)", $"mismatching elements {bad}");
         Assert.Equal(0, bad);
     }
 
@@ -240,8 +242,13 @@ public sealed class GatherTests
         Assert.Throws<GpuKernelShapeException>(() => k.EncodeGather(enc, data, 0, [], 0, idx, 0, 1, outp, 0));
         Assert.Throws<GpuKernelShapeException>(() => k.EncodeGather(enc, data, 0, [3, 5], 0, idx, 0, 1, outp, 0));
         Assert.Throws<GpuKernelShapeException>(() => k.EncodeGather(enc, data, 0, [int.MaxValue, 2], 0, idx, 0, 1, outp, 0));
-        using var bytes = d.CreateBuffer<byte>(16);
-        Assert.Throws<GpuKernelShapeException>(() => k.EncodeGather(enc, bytes, 0, [16], 0, idx, 0, 1, bytes, 0));
+        using var shorts = d.CreateBuffer<ushort>(16);
+        Assert.Throws<GpuKernelShapeException>(() => k.EncodeGather(enc, shorts, 0, [16], 0, idx, 0, 1, shorts, 0));
+        // Byte payloads are packed four to a word: a buffer that ends inside a word is refused.
+        using var bytes = d.CreateBuffer<byte>(18);
+        using var padded = d.CreateBuffer<byte>(20);
+        Assert.Throws<GpuKernelShapeException>(() => k.EncodeGather(enc, bytes, 0, [1, 18], 0, idx, 0, 1, padded, 0));
+        Assert.Throws<GpuKernelShapeException>(() => k.EncodeGather(enc, padded, 0, [1, 18], 0, idx, 0, 1, bytes, 0));
         using var floats = d.CreateBuffer<float>(4);
         Assert.Throws<GpuKernelShapeException>(() => k.EncodeGather(enc, data, 0, [3, 4], 0, floats, 0, 1, outp, 0));
         d.Submit(enc);
@@ -323,10 +330,12 @@ public sealed class GatherTests
             bad += await ElementsCase<Half, long>(d, k, shape, ishape, axis, seed++);
             bad += await ElementsCase<int, long>(d, k, shape, ishape, axis, seed++);
             bad += await ElementsCase<long, int>(d, k, shape, ishape, axis, seed++);
-            rows += 4;
+            bad += await ElementsCase<byte, long>(d, k, shape, ishape, axis, seed++);
+            bad += await ElementsCase<sbyte, int>(d, k, shape, ishape, axis, seed++);
+            rows += 6;
         }
 
-        Rig.Row(d, "gather elements", "f32/f16/i32/i64", $"{rows} cases (rank 1 to 8, index shapes smaller than the data off the axis, negative indices)", $"mismatching elements {bad}");
+        Rig.Row(d, "gather elements", "f32/f16/i32/i64/u8/i8", $"{rows} cases (rank 1 to 8, index shapes smaller than the data off the axis, negative indices)", $"mismatching elements {bad}");
         Assert.Equal(0, bad);
     }
 
@@ -422,10 +431,12 @@ public sealed class GatherTests
             bad += await NdCase<Half, long>(d, k, shape, ishape, batch, seed++);
             bad += await NdCase<int, long>(d, k, shape, ishape, batch, seed++);
             bad += await NdCase<long, int>(d, k, shape, ishape, batch, seed++);
-            rows += 4;
+            bad += await NdCase<byte, int>(d, k, shape, ishape, batch, seed++);
+            bad += await NdCase<sbyte, long>(d, k, shape, ishape, batch, seed++);
+            rows += 6;
         }
 
-        Rig.Row(d, "gather nd", "f32/f16/i32/i64", $"{rows} cases (tuple length 1 to 6, batch_dims 0 to 2, scalar and slice results, negative indices)", $"mismatching elements {bad}");
+        Rig.Row(d, "gather nd", "f32/f16/i32/i64/u8/i8", $"{rows} cases (tuple length 1 to 6, batch_dims 0 to 2, scalar and slice results, negative indices)", $"mismatching elements {bad}");
         Assert.Equal(0, bad);
     }
 }
