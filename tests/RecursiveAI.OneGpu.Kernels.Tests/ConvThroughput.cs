@@ -27,14 +27,6 @@ public sealed class ConvThroughput
         {
             using var k = ConvTests.Make(d, deterministic ? GpuKernelMode.Deterministic : GpuKernelMode.Fast, !noHardware);
             k.AllowKSplit = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_NOSPLIT") != "1";
-            if (Environment.GetEnvironmentVariable("TUNE") is { Length: > 0 } tune)
-            {
-                var t = tune.Split(',');
-                k.TuneTarget = long.Parse(t[0]);
-                k.TuneMinSteps = int.Parse(t[1]);
-                k.TuneMax = int.Parse(t[2]);
-            }
-
             k.AllowCoopImplicit = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_NOCOOP") != "1";
             foreach (var batch in batches)
             {

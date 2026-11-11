@@ -47,8 +47,9 @@ public enum GpuAttentionVariant
 /// a GPU, the keys are cut into up to 16 contiguous ranges of a multiple of 32 keys (the cut depends only on the shape) whose partial results a second pass
 /// merges in range order through a scratch buffer (<see cref="ScratchLength"/>). There are no atomics and no subgroup arithmetic, and every order is fixed by
 /// the code, so <see cref="GpuKernelMode.Fast"/> and <see cref="GpuKernelMode.Deterministic"/> run the same kernel and give identical bits on one device and
-/// driver; <c>pairs</c> and <c>rows</c> may differ from each other in the last bits, and so may devices. A cooperative-matrix variant would plug in beside
-/// these, chosen in the constructor from the device capabilities.</para>
+/// driver; <c>pairs</c> and <c>rows</c> may differ from each other in the last bits, and so may devices. On matrix hardware (cooperative matrices on Vulkan, simdgroup matrices on Apple GPUs, where
+/// float32 too) a matrix kernel replaces them, chosen in the constructor from the device capabilities; its matrix products are fixed functions of their operands and it keeps the same
+/// guarantees (see <see cref="Variant"/> and <see cref="FloatVariant"/>).</para>
 /// <para>Not thread-safe. Q, K and V may share one buffer; O must not overlap them.</para>
 /// </remarks>
 public sealed class AttentionKernels : IDisposable

@@ -105,6 +105,36 @@ This kernel serves `Fast` and `Deterministic` alike: every order is fixed by the
 its operands), there are no atomics and no subgroup arithmetic, and two runs on one device and driver give identical bits (checked per device by the tests). Devices differ
 from each other in the last bits, and so do the matrix and scalar kernels.
 
+### Apple simdgroup kernel (`AttentionSimd.hlsl`, Metal only)
+
+On Apple GPUs every element type (float32 with head dimension up to 64, half, bfloat16; head dimensions 32, 64 and 128) runs a single-pass kernel on 8 x 8 simdgroup
+matrices, in place of `pairs`/`rows` (those stay as the fallback and for `GpuAttentionVariant` overrides). `Variant` and `FloatVariant` name the kernel. The scalar kernels were
+10-20x slower than GEMM + softmax + GEMM here; this one is at or below the unfused chain at every reference shape (table below).
+
+- **Scores transposed.** `Sᵀ = K Qᵀ`, so a row of the softmax is a column of the matrix and each lane owns the same row across blocks; no per-row scaling of an accumulator
+  through memory is needed unless the maximum changes.
+- **Reference maximum.** Each row keeps a reference `m` raised only when a block's maximum exceeds it by more than 8 (`REF_SLACK`): `exp(score − m)` is then at most `e⁸`, far from overflow,
+  and the accumulators are rescaled by `exp(old − new)` through workgroup memory only on a raise (the decision is made per workgroup from flags, so the barriers stay uniform). The first block
+  sets `m` with no rescale. Whether a rescale happens depends only on the data, never on timing.
+- **Query-direct variant.** For 16 or more queries the 4 simdgroups of a workgroup (64 rows) reload their Q fragments from the tensor at each step instead of keeping them in registers
+  (the last 10-15 %); the last 16-row block slides back so no row is written twice. Decoder steps and very short queries keep Q in registers, one simdgroup per 16 rows.
+- K and V fragments load straight from the buffers when the key block is full and the head dimension is a multiple of 16; otherwise through a staged tile.
+
+Indicative M2 wall time, ms, validation off, 12 heads of 64 (Whisper encoder) or BERT/MiniLM heads: unfused f32 GEMM + softmax + GEMM against the fused kernel before (`pairs`) and after.
+
+| Shape | unfused f32 | fused f32 before | fused f32 after | fused f16 after |
+|---|---|---|---|---|
+| Whisper encoder, 1500 keys | 13.7 | 26.7-32 | 10.3 | 8.9 |
+| BERT-base B8 S512 | 11.5 | 18-19 | 9.3 | 8.1 |
+| BERT-base B1 S512 | 2.0 | | 1.4 | 1.2 |
+| MiniLM B8 S128 | 1.03 | | 0.47 | 0.42 |
+| Whisper decoder, 448 cached keys | 0.24 | | 0.21 | 0.20 |
+| Whisper cross-attention, 1 query | 0.75 | | 0.30 | 0.17 |
+
+Accuracy (scaled, double reference): float32 1.5e-6 on the model shapes and 4.5e-6 on scores that keep rising or are wide (the same as the scalar kernels there), half 5.0e-4, bfloat16 4.4e-3;
+fused against unfused float32 at most 9.7e-7. Two runs are bit-identical. As with the other kernels, `Fast` and `Deterministic` run the same code. The 8x8 product is a fixed function of its operands and
+each output tile is summed by one simdgroup in key order, so it counts as a fixed order; the scores and the O rescale use no atomics or subgroup arithmetic.
+
 ## Tolerances
 
 Scaled error (max |gpu − reference| / max |reference| per output, reference in double on the CPU, inputs rounded to half first for half rows): float32

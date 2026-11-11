@@ -35,9 +35,10 @@ public enum ConvVariant
 /// of the result.
 /// </para>
 /// <para>
-/// <b>Determinism.</b> No kernel here uses an atomic, a subgroup operation or a split of the reduction: each output is summed in an order fixed by the shape
-/// (the matrix product's, see <see cref="Gemm"/>, or the window order for the direct kernels). <see cref="GpuKernelMode.Deterministic"/> only selects the deterministic matrix product, so
-/// results are bit-identical run to run on one device and driver in that mode; <see cref="GpuKernelMode.Fast"/> may use matrix hardware, whose summation order is the hardware's.
+/// <b>Determinism.</b> No kernel here uses an atomic or a subgroup operation: each output is summed in an order fixed by the shape (the matrix product's, see <see cref="Gemm"/>,
+/// the window order for the direct kernels, or shape-determined ranges of k added in range order when a small grid splits k). <see cref="GpuKernelMode.Deterministic"/> selects the deterministic
+/// matrix product, or on Apple GPUs the float32 simdgroup kernel, whose matrix product is a fixed function of its operands, so results are bit-identical run to run on one device and driver in that mode;
+/// <see cref="GpuKernelMode.Fast"/> may use matrix hardware elsewhere, whose summation order is the hardware's.
 /// </para>
 /// <para>
 /// Operands must lie in buffers made by <see cref="GpuDevice.CreateBuffer{T}(int, BufferUsage, string?)"/>; half buffers must end on a 32-bit word
@@ -101,9 +102,6 @@ public sealed class ConvKernels : IDisposable
 
     /// <summary>Lets tests and timing runs turn the split of k off to compare with the whole-k kernel.</summary>
     internal bool AllowKSplit { get; set; } = true;
-    internal long TuneTarget { get; set; } = SplitBelowWorkgroups;
-    internal int TuneMinSteps { get; set; } = MinStepsPerSplit;
-    internal int TuneMax { get; set; } = MaxKSplits;
 
     /// <summary>The mode the instance was created with.</summary>
     public GpuKernelMode Mode => _mode;
@@ -578,12 +576,12 @@ public sealed class ConvKernels : IDisposable
         var narrow = wide < NarrowBelowWorkgroups;
         var groups = narrow ? ((ohw + 31) / 32) * ((coutG + 63) / 64) * p.Groups * p.Batch : wide;
         var steps = (kElems + 15) / 16;
-        if (!AllowKSplit || groups >= TuneTarget || steps < 2 * TuneMinSteps)
+        if (!AllowKSplit || groups >= SplitBelowWorkgroups || steps < 2 * MinStepsPerSplit)
         {
             return (narrow, 1, (int)kElems);
         }
 
-        var splits = (int)Math.Min(Math.Min(TuneMax, (TuneTarget + groups - 1) / groups), steps / TuneMinSteps);
+        var splits = (int)Math.Min(Math.Min(MaxKSplits, (SplitBelowWorkgroups + groups - 1) / groups), steps / MinStepsPerSplit);
         if (splits < 2)
         {
             return (narrow, 1, (int)kElems);
