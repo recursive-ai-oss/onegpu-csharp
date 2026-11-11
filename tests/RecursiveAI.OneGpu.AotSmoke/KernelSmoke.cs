@@ -90,9 +90,9 @@ internal static class KernelSmoke
                 for (var j = 0; j < visible; j++)
                 {
                     double dot = 0;
-                    for (var x = 0; x < AD; x++)
+                    for (var e = 0; e < AD; e++)
                     {
-                        dot += (double)aq[(((h * ASq) + i) * AD) + x] * ak[(((h * ASk) + j) * AD) + x];
+                        dot += (double)aq[(((h * ASq) + i) * AD) + e] * ak[(((h * ASk) + j) * AD) + e];
                     }
 
                     s[j] = dot / Math.Sqrt(AD);
@@ -100,15 +100,15 @@ internal static class KernelSmoke
                 }
 
                 var norm = s.Sum(v => Math.Exp(v - top));
-                for (var x = 0; x < AD; x++)
+                for (var e = 0; e < AD; e++)
                 {
                     double acc = 0;
                     for (var j = 0; j < visible; j++)
                     {
-                        acc += Math.Exp(s[j] - top) * av[(((h * ASk) + j) * AD) + x];
+                        acc += Math.Exp(s[j] - top) * av[(((h * ASk) + j) * AD) + e];
                     }
 
-                    wrong += Math.Abs(gotAttn[(((h * ASq) + i) * AD) + x] - (acc / norm)) < 1e-5 ? 0 : 1;
+                    wrong += Math.Abs(gotAttn[(((h * ASq) + i) * AD) + e] - (acc / norm)) < 1e-5 ? 0 : 1;
                 }
             }
         }
