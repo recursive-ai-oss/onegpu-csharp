@@ -140,6 +140,17 @@ public static partial class Runner
                         error = ex.ToString();
                     }
 
+                    // A test that skips itself at run time (Assert.Skip) is a skip, not a failure.
+                    var selfSkipped = error is not null && error.Contains("$XunitDynamicSkip$", StringComparison.Ordinal);
+                    if (selfSkipped)
+                    {
+                        skipped++;
+                        w.WriteString("status", "skipped");
+                        w.WriteString("reason", "skipped by the test");
+                        w.WriteEndObject();
+                        continue;
+                    }
+
                     if (error is null)
                     {
                         passed++;

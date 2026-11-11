@@ -1,7 +1,7 @@
 # Requests for the shader compiler
 
 Each file is the smallest program that needs one feature, with the output the GEMM and int8 kernels would use. The files do not compile
-yet (apart from the defect report, which compiles and shows the wrong Metal output).
+yet.
 
 ## `cooperative_matrix.hlsl`, `bfloat16.hlsl`
 
@@ -41,7 +41,3 @@ SPIR-V: `OpSDot` / `OpUDot` (`OpCapability DotProduct`, `DotProductInput4x8BitPa
 Device feature: `shaderIntegerDotProduct`.
 MSL: no instruction; emit the four-lane expansion: `as_type<char4>(a)`, `as_type<char4>(b)` widened to `int4`, `dot()` then add (for unsigned, `uchar4`/`uint4`).
 WGSL: `dot4I8Packed(a, b)` and `dot4U8Packed(a, b)` (language feature `packed_4x8_integer_dot_product`) plus the addition.
-
-## `continue_in_unrolled_loop.hlsl`
-
-A defect: see the file. The GEMM shader works around it.

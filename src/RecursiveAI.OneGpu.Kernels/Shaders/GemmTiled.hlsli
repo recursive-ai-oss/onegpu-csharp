@@ -162,9 +162,8 @@ void GemmTiledBody(uint3 group, uint tid)
         GroupMemoryBarrierWithGroupSync();
     }
 
-    // beta == 0 never reads C, so uninitialised output memory (even NaN) is fine, as in BLAS. The bounds are tested with positive
-    // conditions around the store rather than a continue: the Metal output of the shader compiler dropped the
-    // continue inside the unrolled loops, so the guard never ran.
+    // beta == 0 never reads C, so uninitialised output memory (even NaN) is fine, as in BLAS. The 16 stores are straight-line calls
+    // because the register tile is sixteen scalars; each one tests its own bounds.
     StoreElement(baseC, m0 + ty + 0, n0 + tx + 0, c00);
     StoreElement(baseC, m0 + ty + 0, n0 + tx + 16, c01);
     StoreElement(baseC, m0 + ty + 0, n0 + tx + 32, c02);
