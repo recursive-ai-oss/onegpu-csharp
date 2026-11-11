@@ -9,7 +9,6 @@ namespace RecursiveAI.OneGpu.Kernels;
 /// </summary>
 internal sealed class WideKernelPipeline : IDisposable
 {
-    const int MaxCachedGroups = 256;
     const int MaxBuffers = 8;
 
     readonly GpuDevice _device;
@@ -17,10 +16,12 @@ internal sealed class WideKernelPipeline : IDisposable
     readonly Dictionary<BindKey, GpuBindGroup> _groups = [];
     readonly BindGroupEntry[] _entries;
     readonly int _span;
+    readonly int _maxGroups;
 
-    public WideKernelPipeline(GpuDevice device, in ShaderSource source, int pushWords, string label)
+    public WideKernelPipeline(GpuDevice device, in ShaderSource source, int pushWords, string label, int maxGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         _device = device;
+        _maxGroups = maxGroups;
         _kernel = device.CreateComputeKernel(source, label);
         if (_kernel.PushConstants.Size != pushWords * 4 || _kernel.Bindings.Count > MaxBuffers)
         {
@@ -39,6 +40,35 @@ internal sealed class WideKernelPipeline : IDisposable
 
     public GpuComputeKernel Kernel => _kernel;
 
+    /// <summary>How many bind groups this pipeline has built, for tests of the cache.</summary>
+    public int Created { get; private set; }
+
+    /// <summary>Sums <see cref="Created"/> over pipelines that may not exist yet.</summary>
+    public static int Total(params WideKernelPipeline?[][] sets)
+    {
+        var n = 0;
+        foreach (var set in sets)
+        {
+            foreach (var p in set)
+            {
+                n += p?.Created ?? 0;
+            }
+        }
+
+        return n;
+    }
+
+    /// <summary>Drops the cached bind groups; the next call with a buffer set builds its group again.</summary>
+    public void ReleaseBindings()
+    {
+        foreach (var g in _groups.Values)
+        {
+            g.Dispose();
+        }
+
+        _groups.Clear();
+    }
+
     /// <summary>Records one pass. <paramref name="buffers"/> is indexed by the shader's binding number; slots the shader does not declare are ignored.</summary>
     public void Record(GpuCommandEncoder encoder, ReadOnlySpan<uint> push, uint groupsX, uint groupsY, uint groupsZ, ReadOnlySpan<GpuBuffer> buffers)
     {
@@ -55,7 +85,7 @@ internal sealed class WideKernelPipeline : IDisposable
         var key = new BindKey(buffers);
         if (!_groups.TryGetValue(key, out var group))
         {
-            if (_groups.Count >= MaxCachedGroups)
+            if (_groups.Count >= _maxGroups)
             {
                 foreach (var g in _groups.Values)
                 {
@@ -73,6 +103,7 @@ internal sealed class WideKernelPipeline : IDisposable
 
             group = _kernel.CreateBindGroup(_device, 0, _entries);
             _groups.Add(key, group);
+            Created++;
         }
 
         var pass = encoder.BeginComputePass();
@@ -85,12 +116,7 @@ internal sealed class WideKernelPipeline : IDisposable
 
     public void Dispose()
     {
-        foreach (var g in _groups.Values)
-        {
-            g.Dispose();
-        }
-
-        _groups.Clear();
+        ReleaseBindings();
         _kernel.Dispose();
     }
 

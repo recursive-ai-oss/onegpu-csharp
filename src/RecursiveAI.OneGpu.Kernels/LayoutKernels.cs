@@ -26,16 +26,19 @@ public sealed class LayoutKernels : IDisposable
     const int ConcatInputsPerPass = 4;
 
     readonly GpuDevice _device;
+    readonly int _maxBindGroups;
     readonly TransposeKernels _strided;
-    readonly WideKernelPipeline?[] _concat = new WideKernelPipeline?[3];
+    readonly WideKernelPipeline?[] _concat = new WideKernelPipeline?[4];
 
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
-    public LayoutKernels(GpuDevice device)
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
+    public LayoutKernels(GpuDevice device, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
-        _strided = new TransposeKernels(device);
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
+        _strided = new TransposeKernels(device, _maxBindGroups);
     }
 
     /// <summary>
@@ -354,6 +357,19 @@ public sealed class LayoutKernels : IDisposable
         }
     }
 
+    internal int BindGroupsCreated => WideKernelPipeline.Total(_concat) + _strided.BindGroupsCreated;
+
+    /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
+    public void ReleaseBindings()
+    {
+        for (var i = 0; i < _concat.Length; i++)
+        {
+            _concat[i]?.ReleaseBindings();
+        }
+
+        _strided.ReleaseBindings();
+    }
+
     /// <summary>Releases the pipelines and bind groups once the GPU has finished with them.</summary>
     public void Dispose()
     {
@@ -377,6 +393,6 @@ public sealed class LayoutKernels : IDisposable
     WideKernelPipeline CreateConcat(int width)
     {
         var e = Concat.Variants.Get(new Concat.Key(elem: width switch { 0 => Concat.ElemValue.W16, 2 => Concat.ElemValue.W64, _ => Concat.ElemValue.W32 })).ConcatOp;
-        return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), ConcatWords, "concat");
+        return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), ConcatWords, "concat", _maxBindGroups);
     }
 }

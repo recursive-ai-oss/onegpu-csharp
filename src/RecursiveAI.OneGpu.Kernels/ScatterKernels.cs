@@ -48,18 +48,21 @@ public sealed class ScatterKernels : IDisposable
     const long MaxElementBuckets = 4096;
 
     readonly GpuDevice _device;
+    readonly int _maxBindGroups;
     readonly TransposeKernels _copy;
-    readonly WideKernelPipeline?[] _nd = new WideKernelPipeline?[3];
-    readonly WideKernelPipeline?[] _elements = new WideKernelPipeline?[3];
+    readonly WideKernelPipeline?[] _nd = new WideKernelPipeline?[4];
+    readonly WideKernelPipeline?[] _elements = new WideKernelPipeline?[4];
     GpuBuffer<uint>? _scratchStatus;
 
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
-    public ScatterKernels(GpuDevice device)
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
+    public ScatterKernels(GpuDevice device, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
-        _copy = new TransposeKernels(device);
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
+        _copy = new TransposeKernels(device, _maxBindGroups);
     }
 
     /// <summary>
@@ -251,6 +254,22 @@ public sealed class ScatterKernels : IDisposable
         pipeline.Record(encoder, w, gx, gy, 1, [updates.Buffer, indices.Buffer, output.Buffer, StatusBuffer(status)]);
     }
 
+    internal int BindGroupsCreated => WideKernelPipeline.Total(_nd, _elements) + _copy.BindGroupsCreated;
+
+    /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
+    public void ReleaseBindings()
+    {
+        foreach (var set in new[] { _nd, _elements })
+        {
+            for (var i = 0; i < set.Length; i++)
+            {
+                set[i]?.ReleaseBindings();
+            }
+        }
+
+        _copy.ReleaseBindings();
+    }
+
     /// <summary>Releases the pipelines and bind groups once the GPU has finished with them.</summary>
     public void Dispose()
     {
@@ -318,12 +337,12 @@ public sealed class ScatterKernels : IDisposable
     WideKernelPipeline CreateNd(int width)
     {
         var e = ScatterNd.Variants.Get(new ScatterNd.Key(elem: width switch { 0 => ScatterNd.ElemValue.W16, 2 => ScatterNd.ElemValue.W64, _ => ScatterNd.ElemValue.W32 })).ScatterNdOp;
-        return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), NdWords, "scatter nd");
+        return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), NdWords, "scatter nd", _maxBindGroups);
     }
 
     WideKernelPipeline CreateElements(int width)
     {
         var e = ScatterElements.Variants.Get(new ScatterElements.Key(elem: width switch { 0 => ScatterElements.ElemValue.W16, 2 => ScatterElements.ElemValue.W64, _ => ScatterElements.ElemValue.W32 })).ScatterElementsOp;
-        return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), ElementsWords, "scatter elements");
+        return new WideKernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), ElementsWords, "scatter elements", _maxBindGroups);
     }
 }

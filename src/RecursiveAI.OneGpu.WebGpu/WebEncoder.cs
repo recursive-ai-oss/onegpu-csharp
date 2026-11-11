@@ -6,6 +6,7 @@ internal sealed class WebEncoder : GpuCommandEncoder
     private readonly OpStream _s;
     private bool _finished;
     private bool _passOpen;
+    private List<WebBindGroup>? _pinned;
 
     public WebEncoder(WebGpuDevice device)
     {
@@ -15,6 +16,13 @@ internal sealed class WebEncoder : GpuCommandEncoder
     }
 
     internal void PassEnded() => _passOpen = false;
+
+    /// <summary>Keeps a bind group alive until this encoder is submitted; see <see cref="WebBindGroup"/>.</summary>
+    internal void Pin(WebBindGroup group)
+    {
+        group.Pin();
+        (_pinned ??= _device.RentPins()).Add(group);
+    }
 
     private void Idle()
     {
@@ -36,6 +44,16 @@ internal sealed class WebEncoder : GpuCommandEncoder
         _s.U(Op.Submit);
         target.Append(_s);
         _device.ReturnStream(_s);
+        if (_pinned is not null)
+        {
+            foreach (var g in _pinned)
+            {
+                g.Unpin();
+            }
+
+            _device.ReturnPins(_pinned);
+            _pinned = null;
+        }
     }
 
     /// <summary>
@@ -263,6 +281,7 @@ internal sealed class WebRenderPass : GpuRenderPass
     {
         Live();
         WebEncoder.CheckBindGroup(setIndex, (WebBindGroup)group, dynamicOffsets);
+        _e.Pin((WebBindGroup)group);
         _s.U(Op.SetBindGroup).U(setIndex).U(((WebBindGroup)group).Id).U((uint)dynamicOffsets.Length);
         foreach (var o in dynamicOffsets)
         {
@@ -378,6 +397,7 @@ internal sealed class WebComputePass : GpuComputePass
     {
         Live();
         WebEncoder.CheckBindGroup(setIndex, (WebBindGroup)group, dynamicOffsets);
+        _e.Pin((WebBindGroup)group);
         _s.U(Op.SetBindGroup).U(setIndex).U(((WebBindGroup)group).Id).U((uint)dynamicOffsets.Length);
         foreach (var o in dynamicOffsets)
         {

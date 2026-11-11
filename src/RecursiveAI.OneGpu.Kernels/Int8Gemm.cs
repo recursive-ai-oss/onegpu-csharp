@@ -123,6 +123,7 @@ public sealed class Int8Gemm : IDisposable
     const long SmallTileGroups = 32;
 
     readonly GpuDevice _device;
+    readonly int _maxBindGroups;
     readonly bool _dot;
     readonly bool _discrete;
     readonly int _tile;
@@ -134,11 +135,13 @@ public sealed class Int8Gemm : IDisposable
     /// <summary>Creates the kernel.</summary>
     /// <param name="device">The device the operands live on.</param>
     /// <param name="options">Variant options; null means the defaults.</param>
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
     /// <exception cref="GpuUnsupportedException">The device cannot run the portable variant (256-invocation workgroups, 8.5 KB of workgroup memory, five storage buffers).</exception>
-    public Int8Gemm(GpuDevice device, Int8GemmOptions? options = null)
+    public Int8Gemm(GpuDevice device, Int8GemmOptions? options = null, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
         var compute = device.Capabilities.Compute;
         _dot = compute.Int8DotProduct && (compute.ShaderFeatures & DeviceFeatures.IntegerDotProduct) != 0 && (options?.AllowPackedDot ?? true);
         _tile = options?.Tile ?? 0;
@@ -147,7 +150,7 @@ public sealed class Int8Gemm : IDisposable
         try
         {
             _gemm[0] = CreateGemm(small: false);
-            _epilogue = new WideKernelPipeline(device, KernelSources.Make(Int8Epilogue.Int8EpilogueOp.EntryPoint, Int8Epilogue.Int8EpilogueOp.SpirV, Int8Epilogue.Int8EpilogueOp.Msl, Int8Epilogue.Int8EpilogueOp.MslFunctionName, Int8Epilogue.Int8EpilogueOp.Wgsl, Int8Epilogue.Int8EpilogueOp.WgslEntryPoint, Int8Epilogue.Int8EpilogueOp.Layout), EpilogueWords, "int8 epilogue");
+            _epilogue = new WideKernelPipeline(device, KernelSources.Make(Int8Epilogue.Int8EpilogueOp.EntryPoint, Int8Epilogue.Int8EpilogueOp.SpirV, Int8Epilogue.Int8EpilogueOp.Msl, Int8Epilogue.Int8EpilogueOp.MslFunctionName, Int8Epilogue.Int8EpilogueOp.Wgsl, Int8Epilogue.Int8EpilogueOp.WgslEntryPoint, Int8Epilogue.Int8EpilogueOp.Layout), EpilogueWords, "int8 epilogue", _maxBindGroups);
         }
         catch
         {
@@ -164,10 +167,10 @@ public sealed class Int8Gemm : IDisposable
         if (_dot)
         {
             var v = Int8GemmDot.Variants.Get(new Int8GemmDot.Key(small: small)).Int8GemmDotTiled;
-            return new WideKernelPipeline(_device, KernelSources.Make(v.EntryPoint, v.SpirV, v.Msl, v.MslFunctionName, v.Wgsl, v.WgslEntryPoint, v.Layout), GemmWords, small ? "int8 dot gemm 32x32" : "int8 dot gemm 64x64");
+            return new WideKernelPipeline(_device, KernelSources.Make(v.EntryPoint, v.SpirV, v.Msl, v.MslFunctionName, v.Wgsl, v.WgslEntryPoint, v.Layout), GemmWords, small ? "int8 dot gemm 32x32" : "int8 dot gemm 64x64", _maxBindGroups);
         }
 
-        return new WideKernelPipeline(_device, KernelSources.Make(Int8GemmKernel.Int8GemmTiled.EntryPoint, Int8GemmKernel.Int8GemmTiled.SpirV, Int8GemmKernel.Int8GemmTiled.Msl, Int8GemmKernel.Int8GemmTiled.MslFunctionName, Int8GemmKernel.Int8GemmTiled.Wgsl, Int8GemmKernel.Int8GemmTiled.WgslEntryPoint, Int8GemmKernel.Int8GemmTiled.Layout), GemmWords, "int8 gemm");
+        return new WideKernelPipeline(_device, KernelSources.Make(Int8GemmKernel.Int8GemmTiled.EntryPoint, Int8GemmKernel.Int8GemmTiled.SpirV, Int8GemmKernel.Int8GemmTiled.Msl, Int8GemmKernel.Int8GemmTiled.MslFunctionName, Int8GemmKernel.Int8GemmTiled.Wgsl, Int8GemmKernel.Int8GemmTiled.WgslEntryPoint, Int8GemmKernel.Int8GemmTiled.Layout), GemmWords, "int8 gemm", _maxBindGroups);
     }
 
     /// <summary>The variant chosen for this device, for logs and diagnostics: <c>packed-dot-tile64x64x32</c> or <c>portable-tile64x64x16</c> (the packed one uses 32x32 tiles for small products).</summary>
@@ -300,6 +303,16 @@ public sealed class Int8Gemm : IDisposable
         var sums = Scratch(count);
         Multiply(encoder, problem, a.Buffer, typeof(TA) == typeof(sbyte), b.Buffer, typeof(TB) == typeof(sbyte), sums.Buffer, 0, zeroPointA?.Buffer.Buffer, zeroPointA, zeroPointB?.Buffer.Buffer, zeroPointB);
         Finish(encoder, problem, sums.Buffer, y.Buffer, problem.OffsetC, mode: 2, zeroPointY, intBias, multiplier.Buffer.Buffer, null, multiplier.Offset, (multiplier.IsVector ? 2u : 0u) | (outSigned ? 0u : 8u));
+    }
+
+    internal int BindGroupsCreated => WideKernelPipeline.Total(_gemm) + _epilogue.Created;
+
+    /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
+    public void ReleaseBindings()
+    {
+        _gemm[0]?.ReleaseBindings();
+        _gemm[1]?.ReleaseBindings();
+        _epilogue.ReleaseBindings();
     }
 
     /// <summary>Releases the pipelines, the scratch buffers and the cached bind groups once the GPU has finished with them.</summary>

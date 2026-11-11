@@ -27,18 +27,21 @@ public sealed class DynamicQuantizeKernels : IDisposable
     readonly WideKernelPipeline _minMax;
     readonly WideKernelPipeline _finish;
     readonly WideKernelPipeline _quantize;
+    readonly int _maxBindGroups;
     readonly GpuBuffer<uint> _partials;
     readonly GpuBuffer<uint> _dummy;
 
     /// <summary>Creates the family for a device.</summary>
     /// <param name="device">The device the buffers belong to.</param>
-    public DynamicQuantizeKernels(GpuDevice device)
+    /// <param name="maxCachedBindGroups">How many sets of buffers the family remembers bind groups for; see <see cref="GpuKernelBindings"/>.</param>
+    public DynamicQuantizeKernels(GpuDevice device, int maxCachedBindGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
     {
         ArgumentNullException.ThrowIfNull(device);
         _device = device;
-        _minMax = new WideKernelPipeline(device, KernelSources.Make(DynamicQuantize.DqMinMax.EntryPoint, DynamicQuantize.DqMinMax.SpirV, DynamicQuantize.DqMinMax.Msl, DynamicQuantize.DqMinMax.MslFunctionName, DynamicQuantize.DqMinMax.Wgsl, DynamicQuantize.DqMinMax.WgslEntryPoint, DynamicQuantize.DqMinMax.Layout), Words, "dynamic quantize range");
-        _finish = new WideKernelPipeline(device, KernelSources.Make(DynamicQuantize.DqFinish.EntryPoint, DynamicQuantize.DqFinish.SpirV, DynamicQuantize.DqFinish.Msl, DynamicQuantize.DqFinish.MslFunctionName, DynamicQuantize.DqFinish.Wgsl, DynamicQuantize.DqFinish.WgslEntryPoint, DynamicQuantize.DqFinish.Layout), Words, "dynamic quantize parameters");
-        _quantize = new WideKernelPipeline(device, KernelSources.Make(DynamicQuantize.DqQuantize.EntryPoint, DynamicQuantize.DqQuantize.SpirV, DynamicQuantize.DqQuantize.Msl, DynamicQuantize.DqQuantize.MslFunctionName, DynamicQuantize.DqQuantize.Wgsl, DynamicQuantize.DqQuantize.WgslEntryPoint, DynamicQuantize.DqQuantize.Layout), Words, "dynamic quantize");
+        _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
+        _minMax = new WideKernelPipeline(device, KernelSources.Make(DynamicQuantize.DqMinMax.EntryPoint, DynamicQuantize.DqMinMax.SpirV, DynamicQuantize.DqMinMax.Msl, DynamicQuantize.DqMinMax.MslFunctionName, DynamicQuantize.DqMinMax.Wgsl, DynamicQuantize.DqMinMax.WgslEntryPoint, DynamicQuantize.DqMinMax.Layout), Words, "dynamic quantize range", _maxBindGroups);
+        _finish = new WideKernelPipeline(device, KernelSources.Make(DynamicQuantize.DqFinish.EntryPoint, DynamicQuantize.DqFinish.SpirV, DynamicQuantize.DqFinish.Msl, DynamicQuantize.DqFinish.MslFunctionName, DynamicQuantize.DqFinish.Wgsl, DynamicQuantize.DqFinish.WgslEntryPoint, DynamicQuantize.DqFinish.Layout), Words, "dynamic quantize parameters", _maxBindGroups);
+        _quantize = new WideKernelPipeline(device, KernelSources.Make(DynamicQuantize.DqQuantize.EntryPoint, DynamicQuantize.DqQuantize.SpirV, DynamicQuantize.DqQuantize.Msl, DynamicQuantize.DqQuantize.MslFunctionName, DynamicQuantize.DqQuantize.Wgsl, DynamicQuantize.DqQuantize.WgslEntryPoint, DynamicQuantize.DqQuantize.Layout), Words, "dynamic quantize", _maxBindGroups);
         _partials = device.CreateBuffer<uint>(2 * MaxGroups, label: "dynamic quantize ranges");
         _dummy = device.CreateBuffer<uint>(4, label: "dynamic quantize unused operand");
     }
@@ -87,6 +90,16 @@ public sealed class DynamicQuantizeKernels : IDisposable
         _minMax.Record(encoder, w, groups, 1, 1, [x.Buffer, _partials.Buffer, dummy, dummy, dummy]);
         _finish.Record(encoder, w, 1, 1, 1, [x.Buffer, _partials.Buffer, dummy, scale.Buffer, zeroPoint.Buffer]);
         _quantize.Record(encoder, w, gx, gy, 1, [x.Buffer, _partials.Buffer, y.Buffer, scale.Buffer, zeroPoint.Buffer]);
+    }
+
+    internal int BindGroupsCreated => _minMax.Created + _finish.Created + _quantize.Created;
+
+    /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
+    public void ReleaseBindings()
+    {
+        _minMax.ReleaseBindings();
+        _finish.ReleaseBindings();
+        _quantize.ReleaseBindings();
     }
 
     /// <summary>Releases the pipelines, the scratch buffers and the cached bind groups once the GPU has finished with them.</summary>

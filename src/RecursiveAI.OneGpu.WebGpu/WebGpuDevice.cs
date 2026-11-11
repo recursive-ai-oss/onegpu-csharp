@@ -37,6 +37,16 @@ internal sealed class WebGpuDevice : GpuDevice
 
     internal OpStream RentStream() => _spare.Count > 0 ? _spare.Pop() : new OpStream();
 
+    private readonly Stack<List<WebBindGroup>> _sparePins = new();
+
+    internal List<WebBindGroup> RentPins() => _sparePins.Count > 0 ? _sparePins.Pop() : [];
+
+    internal void ReturnPins(List<WebBindGroup> pins)
+    {
+        pins.Clear();
+        _sparePins.Push(pins);
+    }
+
     internal void ReturnStream(OpStream s)
     {
         s.Clear();

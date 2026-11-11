@@ -4,8 +4,8 @@ namespace RecursiveAI.OneGpu.Kernels;
 /// How many bind groups a kernel family keeps. A bind group is built the first time a family sees a set of buffers and reused every time
 /// the same buffers come back, so a warm call allocates nothing. When a family has seen more sets than its limit it drops all of them and
 /// starts again, which costs one bind group per set on the next pass: size the limit above the number of distinct buffer sets one run touches.
-/// In a browser a bind group cannot be dropped while commands that refer to it are still being recorded, so there the limit must also cover every
-/// set recorded into one command buffer.
+/// A dropped bind group is destroyed only once the command buffers that refer to it have been submitted (the browser backend holds it until then), so a limit
+/// below the number of sets one command buffer records is safe, only slower.
 /// </summary>
 public static class GpuKernelBindings
 {

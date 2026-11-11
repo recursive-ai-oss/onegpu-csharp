@@ -60,7 +60,8 @@ public sealed class Gemm : IDisposable
     readonly uint _tileM;
     readonly uint _tileN;
     readonly ulong _splitBudget;
-    readonly Dictionary<(GpuBuffer, GpuBuffer, GpuBuffer), GpuBindGroup> _bindGroups = [];
+    GpuBuffer<float>? _noBias;
+    readonly Dictionary<(GpuBuffer, GpuBuffer, GpuBuffer, GpuBuffer), GpuBindGroup> _bindGroups = [];
 
     /// <summary>Creates the kernel for one element type and mode.</summary>
     /// <param name="device">The device the operands live on.</param>
@@ -202,16 +203,17 @@ public sealed class Gemm : IDisposable
     /// <param name="a">The A operand.</param>
     /// <param name="b">The B operand.</param>
     /// <param name="c">The output; also the old C when <see cref="GemmProblem.Beta"/> is not 0.</param>
+    /// <param name="epilogue">A column bias and an activation applied to each result element in the same dispatch; the default does nothing. See <see cref="GemmEpilogue"/>.</param>
     /// <exception cref="ArgumentException">This instance was created for another element type.</exception>
     /// <exception cref="GpuKernelShapeException">A dimension, stride, offset or range is invalid, or the grid exceeds the device's limit; names the dimension.</exception>
     /// <exception cref="GpuUnsupportedException">An operand is larger than one storage-buffer binding can cover on this device (<see cref="GpuComputeCapabilities.MaxStorageBufferBindingBytes"/>).</exception>
-    public void Encode(GpuCommandEncoder encoder, in GemmProblem problem, GpuBuffer<float> a, GpuBuffer<float> b, GpuBuffer<float> c)
+    public void Encode(GpuCommandEncoder encoder, in GemmProblem problem, GpuBuffer<float> a, GpuBuffer<float> b, GpuBuffer<float> c, GemmEpilogue epilogue = default)
     {
         RequireType(GemmElementType.F32);
         ArgumentNullException.ThrowIfNull(a);
         ArgumentNullException.ThrowIfNull(b);
         ArgumentNullException.ThrowIfNull(c);
-        Encode(encoder, problem, a.Buffer, b.Buffer, c.Buffer, a.Length, b.Length, c.Length);
+        Encode(encoder, problem, a.Buffer, b.Buffer, c.Buffer, a.Length, b.Length, c.Length, epilogue);
     }
 
     /// <summary>Records a float16-input product into <paramref name="encoder"/>. Operands are checked first (shapes, strides, offsets and buffer ranges, in checked arithmetic), then one compute pass is recorded; nothing is submitted. Allocates nothing once the bind group for these buffers is cached.</summary>
@@ -220,16 +222,17 @@ public sealed class Gemm : IDisposable
     /// <param name="a">The A operand.</param>
     /// <param name="b">The B operand.</param>
     /// <param name="c">The output; also the old C when <see cref="GemmProblem.Beta"/> is not 0.</param>
+    /// <param name="epilogue">A column bias and an activation applied to each result element in the same dispatch; the default does nothing. See <see cref="GemmEpilogue"/>.</param>
     /// <exception cref="ArgumentException">This instance was created for another element type.</exception>
     /// <exception cref="GpuKernelShapeException">A dimension, stride, offset or range is invalid, or the grid exceeds the device's limit; names the dimension.</exception>
     /// <exception cref="GpuUnsupportedException">An operand is larger than one storage-buffer binding can cover on this device (<see cref="GpuComputeCapabilities.MaxStorageBufferBindingBytes"/>).</exception>
-    public void Encode(GpuCommandEncoder encoder, in GemmProblem problem, GpuBuffer<Half> a, GpuBuffer<Half> b, GpuBuffer<float> c)
+    public void Encode(GpuCommandEncoder encoder, in GemmProblem problem, GpuBuffer<Half> a, GpuBuffer<Half> b, GpuBuffer<float> c, GemmEpilogue epilogue = default)
     {
         RequireType(GemmElementType.F16);
         ArgumentNullException.ThrowIfNull(a);
         ArgumentNullException.ThrowIfNull(b);
         ArgumentNullException.ThrowIfNull(c);
-        Encode(encoder, problem, a.Buffer, b.Buffer, c.Buffer, a.Length, b.Length, c.Length);
+        Encode(encoder, problem, a.Buffer, b.Buffer, c.Buffer, a.Length, b.Length, c.Length, epilogue);
     }
 
     /// <summary>Records a bfloat16-input product (operands hold the bfloat16 bits as <see cref="ushort"/>) into <paramref name="encoder"/>. Operands are checked first (shapes, strides, offsets and buffer ranges, in checked arithmetic), then one compute pass is recorded; nothing is submitted. Allocates nothing once the bind group for these buffers is cached.</summary>
@@ -238,16 +241,17 @@ public sealed class Gemm : IDisposable
     /// <param name="a">The A operand.</param>
     /// <param name="b">The B operand.</param>
     /// <param name="c">The output; also the old C when <see cref="GemmProblem.Beta"/> is not 0.</param>
+    /// <param name="epilogue">A column bias and an activation applied to each result element in the same dispatch; the default does nothing. See <see cref="GemmEpilogue"/>.</param>
     /// <exception cref="ArgumentException">This instance was created for another element type.</exception>
     /// <exception cref="GpuKernelShapeException">A dimension, stride, offset or range is invalid, or the grid exceeds the device's limit; names the dimension.</exception>
     /// <exception cref="GpuUnsupportedException">An operand is larger than one storage-buffer binding can cover on this device (<see cref="GpuComputeCapabilities.MaxStorageBufferBindingBytes"/>).</exception>
-    public void EncodeBFloat16(GpuCommandEncoder encoder, in GemmProblem problem, GpuBuffer<ushort> a, GpuBuffer<ushort> b, GpuBuffer<float> c)
+    public void EncodeBFloat16(GpuCommandEncoder encoder, in GemmProblem problem, GpuBuffer<ushort> a, GpuBuffer<ushort> b, GpuBuffer<float> c, GemmEpilogue epilogue = default)
     {
         RequireType(GemmElementType.BF16);
         ArgumentNullException.ThrowIfNull(a);
         ArgumentNullException.ThrowIfNull(b);
         ArgumentNullException.ThrowIfNull(c);
-        Encode(encoder, problem, a.Buffer, b.Buffer, c.Buffer, a.Length, b.Length, c.Length);
+        Encode(encoder, problem, a.Buffer, b.Buffer, c.Buffer, a.Length, b.Length, c.Length, epilogue);
     }
 
     /// <summary>How many bind groups this instance has built so far; tests use it to see the cache work.</summary>
@@ -268,6 +272,8 @@ public sealed class Gemm : IDisposable
     public void Dispose()
     {
         ReleaseBindings();
+        _noBias?.Dispose();
+        _noBias = null;
         _kernel.Dispose();
 
     }
@@ -282,10 +288,20 @@ public sealed class Gemm : IDisposable
 
     // Buffers whose element is smaller than a 32-bit word are bound as words, so the readable length in elements is the
     // buffer's declared length: the allocation is padded to a whole word.
-    void Encode(GpuCommandEncoder encoder, in GemmProblem p, GpuBuffer a, GpuBuffer b, GpuBuffer c, int lengthA, int lengthB, int lengthC)
+    void Encode(GpuCommandEncoder encoder, in GemmProblem p, GpuBuffer a, GpuBuffer b, GpuBuffer c, int lengthA, int lengthB, int lengthC, in GemmEpilogue epilogue)
     {
         ArgumentNullException.ThrowIfNull(encoder);
         var (lda, ldb, ldc) = Validate(p, lengthA, lengthB, lengthC);
+        if (!Enum.IsDefined(epilogue.Activation))
+        {
+            throw new GpuKernelShapeException(Name, nameof(epilogue), $"activation {(int)epilogue.Activation} is not a GemmActivation");
+        }
+
+        if (epilogue.Bias is { } bias && p.M > 0 && p.N > 0)
+        {
+            Check.Range(Name, "bias", bias.Length, epilogue.OffsetBias, p.N);
+        }
+
         if (p.M == 0 || p.N == 0)
         {
             return;
@@ -302,8 +318,10 @@ public sealed class Gemm : IDisposable
         CheckBindable("A", a);
         CheckBindable("B", b);
         CheckBindable("C", c);
+        var biasBuffer = epilogue.Bias is { } given ? given.Buffer : (_noBias ??= _device.CreateBuffer<float>(4, label: "gemm unused bias")).Buffer;
+        CheckBindable("bias", biasBuffer);
 
-        var key = (a, b, c);
+        var key = (a, b, c, biasBuffer);
         if (!_bindGroups.TryGetValue(key, out var group))
         {
             if (_bindGroups.Count >= _maxBindGroups)
@@ -311,7 +329,7 @@ public sealed class Gemm : IDisposable
                 ReleaseBindings();
             }
 
-            group = _device.CreateBindGroup(_layout, 0, [BindGroupEntry.ForBuffer(0, a), BindGroupEntry.ForBuffer(1, b), BindGroupEntry.ForBuffer(2, c)]);
+            group = _device.CreateBindGroup(_layout, 0, [BindGroupEntry.ForBuffer(0, a), BindGroupEntry.ForBuffer(1, b), BindGroupEntry.ForBuffer(2, c), BindGroupEntry.ForBuffer(3, biasBuffer)]);
             _bindGroups.Add(key, group);
             BindGroupsCreated++;
         }
@@ -355,9 +373,11 @@ public sealed class Gemm : IDisposable
                     StrideA = (uint)p.StrideA,
                     StrideB = (uint)p.StrideB,
                     StrideC = (uint)p.StrideC,
-                    Flags = (p.TransposeA ? 1u : 0u) | (p.TransposeB ? 2u : 0u),
+                    Flags = (p.TransposeA ? 1u : 0u) | (p.TransposeB ? 2u : 0u) | (epilogue.Bias is null ? 0u : 4u),
                     Alpha = p.Alpha,
                     Beta = p.Beta,
+                    BiasOffset = (uint)epilogue.OffsetBias,
+                    Act = (uint)epilogue.Activation,
                 };
                 var pass = encoder.BeginComputePass();
                 pass.SetPipeline(_pipeline);
@@ -472,7 +492,7 @@ public sealed class Gemm : IDisposable
         }
     }
 
-    // Mirrors the shader's GemmParams: 15 four-byte members.
+    // Mirrors the shader's GemmParams: 17 four-byte members.
     [StructLayout(LayoutKind.Sequential)]
     struct PushBlock
     {
@@ -491,5 +511,7 @@ public sealed class Gemm : IDisposable
         public uint Flags;
         public float Alpha;
         public float Beta;
+        public uint BiasOffset;
+        public uint Act;
     }
 }
