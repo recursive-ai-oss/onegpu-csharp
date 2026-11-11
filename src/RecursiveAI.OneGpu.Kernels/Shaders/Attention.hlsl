@@ -22,7 +22,8 @@
 // (about 4 times the error of GEMM + softmax + GEMM at 4096 keys). With TILEACC the products of one tile of keys go into a second accumulator
 // that starts at zero, and only the finished tile is added to the main one, after one rescale by exp(old max - max) per tile. Every sum is then
 // over at most BC terms or over the number of tiles, as in a blocked summation, and the error is several times below the unfused path's.
-// It costs PD more registers, so only the 32 and 64 wide builds have it; the wider ones spill already.
+// It costs PD more registers (on the RTX 4070 a batch of 8 BERT-base inputs ran about 30% slower), so the host picks the ACC build only when a
+// workgroup walks 1024 keys or more, where the sequential sum starts to matter, and only for the 32 and 64 wide heads; the wider ones spill already.
 //
 // HD selects the register footprint: the head dimension is rounded up to 32, 64, 128 or 256 and padded with zeros. The key and value tiles
 // share 16 KB of workgroup memory in every build (BC keys of DIM elements each).
@@ -59,7 +60,7 @@ typedef float Elem;
 
 #define BR (64u / LANES)
 
-#if HD_D32 || HD_D64
+#if ACC && (HD_D32 || HD_D64)
 #define TILEACC 1
 #endif
 
