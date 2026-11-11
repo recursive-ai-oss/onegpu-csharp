@@ -90,7 +90,9 @@ public abstract partial class GpuDevice
             throw new GpuUnsupportedException($"a buffer of {bytes} bytes is larger than {Adapter.Name} allows", nameof(GpuComputeCapabilities.MaxBufferBytes), $"at most {max} bytes", $"{bytes} bytes requested");
         }
 
-        return new GpuBuffer<T>(this, CreateBuffer(new BufferDesc(bytes, usage) { Label = label }), length);
+        // Shaders read 16-bit elements as pairs inside 32-bit words, so the allocation is padded to a whole word: the last element of an
+        // odd-length buffer then still has its word inside the binding.
+        return new GpuBuffer<T>(this, CreateBuffer(new BufferDesc((bytes + 3) & ~3UL, usage) { Label = label }), length);
     }
 
     /// <summary>Creates a typed buffer holding <paramref name="data"/>; the upload runs before the next submitted commands.</summary>
