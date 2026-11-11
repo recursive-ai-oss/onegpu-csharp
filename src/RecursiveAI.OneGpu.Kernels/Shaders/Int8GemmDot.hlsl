@@ -31,6 +31,10 @@ struct Int8GemmParams
                     // bit 7 every row of A (offset, stride, Lda) starts on a word boundary, bit 8 the same for B
     uint OffZA;
     uint OffZB;
+    uint Epi;       // see Int8GemmEpilogue.hlsli
+    uint OffBias;
+    uint OffScale;
+    uint OffFBias;
 };
 
 [[vk::push_constant]] ConstantBuffer<Int8GemmParams> P;
@@ -40,6 +44,8 @@ struct Int8GemmParams
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint> C;
 [[vk::binding(3, 0)]] StructuredBuffer<uint> ZA;
 [[vk::binding(4, 0)]] StructuredBuffer<uint> ZB;
+
+#include "Int8GemmEpilogue.hlsli"
 
 #if SMALL
 static const uint BM = 32;
@@ -127,7 +133,7 @@ void Put(uint baseC, Axis r, Axis c, int dot)
 {
     if (r.idx < P.M && c.idx < P.N)
     {
-        C[baseC + r.idx * P.N + c.idx] = (uint)(dot - c.z * r.sum - r.z * c.sum + (int)P.K * r.z * c.z);
+        C[baseC + r.idx * P.N + c.idx] = StoreValue(dot - c.z * r.sum - r.z * c.sum + (int)P.K * r.z * c.z, c.idx);
     }
 }
 

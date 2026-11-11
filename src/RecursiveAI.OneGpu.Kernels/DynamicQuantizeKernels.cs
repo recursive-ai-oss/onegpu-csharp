@@ -14,7 +14,7 @@ namespace RecursiveAI.OneGpu.Kernels;
 /// divides in integer arithmetic (long division of the mantissas, round to nearest even), which is the same on every device. The minimum and maximum do not depend on the order
 /// they are found in, so both <see cref="GpuKernelMode"/> values give the same bits.
 /// </para>
-/// The scale and zero point land in device buffers, ready to feed <see cref="Int8Gemm"/>. Three passes are recorded; the instance keeps a small
+/// The scale and zero point land in device buffers, ready to feed <see cref="Int8Gemm"/>. Two passes are recorded; the instance keeps a small
 /// scratch buffer. Not thread-safe.
 /// </remarks>
 public sealed class DynamicQuantizeKernels : IDisposable
@@ -25,7 +25,6 @@ public sealed class DynamicQuantizeKernels : IDisposable
 
     readonly GpuDevice _device;
     readonly WideKernelPipeline _minMax;
-    readonly WideKernelPipeline _finish;
     readonly WideKernelPipeline _quantize;
     readonly int _maxBindGroups;
     readonly GpuBuffer<uint> _partials;
@@ -40,13 +39,12 @@ public sealed class DynamicQuantizeKernels : IDisposable
         _device = device;
         _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
         _minMax = new WideKernelPipeline(device, KernelSources.Make(DynamicQuantize.DqMinMax.EntryPoint, DynamicQuantize.DqMinMax.SpirV, DynamicQuantize.DqMinMax.Msl, DynamicQuantize.DqMinMax.MslFunctionName, DynamicQuantize.DqMinMax.Wgsl, DynamicQuantize.DqMinMax.WgslEntryPoint, DynamicQuantize.DqMinMax.Layout), Words, "dynamic quantize range", _maxBindGroups);
-        _finish = new WideKernelPipeline(device, KernelSources.Make(DynamicQuantize.DqFinish.EntryPoint, DynamicQuantize.DqFinish.SpirV, DynamicQuantize.DqFinish.Msl, DynamicQuantize.DqFinish.MslFunctionName, DynamicQuantize.DqFinish.Wgsl, DynamicQuantize.DqFinish.WgslEntryPoint, DynamicQuantize.DqFinish.Layout), Words, "dynamic quantize parameters", _maxBindGroups);
-        _quantize = new WideKernelPipeline(device, KernelSources.Make(DynamicQuantize.DqQuantize.EntryPoint, DynamicQuantize.DqQuantize.SpirV, DynamicQuantize.DqQuantize.Msl, DynamicQuantize.DqQuantize.MslFunctionName, DynamicQuantize.DqQuantize.Wgsl, DynamicQuantize.DqQuantize.WgslEntryPoint, DynamicQuantize.DqQuantize.Layout), Words, "dynamic quantize", _maxBindGroups);
+        _quantize = new WideKernelPipeline(device, KernelSources.Make(DynamicQuantize.DqFinishQuantize.EntryPoint, DynamicQuantize.DqFinishQuantize.SpirV, DynamicQuantize.DqFinishQuantize.Msl, DynamicQuantize.DqFinishQuantize.MslFunctionName, DynamicQuantize.DqFinishQuantize.Wgsl, DynamicQuantize.DqFinishQuantize.WgslEntryPoint, DynamicQuantize.DqFinishQuantize.Layout), Words, "dynamic quantize", _maxBindGroups);
         _partials = device.CreateBuffer<uint>(2 * MaxGroups, label: "dynamic quantize ranges");
         _dummy = device.CreateBuffer<uint>(4, label: "dynamic quantize unused operand");
     }
 
-    /// <summary>Records the three passes of <c>DynamicQuantizeLinear</c>.</summary>
+    /// <summary>Records the two passes of <c>DynamicQuantizeLinear</c>.</summary>
     /// <param name="encoder">Receives the compute passes; no other pass may be open on it.</param>
     /// <param name="x">The float32 input, dense.</param>
     /// <param name="offsetX">Element offset of the input.</param>
@@ -88,18 +86,16 @@ public sealed class DynamicQuantizeKernels : IDisposable
         w[5] = (uint)offsetScale;
         w[6] = (uint)offsetZeroPoint;
         _minMax.Record(encoder, w, groups, 1, 1, [x.Buffer, _partials.Buffer, dummy, dummy, dummy]);
-        _finish.Record(encoder, w, 1, 1, 1, [x.Buffer, _partials.Buffer, dummy, scale.Buffer, zeroPoint.Buffer]);
         _quantize.Record(encoder, w, gx, gy, 1, [x.Buffer, _partials.Buffer, y.Buffer, scale.Buffer, zeroPoint.Buffer]);
     }
 
     /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
-    public int BindGroupsCreated => _minMax.Created + _finish.Created + _quantize.Created;
+    public int BindGroupsCreated => _minMax.Created + _quantize.Created;
 
     /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
     public void ReleaseBindings()
     {
         _minMax.ReleaseBindings();
-        _finish.ReleaseBindings();
         _quantize.ReleaseBindings();
     }
 
@@ -107,7 +103,6 @@ public sealed class DynamicQuantizeKernels : IDisposable
     public void Dispose()
     {
         _minMax.Dispose();
-        _finish.Dispose();
         _quantize.Dispose();
         _partials.Dispose();
         _dummy.Dispose();

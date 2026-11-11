@@ -108,7 +108,7 @@ The limits below are what the tests assert; the measured values are far inside t
 | RNN, GRU, LSTM (Y, Y_h, Y_c) | 1e-5 | 2e-3 |
 | QuantizeLinear | bit-exact | bit-exact (Half input widened exactly) |
 
-Erf is the Abramowitz–Stegun 7.1.26 approximation (absolute error below 1.5e-7); the Gelu erf form uses its complementary function so the negative tail keeps its relative accuracy.
+The tanh form of GELU computes its exponential with its own range reduction and polynomial (relative error below 1e-7) rather than the driver's `exp`, whose accuracy is implementation-defined. Erf is the Abramowitz–Stegun 7.1.26 approximation (absolute error below 1.5e-7); the Gelu erf form uses its complementary function so the negative tail keeps its relative accuracy.
 A float sum of n values has an error of about ε·√n·(Σ|x|/|Σx|) in the worst conditioning: a sum that cancels to almost nothing cannot be accurate in relative terms in any
 float implementation. The tests use mostly positive data for sums.
 
@@ -148,8 +148,11 @@ The reductions, softmax and normalisation have both modes.
   when the caller knows no two updates meet. Ties in min/max keep the existing value, NaN propagates, integer add and mul wrap. Half scatter uses AND/OR on whole words,
   so it needs the same padding as other Half buffers. uint payloads are not supported for scatter.
 - **Int8 GEMM** computes `sum (a - zeroA) * (b - zeroB)` in int32 (wrapping), so the result is exact and one variant serves both modes; it matches onemodel's CPU int8
-  operators bit for bit. The float form is `float(sum + bias) * scale` followed by a separate float bias pass, and the requantized form is
-  `clamp(round_half_even(float(sum + bias) * multiplier) + zeroPointY)`; the two float steps are separate passes because HLSL does not promise a multiply and add fuse the same way on every target.
+  operators bit for bit. The float form is `float(sum + intBias) * scale` followed by a float bias and the int32 form adds its bias to the sum; both are applied as each sum is stored,
+  so a product is one dispatch. The float steps keep the two separate roundings of the unfused chain (the product of the multiply passes through an OR with a bit the host keeps zero, so no target can fuse it with the bias add);
+  the tests compare against the chain on the CPU bit for bit. The requantized form is `clamp(round_half_even(float(sum + bias) * multiplier) + zeroPointY)`; it writes bytes that neighbouring
+  outputs share, so it keeps the sums in a scratch buffer for a second pass. That scratch is the instance's own and grows on demand (a larger product then builds a new bind group), unless the caller
+  places it: `Int8Scratch` (buffer plus element offset) on `EncodeRequantized`, sized with `Int8Gemm.ScratchElements`, or `ReserveScratch` once at session creation.
   `Int8Gemm.Variant` reports the variant chosen for the device, and `Int8GemmOptions.AllowPackedDot = false` forces the portable one; both give the same bits.
   - **Packed dot** (`packed-dot-tile64x64x32`): chosen when the device reports an 8-bit dot product (`GpuComputeCapabilities.Int8DotProduct`: Vulkan `shaderIntegerDotProduct`,
     the browser's `packed_4x8_integer_dot_product`). Four byte pairs are multiplied and summed per instruction (`dot4add_i8packed`). That instruction takes signed bytes only, so
@@ -160,8 +163,8 @@ The reductions, softmax and normalisation have both modes.
   - **Portable** (`portable-tile64x64x16`): runs everywhere. Rows are staged a word at a time when the operand's offset, stride and leading dimension are multiples of four, and the products are
     formed in float, which is exact here (two values in -255..255 multiply to under 65025, so 256 of them sum to under 2^24); the running sums fold into int32 every 128 values of k.
     Metal has no packed dot product, so Apple GPUs run this one.
-- **DynamicQuantizeLinear** divides in integer arithmetic (a long division of the mantissas with round-to-nearest-even), because the targets' float division is not correctly
-  rounded (Vulkan allows a few ulp, Metal compiles with fast math) and the scale and zero point must equal the CPU's bit for bit.
+- **DynamicQuantizeLinear** runs in two passes (partial minimum and maximum per workgroup; then every workgroup combines the partials, the first stores scale and zero point, each quantizes its slice) and divides in integer arithmetic (a long division of the mantissas with round-to-nearest-even), because the targets' float division is not correctly
+  rounded (Vulkan allows a few ulp, Metal compiles with fast math) and the scale and zero point must equal the CPU's bit for bit. An int8 linear layer is thereby three dispatches (two to quantize, one product) instead of six.
 - **Long submissions on Metal.** The system aborts a command buffer that runs too long (`kIOGPUCommandBufferCallbackErrorImpactingInteractivity`). Encoders accept
   `ReportWork(operations)` and `SplitSubmission()`; Metal splits the command buffer at pass boundaries once a budget (`GpuComputeCapabilities.SubmissionWorkBudget`, 2^33 operations) is reached.
   `Gemm` cuts a product larger than the budget into row or batch pieces with the same accumulation order, so deterministic results are unchanged (`GemmOptions.AllowSplitting`).

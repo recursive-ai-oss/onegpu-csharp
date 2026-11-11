@@ -148,7 +148,7 @@ public sealed class RecurrentTests
     static int IndexIfHalf<T>(int n)
         where T : unmanaged => typeof(T) == typeof(Half) ? GpuKernelBuffers.PaddedHalfLength(n) : n;
 
-    static async Task<Outputs> Execute<T>(GpuDevice d, RecurrentKernels k, Config c, Data data, GpuBuffer<float>? xw = null, GpuBuffer<float>? state = null)
+    static async Task<Outputs> Execute<T>(GpuDevice d, RecurrentKernels k, Config c, Data data, GpuBuffer<float>? xw = null, GpuBuffer<float>? state = null, int xwOffset = 0, int stateOffset = 0)
         where T : unmanaged
     {
         var owned = new List<IDisposable>();
@@ -171,7 +171,7 @@ public sealed class RecurrentTests
             };
 
             // The output buffers start as the sentinel everywhere, including inside the tensor, so an element the kernel forgets shows up.
-            Rig.Run(d, e => k.Encode(e, data.Problem, o, xw, state));
+            Rig.Run(d, e => k.Encode(e, data.Problem, o, xw, state, xwOffset, stateOffset));
             var r = new Outputs();
             async Task<float[]?> Read(GpuTensorRef<T>? t, int n)
             {
@@ -415,6 +415,20 @@ public sealed class RecurrentTests
         using var tiny = d.CreateBuffer<float>(10);
         await Assert.ThrowsAsync<GpuKernelShapeException>(() => Execute<float>(d, k, c, data, tiny, state));
         await Assert.ThrowsAsync<GpuKernelShapeException>(() => Execute<float>(d, k, c, data, xw, tiny));
+
+        // Both regions inside one buffer at odd offsets, as an arena places them: the same bits, and a region that runs past the end is refused.
+        // A browser refuses one buffer bound read-only and read-write in a dispatch, so there the regions stay in two buffers.
+        if (!Rig.Browser)
+        {
+            var xwLen = (int)RecurrentKernels.XwLength(data.Problem);
+            var stLen = (int)RecurrentKernels.StateLength(data.Problem);
+            using var arena = d.CreateBuffer<float>(5 + xwLen + 7 + stLen);
+            var placed = await Execute<float>(d, k, c, data, arena, arena, 5, 5 + xwLen + 7);
+            Assert.True(Same(own.Y, placed.Y) && Same(own.Yh, placed.Yh));
+            await Assert.ThrowsAsync<GpuKernelShapeException>(() => Execute<float>(d, k, c, data, arena, arena, 5, 5 + xwLen + 8));
+            Rig.Row(d, "recurrent", "f32", "projection and state regions at offsets 5 and 5 + XwLength + 7 of one buffer", $"identical bits {Same(own.Y, placed.Y) && Same(own.Yh, placed.Yh)}, region past the end rejected");
+        }
+
         Rig.Row(d, "recurrent", "f32", "scratch buffers supplied by the caller (exact and one-short sizes)", $"identical bits {Same(own.Y, given.Y) && Same(own.Yh, given.Yh)}, short scratch rejected");
     }
 
