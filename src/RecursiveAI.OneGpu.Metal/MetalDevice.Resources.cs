@@ -17,7 +17,7 @@ internal sealed unsafe partial class MetalDevice
         var handle = Msg.Obj(_device, Sel.newBufferWithLength_options_, (nuint)desc.Size, MT.StoragePrivate);
         if (handle == 0)
         {
-            throw new GpuOutOfMemoryException($"could not allocate a buffer of {desc.Size} bytes");
+            throw new GpuOutOfMemoryException($"could not allocate a buffer of {desc.Size} bytes", desc.Size);
         }
 
         if (desc.Label is { } label)

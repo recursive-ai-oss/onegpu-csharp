@@ -275,7 +275,14 @@ internal sealed unsafe class VulkanSwapchain : GpuSwapchain, IRetirable
             oldSwapchain = old,
         };
         VkSwapchainKHR sc;
-        _dev.Check(_dev.Fns.vkCreateSwapchainKHR(_dev.Handle, &sci, null, &sc), "vkCreateSwapchainKHR");
+        var created = _dev.Fns.vkCreateSwapchainKHR(_dev.Handle, &sci, null, &sc);
+        if (created == VkResult.ErrorInitializationFailed)
+        {
+            // Typical when the window belongs to another GPU's display (an integrated GPU asked to present to a window a discrete GPU drives).
+            throw new GpuUnsupportedException($"{_dev.Adapter.Name} cannot present to this window (vkCreateSwapchainKHR: {created})", "Presentation", "an adapter that can present to the window's display");
+        }
+
+        _dev.Check(created, "vkCreateSwapchainKHR");
         DestroyImages(waitIdle: false);
         if (old.Value != 0)
         {

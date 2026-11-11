@@ -12,6 +12,9 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="RecursiveAI.OneGpu.Tests" />
+    <InternalsVisibleTo Include="RecursiveAI.OneGpu.Vulkan" />
+    <InternalsVisibleTo Include="RecursiveAI.OneGpu.Metal" />
+    <InternalsVisibleTo Include="RecursiveAI.OneGpu.WebGpu" />
   </ItemGroup>
 
 </Project>

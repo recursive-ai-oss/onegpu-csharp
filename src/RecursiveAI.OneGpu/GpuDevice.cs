@@ -24,7 +24,7 @@ namespace RecursiveAI.OneGpu;
 /// device.ReadTexture(target, mipLevel: 0, layer: 0, pixels);   // waits for the GPU; rows are tightly packed
 /// </code>
 /// </example>
-public abstract class GpuDevice : IDisposable
+public abstract partial class GpuDevice : IDisposable
 {
     /// <summary>The adapter this device runs on.</summary>
     public abstract GpuAdapterInfo Adapter { get; }
@@ -248,7 +248,7 @@ public class GpuException : Exception
     }
 }
 
-/// <summary>The system has no usable graphics API, adapter or required feature.</summary>
+/// <summary>The system has no usable graphics API, adapter or required feature, or a request exceeds a device limit.</summary>
 public sealed class GpuUnsupportedException : GpuException
 {
     /// <summary>Creates the exception.</summary>
@@ -256,6 +256,28 @@ public sealed class GpuUnsupportedException : GpuException
         : base(message)
     {
     }
+
+    /// <summary>Creates the exception for a missing capability or an exceeded limit.</summary>
+    /// <param name="message">What failed.</param>
+    /// <param name="capability">The capability or limit, such as <c>Float16</c> or <c>MaxWorkgroupInvocations</c>.</param>
+    /// <param name="expected">What was needed, such as <c>shader float16 arithmetic</c> or <c>at most 256</c>.</param>
+    /// <param name="actual">What the device offers, or null when it has no such thing.</param>
+    public GpuUnsupportedException(string message, string capability, string expected, string? actual = null)
+        : base(message)
+    {
+        Capability = capability;
+        Expected = expected;
+        Actual = actual;
+    }
+
+    /// <summary>The capability or limit that is missing or exceeded; null when the failure is not about one.</summary>
+    public string? Capability { get; }
+
+    /// <summary>What was needed.</summary>
+    public string? Expected { get; }
+
+    /// <summary>What the device offers; null when it has none.</summary>
+    public string? Actual { get; }
 }
 
 /// <summary>The device ran out of memory.</summary>
@@ -266,9 +288,21 @@ public sealed class GpuOutOfMemoryException : GpuException
         : base(message)
     {
     }
+
+    /// <summary>Creates the exception for a request of known size.</summary>
+    /// <param name="message">What failed.</param>
+    /// <param name="requestedBytes">Bytes the failed request asked for.</param>
+    public GpuOutOfMemoryException(string message, ulong requestedBytes)
+        : base(message)
+    {
+        RequestedBytes = requestedBytes;
+    }
+
+    /// <summary>Bytes the failed request asked for; 0 when the backend does not know.</summary>
+    public ulong RequestedBytes { get; }
 }
 
-/// <summary>The device was lost (driver reset, GPU removed).</summary>
+/// <summary>The device was lost (driver reset, GPU removed). The device and everything created from it must be disposed; make a new device to continue.</summary>
 public sealed class GpuDeviceLostException : GpuException
 {
     /// <summary>Creates the exception.</summary>
@@ -276,4 +310,16 @@ public sealed class GpuDeviceLostException : GpuException
         : base(message)
     {
     }
+
+    /// <summary>Creates the exception with the API call that observed the loss.</summary>
+    /// <param name="message">What failed.</param>
+    /// <param name="operation">The API call that reported the loss, such as <c>vkQueueSubmit2</c>.</param>
+    public GpuDeviceLostException(string message, string operation)
+        : base(message)
+    {
+        Operation = operation;
+    }
+
+    /// <summary>The API call that reported the loss; null when unknown.</summary>
+    public string? Operation { get; }
 }

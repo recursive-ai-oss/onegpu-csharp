@@ -8,7 +8,7 @@ namespace RecursiveAI.OneGpu.Vulkan;
 /// <summary>A Vulkan instance with the adapters it exposes; shared by the devices created from it.</summary>
 internal sealed unsafe class VulkanInstance
 {
-    internal sealed record AdapterEntry(VkPhysicalDevice Physical, GpuAdapterInfo Info, uint QueueFamily, bool HasSwapchain);
+    internal sealed record AdapterEntry(VkPhysicalDevice Physical, GpuAdapterInfo Info, uint QueueFamily, bool HasSwapchain, HashSet<string> Extensions);
 
     const string ValidationLayer = "VK_LAYER_KHRONOS_validation";
 
@@ -313,6 +313,7 @@ internal sealed unsafe class VulkanInstance
             Fns.vkEnumerateDeviceExtensionProperties(pd, null, &en, null);
             var eprops = new VkExtensionProperties[en];
             var swapchain = false;
+            var extensions = new HashSet<string>(StringComparer.Ordinal);
             fixed (VkExtensionProperties* ep = eprops)
             {
                 Fns.vkEnumerateDeviceExtensionProperties(pd, null, &en, ep);
@@ -320,7 +321,9 @@ internal sealed unsafe class VulkanInstance
 
             foreach (var e in eprops)
             {
-                swapchain |= Name(e.extensionName) == "VK_KHR_swapchain";
+                var extName = Name(e.extensionName);
+                extensions.Add(extName);
+                swapchain |= extName == "VK_KHR_swapchain";
             }
 
             var kind = props.deviceType switch
@@ -333,7 +336,7 @@ internal sealed unsafe class VulkanInstance
             };
             var v = props.apiVersion;
             var info = new GpuAdapterInfo(Name(props.deviceName), kind, props.vendorID, props.deviceID, $"{v >> 22}.{(v >> 12) & 0x3ff}.{v & 0xfff}");
-            Adapters.Add(new AdapterEntry(pd, info, (uint)family, swapchain));
+            Adapters.Add(new AdapterEntry(pd, info, (uint)family, swapchain, extensions));
         }
     }
 

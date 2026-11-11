@@ -150,9 +150,28 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
         using var arena = new Arena();
 
         // Features the backend relies on: dynamic rendering and synchronization2 (Vulkan 1.3), timeline semaphores (1.2).
-        var f13 = new VkPhysicalDeviceVulkan13Features();
+        // The chain also asks about the compute extensions the adapter lists, so one query covers what shaders may use.
+        var hasCoopMatrix = info.Extensions.Contains("VK_KHR_cooperative_matrix");
+        var hasBFloat16 = info.Extensions.Contains("VK_KHR_shader_bfloat16");
+        var fcm = new VkPhysicalDeviceCooperativeMatrixFeaturesKHR();
+        var fbf = new VkPhysicalDeviceShaderBfloat16FeaturesKHR();
+        void* extTail = null;
+        if (hasBFloat16)
+        {
+            fbf.pNext = extTail;
+            extTail = &fbf;
+        }
+
+        if (hasCoopMatrix)
+        {
+            fcm.pNext = extTail;
+            extTail = &fcm;
+        }
+
+        var f13 = new VkPhysicalDeviceVulkan13Features { pNext = extTail };
         var f12 = new VkPhysicalDeviceVulkan12Features { pNext = &f13 };
-        var f2 = new VkPhysicalDeviceFeatures2 { pNext = &f12 };
+        var f11 = new VkPhysicalDeviceVulkan11Features { pNext = &f12 };
+        var f2 = new VkPhysicalDeviceFeatures2 { pNext = &f11 };
         _instanceFns.vkGetPhysicalDeviceFeatures2(_physical, &f2);
         if (f13.dynamicRendering == 0 || f13.synchronization2 == 0 || f12.timelineSemaphore == 0)
         {
@@ -164,10 +183,39 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
 
         // Optional features are switched on when the adapter has them and reported through Capabilities, so code asks first.
         var have = f2.features;
-        var e13 = new VkPhysicalDeviceVulkan13Features { dynamicRendering = 1, synchronization2 = 1 };
+        var useCoopMatrix = hasCoopMatrix && fcm.cooperativeMatrix != 0;
+        var useBFloat16 = hasBFloat16 && fbf.shaderBFloat16Type != 0;
+        var ecm = new VkPhysicalDeviceCooperativeMatrixFeaturesKHR { cooperativeMatrix = 1 };
+        var ebf = new VkPhysicalDeviceShaderBfloat16FeaturesKHR { shaderBFloat16Type = 1 };
+        void* eTail = null;
+        if (useBFloat16)
+        {
+            ebf.pNext = eTail;
+            eTail = &ebf;
+        }
+
+        if (useCoopMatrix)
+        {
+            ecm.pNext = eTail;
+            eTail = &ecm;
+        }
+
+        var e13 = new VkPhysicalDeviceVulkan13Features
+        {
+            pNext = eTail,
+            dynamicRendering = 1,
+            synchronization2 = 1,
+            subgroupSizeControl = f13.subgroupSizeControl,
+            computeFullSubgroups = f13.computeFullSubgroups,
+            shaderIntegerDotProduct = f13.shaderIntegerDotProduct,
+        };
         var e12 = new VkPhysicalDeviceVulkan12Features
         {
             pNext = &e13,
+            shaderFloat16 = f12.shaderFloat16,
+            shaderInt8 = f12.shaderInt8,
+            storageBuffer8BitAccess = f12.storageBuffer8BitAccess,
+            uniformAndStorageBuffer8BitAccess = f12.uniformAndStorageBuffer8BitAccess,
             timelineSemaphore = 1,
             hostQueryReset = f12.hostQueryReset,
             shaderSampledImageArrayNonUniformIndexing = f12.shaderSampledImageArrayNonUniformIndexing,
@@ -175,7 +223,17 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
             shaderStorageImageArrayNonUniformIndexing = f12.shaderStorageImageArrayNonUniformIndexing,
             shaderUniformBufferArrayNonUniformIndexing = f12.shaderUniformBufferArrayNonUniformIndexing,
         };
-        var e2 = new VkPhysicalDeviceFeatures2 { pNext = &e12 };
+        var e11 = new VkPhysicalDeviceVulkan11Features
+        {
+            pNext = &e12,
+            storageBuffer16BitAccess = f11.storageBuffer16BitAccess,
+            uniformAndStorageBuffer16BitAccess = f11.uniformAndStorageBuffer16BitAccess,
+            storagePushConstant16 = f11.storagePushConstant16,
+        };
+        var e2 = new VkPhysicalDeviceFeatures2 { pNext = &e11 };
+        e2.features.shaderInt16 = have.shaderInt16;
+        e2.features.shaderInt64 = have.shaderInt64;
+        e2.features.shaderFloat64 = have.shaderFloat64;
         e2.features.samplerAnisotropy = have.samplerAnisotropy;
         e2.features.independentBlend = have.independentBlend;
         e2.features.imageCubeArray = have.imageCubeArray;
@@ -205,6 +263,16 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
         if (HasSwapchainExtension)
         {
             exts.Add("VK_KHR_swapchain");
+        }
+
+        if (useCoopMatrix)
+        {
+            exts.Add("VK_KHR_cooperative_matrix");
+        }
+
+        if (useBFloat16)
+        {
+            exts.Add("VK_KHR_shader_bfloat16");
         }
 
         var extPtrs = arena.Alloc<nint>(exts.Count);
@@ -269,6 +337,7 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
             props.limits.maxImageDimension3D,
             props.limits.maxImageArrayLayers,
             Math.Min(512u, Math.Min(props.limits.maxPerStageDescriptorSampledImages, props.limits.maxPerStageDescriptorStorageBuffers)));
+        _caps = _caps with { Compute = QueryCompute(info, props.limits, f2.features, f11, f12, f13, nonUniform, useCoopMatrix, useBFloat16) };
         _maxPushConstants = Math.Min(props.limits.maxPushConstantsSize, MaxPushConstantBytes);
         VkPhysicalDeviceMemoryProperties mem;
         _instanceFns.vkGetPhysicalDeviceMemoryProperties(_physical, &mem);
@@ -285,7 +354,7 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
         throw r switch
         {
             VkResult.ErrorOutOfDeviceMemory or VkResult.ErrorOutOfHostMemory => new GpuOutOfMemoryException($"{call} ran out of memory"),
-            VkResult.ErrorDeviceLost => new GpuDeviceLostException($"{call}: the device was lost"),
+            VkResult.ErrorDeviceLost => new GpuDeviceLostException($"{call}: the device was lost", call),
             _ => new GpuException($"{call} failed on {_adapter.Name}: {r}"),
         };
     }
@@ -308,6 +377,7 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
     /// <summary>Reads the timeline, then releases what the GPU has finished with.</summary>
     internal void Poll()
     {
+        CollectReadbacks();
         ulong v;
         Check(_deviceFns.vkGetSemaphoreCounterValue(_device, _timeline, &v), "vkGetSemaphoreCounterValue");
         CompletedSerial = v;
@@ -834,6 +904,8 @@ internal sealed unsafe partial class VulkanDevice : GpuDevice
                 // Tearing down after a lost device: destroy what we can.
             }
         }
+
+        StopReadbackWaiter();
 
         foreach (var sc in _swapchains.ToArray())
         {

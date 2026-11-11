@@ -527,6 +527,9 @@ public readonly record struct GpuCapabilities(
 {
     /// <summary>Whether <c>SetPushConstants</c> works. False on a backend whose shader compiler cannot yet produce push-constant blocks.</summary>
     public bool PushConstants { get; init; } = true;
+
+    /// <summary>Compute features and limits: subgroups, 16-bit and 8-bit types, matrix hardware, workgroup and buffer limits.</summary>
+    public GpuComputeCapabilities Compute { get; init; } = GpuComputeCapabilities.None;
 }
 
 /// <summary>Where a texture region is: a mip level, a layer, a box inside it.</summary>

@@ -193,7 +193,7 @@ internal sealed unsafe class MemoryAllocator
         var r = _device.Fns.vkAllocateMemory(_device.Handle, &info, null, &mem);
         if (r is VkResult.ErrorOutOfDeviceMemory or VkResult.ErrorOutOfHostMemory)
         {
-            throw new GpuOutOfMemoryException($"device memory allocation of {size} bytes failed");
+            throw new GpuOutOfMemoryException($"device memory allocation of {size} bytes failed", size);
         }
 
         _device.Check(r, "vkAllocateMemory");

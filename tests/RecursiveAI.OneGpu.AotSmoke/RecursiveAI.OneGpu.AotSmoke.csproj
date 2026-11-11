@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Publishes with NativeAOT and full trimming, creates a device on this machine, prints what it can do and runs a compute kernel. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PublishAot>true</PublishAot>
+    <TrimMode>full</TrimMode>
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+    <OneShaderNamespace>RecursiveAI.OneGpu.AotSmoke.Shaders</OneShaderNamespace>
+    <EnableDefaultOneShaderItems>false</EnableDefaultOneShaderItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <OneShader Include="../RecursiveAI.OneGpu.Vulkan.Tests/Shaders/VectorAdd.hlsl" />
+    <PackageReference Include="RecursiveAI.OneShader.Build" />
+    <ProjectReference Include="../../src/RecursiveAI.OneGpu.Backends/RecursiveAI.OneGpu.Backends.csproj" />
+  </ItemGroup>
+
+</Project>

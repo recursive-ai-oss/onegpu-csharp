@@ -225,7 +225,7 @@ internal sealed unsafe partial class MetalDevice : GpuDevice
             var buffer = Msg.Obj(_device, Sel.newBufferWithBytes_length_options_, (nint)p, (nuint)data.Length, MT.StorageShared);
             if (buffer == 0)
             {
-                throw new GpuOutOfMemoryException("could not allocate a staging buffer of " + data.Length + " bytes");
+                throw new GpuOutOfMemoryException("could not allocate a staging buffer of " + data.Length + " bytes", (ulong)data.Length);
             }
 
             return buffer;

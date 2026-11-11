@@ -9,7 +9,17 @@ internal sealed class GpuFixture : IDisposable
 
     public GpuFixture()
     {
-        Device = GpuBackends.CreateDevice(new GpuDeviceOptions { Validation = true, RequireValidation = true });
+        try
+        {
+            Device = GpuBackends.CreateDevice(new GpuDeviceOptions { Validation = true, RequireValidation = true });
+        }
+        catch (GpuUnsupportedException e) when (e.Capability is null && Environment.GetEnvironmentVariable("ONEGPU_REQUIRE_DEVICE") != "1")
+        {
+            // No graphics API or adapter here: the test cannot run, which is not a failure of the code under test. A machine that is
+            // supposed to have a GPU sets ONEGPU_REQUIRE_DEVICE=1 so a missing one fails instead.
+            Assert.Skip("no GPU device available: " + e.Message);
+            throw;
+        }
     }
 
     public void Dispose()
