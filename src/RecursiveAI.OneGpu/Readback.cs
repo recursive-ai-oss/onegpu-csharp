@@ -147,7 +147,7 @@ internal sealed class TypedMemory<T> : MemoryManager<byte>
 
     public override Span<byte> GetSpan() => System.Runtime.InteropServices.MemoryMarshal.AsBytes(_memory.Span);
 
-    // The readback only needs spans; handing out raw pointers would need unsafe code in a package that has none.
+    // The readback only needs spans; handing out raw pointers would need pointer code, which this package does not have.
     public override MemoryHandle Pin(int elementIndex = 0) => throw new NotSupportedException("pinning is not supported for typed readback destinations");
 
     public override void Unpin()

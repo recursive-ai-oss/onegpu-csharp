@@ -11,7 +11,7 @@ namespace RecursiveAI.OneGpu;
 public sealed class GpuBuffer<T> : IDisposable
     where T : unmanaged
 {
-    // One probe element: the element size of an unmanaged type is read from a one-element array, which keeps this assembly free of unsafe code.
+    // One probe element: the element size of an unmanaged type is read from a one-element array, which needs no pointer code.
     static readonly int ElementSize = MemoryMarshal.AsBytes<T>(new T[1]).Length;
 
     readonly GpuDevice _device;

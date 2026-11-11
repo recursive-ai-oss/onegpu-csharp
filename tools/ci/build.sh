@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Restores and builds the solution with warnings as errors, then runs the repository checks.
+# Builds every library, the native tests and the smoke app with warnings as errors, then runs the repository checks. The browser runner
+# needs the wasm-tools workload and is built by test-web.sh; with the workload installed, `dotnet build OneGpu.slnx` builds everything.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
-dotnet restore OneGpu.slnx
-dotnet build --no-restore OneGpu.slnx -c Release
+for project in tests/RecursiveAI.OneGpu.Vulkan.Tests tests/RecursiveAI.OneGpu.Tests tests/RecursiveAI.OneGpu.AotSmoke; do
+  dotnet build "$project" -c Release
+done
 
 # Interop lives only in the backend packages; the core and the kernels have none.
 if git grep -nE 'DllImport|LibraryImport|JSImport|delegate\* unmanaged' -- 'src/RecursiveAI.OneGpu/**.cs' 'src/RecursiveAI.OneGpu.Kernels/**.cs'; then

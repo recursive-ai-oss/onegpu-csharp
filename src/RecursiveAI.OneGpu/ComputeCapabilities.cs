@@ -143,7 +143,7 @@ public sealed record GpuComputeCapabilities
     /// <summary>Most bind group sets a pipeline layout may use.</summary>
     public uint MaxBindGroups { get; init; }
 
-    /// <summary>Offsets and sizes of storage buffer bindings with a dynamic offset must be multiples of this many bytes.</summary>
+    /// <summary>A storage buffer binding that starts inside a buffer (<see cref="BindGroupEntry.Offset"/>) must start at a multiple of this many bytes; the backend reports the hardware's own requirement, or a safe bound where the API gives none. <see cref="GpuDevice.DynamicOffsetAlignment"/> still applies to dynamic offsets.</summary>
     public uint StorageBufferOffsetAlignment { get; init; }
 
     /// <summary>Describes the capabilities in a few lines of plain text, for logs and test output.</summary>
