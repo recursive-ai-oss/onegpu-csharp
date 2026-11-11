@@ -295,6 +295,8 @@ internal sealed class MetalGraphicsPipeline : GpuGraphicsPipeline
 
 internal sealed class MetalComputePipeline : GpuComputePipeline
 {
+    public MetalComputePipeline(string? label) => Label = label;
+
     public nint State;
     public MetalPipelineLayout Layout = null!;
     public SlotTable Slots = null!;

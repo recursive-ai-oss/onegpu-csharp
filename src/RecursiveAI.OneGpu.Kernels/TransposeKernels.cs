@@ -40,14 +40,7 @@ public sealed class TransposeKernels : IDisposable
         where T : unmanaged
     {
         const string Name = "Transpose";
-        var kind = KernelTypes.Of<T>(Name);
-        var elem = kind switch
-        {
-            ElementKind.F16 => 0,
-            ElementKind.I64 => 2,
-            _ => 1,
-        };
-        var half = elem == 0;
+        var half = KernelTypes.Of<T>(Name) == ElementKind.F16;
         var rank = shape.Length;
         if (permutation.Length != rank)
         {
@@ -79,8 +72,7 @@ public sealed class TransposeKernels : IDisposable
             return;
         }
 
-        // Input strides, then the output dimensions innermost first with the input stride of each; dimensions of 1 vanish and
-        // neighbours that are also neighbours in the input merge into one.
+        // Input strides, then the output dimensions (outermost first) with the input stride of each step along them.
         Span<long> inStride = stackalloc long[32];
         long run = 1;
         for (var i = rank - 1; i >= 0; i--)
@@ -89,39 +81,73 @@ public sealed class TransposeKernels : IDisposable
             run *= shape[i];
         }
 
+        Span<int> dims = stackalloc int[32];
+        Span<long> strides = stackalloc long[32];
+        for (var i = 0; i < rank; i++)
+        {
+            dims[i] = shape[permutation[i]];
+            strides[i] = inStride[permutation[i]];
+        }
+
+        EncodeStrided(Name, encoder, input, offsetInput, dims[..rank], strides[..rank], output, offsetOutput, total);
+    }
+
+    /// <summary>
+    /// Records <c>output[i0, .., ik] = input[offsetInput + sum(ij * strides[j])]</c> for a dense output of shape <paramref name="dims"/>:
+    /// the one copy loop behind transposes, slices (positive or negative steps) and expands (stride 0). Strides may be negative or zero.
+    /// The caller has checked that every element read lies inside the input.
+    /// </summary>
+    internal void EncodeStrided<T>(string name, GpuCommandEncoder encoder, GpuBuffer<T> input, int offsetInput, ReadOnlySpan<int> dims, ReadOnlySpan<long> strides, GpuBuffer<T> output, int offsetOutput, long total)
+        where T : unmanaged
+    {
+        var kind = KernelTypes.Of<T>(name);
+        var elem = kind switch
+        {
+            ElementKind.F16 => 0,
+            ElementKind.I64 => 2,
+            _ => 1,
+        };
+        var half = elem == 0;
+        Check.Range(name, nameof(output), output.Length, offsetOutput, total, half);
+        if (total == 0)
+        {
+            return;
+        }
+
+        // Dimensions of 1 vanish and neighbours that are also neighbours in the input merge into one; innermost first.
         Span<uint> w = stackalloc uint[Words];
         var m = 0;
-        Span<long> dims = stackalloc long[32];
-        Span<long> strides = stackalloc long[32];
-        for (var i = rank - 1; i >= 0; i--)
+        Span<long> d2 = stackalloc long[32];
+        Span<long> s2 = stackalloc long[32];
+        for (var i = dims.Length - 1; i >= 0; i--)
         {
-            var d = shape[permutation[i]];
+            var d = dims[i];
             if (d == 1)
             {
                 continue;
             }
 
-            var s = inStride[permutation[i]];
-            if (m > 0 && s == strides[m - 1] * dims[m - 1])
+            var s = strides[i];
+            if (m > 0 && s == s2[m - 1] * d2[m - 1])
             {
-                dims[m - 1] *= d;
+                d2[m - 1] *= d;
                 continue;
             }
 
-            dims[m] = d;
-            strides[m] = s;
+            d2[m] = d;
+            s2[m] = s;
             m++;
         }
 
         if (m > 6)
         {
-            throw new GpuKernelShapeException(Name, nameof(permutation), $"the permutation leaves {m} dimensions that cannot be merged, above the supported 6");
+            throw new GpuKernelShapeException(name, "shape", $"the operation leaves {m} dimensions that cannot be merged, above the supported 6");
         }
 
         for (var i = 0; i < 6; i++)
         {
-            w[5 + i] = i < m ? (uint)dims[i] : 1u;
-            w[11 + i] = i < m ? (uint)strides[i] : 0u;
+            w[5 + i] = i < m ? (uint)d2[i] : 1u;
+            w[11 + i] = i < m ? unchecked((uint)s2[i]) : 0u;
         }
 
         w[0] = (uint)total;

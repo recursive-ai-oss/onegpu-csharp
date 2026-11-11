@@ -160,6 +160,7 @@ internal sealed unsafe partial class MetalDevice
             MaxStorageBufferBindingBytes = Msg.UL(_device, Sel.maxBufferLength),
             MaxBufferBytes = Msg.UL(_device, Sel.maxBufferLength),
             MaxStorageBuffersPerStage = 31,
+            SubmissionWorkBudget = SubmissionWorkBudget,
             MaxBindGroups = 4,
             StorageBufferOffsetAlignment = 256,
         };
@@ -234,8 +235,7 @@ internal sealed unsafe partial class MetalDevice
             Msg.Void(_commandBuffer, Sel.waitUntilCompleted);
             if (Msg.UL(_commandBuffer, Sel.status) == MT.StatusError)
             {
-                var err = Msg.Obj(_commandBuffer, Sel.error);
-                throw new GpuException("readback command buffer failed: " + (err == 0 ? "unknown error" : Objc.ErrorText(err)));
+                throw Describe(_commandBuffer, "a readback");
             }
         }
 

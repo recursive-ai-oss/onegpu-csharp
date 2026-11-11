@@ -36,6 +36,7 @@ internal static class Sel
     public static readonly nint layer = Objc.sel_registerName("layer");
     public static readonly nint layouts = Objc.sel_registerName("layouts");
     public static readonly nint localizedDescription = Objc.sel_registerName("localizedDescription");
+    public static readonly nint code = Objc.sel_registerName("code");
     public static readonly nint name = Objc.sel_registerName("name");
     public static readonly nint newBufferWithBytes_length_options_ = Objc.sel_registerName("newBufferWithBytes:length:options:");
     public static readonly nint newBufferWithLength_options_ = Objc.sel_registerName("newBufferWithLength:options:");

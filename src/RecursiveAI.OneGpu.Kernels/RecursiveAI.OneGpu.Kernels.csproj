@@ -17,9 +17,18 @@
     <OneShader Include="Shaders/ArgReduce.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Binary.hlsl" Axes="F16;ACT;RANK=R1|R2|RN" />
     <OneShader Include="Shaders/Cast.hlsl" />
+    <OneShader Include="Shaders/Concat.hlsl" Axes="ELEM=W16|W32|W64" />
     <OneShader Include="Shaders/Compare.hlsl" Axes="F16;RANK=R1|R2|RN" />
+    <OneShader Include="Shaders/DynamicQuantize.hlsl" />
+    <OneShader Include="Shaders/Gather.hlsl" Axes="ELEM=W16|W32|W64" />
+    <OneShader Include="Shaders/GatherElements.hlsl" Axes="ELEM=W16|W32|W64" />
+    <OneShader Include="Shaders/GatherNd.hlsl" Axes="ELEM=W16|W32|W64" />
+    <OneShader Include="Shaders/Int8Epilogue.hlsl" />
+    <OneShader Include="Shaders/Int8GemmKernel.hlsl" />
     <OneShader Include="Shaders/Norm.hlsl" Axes="F16;WAVE" />
     <OneShader Include="Shaders/Reduce.hlsl" Axes="F16;WAVE;RRANK=R1|RN" />
+    <OneShader Include="Shaders/ScatterElements.hlsl" Axes="ELEM=W16|W32|W64" />
+    <OneShader Include="Shaders/ScatterNd.hlsl" Axes="ELEM=W16|W32|W64" />
     <OneShader Include="Shaders/Softmax.hlsl" Axes="F16;WAVE" />
     <OneShader Include="Shaders/Transpose.hlsl" Axes="ELEM=W16|W32|W64" />
     <OneShader Include="Shaders/Unary.hlsl" Axes="F16" />

@@ -307,6 +307,46 @@ public sealed class GpuOutOfMemoryException : GpuException
     public ulong RequestedBytes { get; }
 }
 
+/// <summary>Why a submission failed, see <see cref="GpuCommandFailedException"/>.</summary>
+public enum GpuCommandFailure
+{
+    /// <summary>The platform gave no more specific reason.</summary>
+    Unknown = 0,
+
+    /// <summary>The platform's GPU watchdog aborted the submission because it ran too long or starved the display.</summary>
+    Watchdog = 1,
+
+    /// <summary>The GPU ran out of memory.</summary>
+    OutOfMemory = 2,
+
+    /// <summary>A command used a resource that was invalid, such as a buffer that was destroyed.</summary>
+    InvalidResource = 3,
+}
+
+/// <summary>
+/// The GPU did not complete a submission (it was aborted or failed). Everything the submission wrote is invalid, so the exception is raised
+/// by the next call that waits for the GPU or reads results rather than letting wrong data through.
+/// </summary>
+public sealed class GpuCommandFailedException : GpuException
+{
+    /// <summary>Creates the exception.</summary>
+    /// <param name="message">What failed, including what the submission was running when known.</param>
+    /// <param name="reason">Why it failed.</param>
+    /// <param name="platformCode">The platform's own error code, or 0 when there is none.</param>
+    public GpuCommandFailedException(string message, GpuCommandFailure reason, long platformCode = 0)
+        : base(message)
+    {
+        Reason = reason;
+        PlatformCode = platformCode;
+    }
+
+    /// <summary>Why the submission failed.</summary>
+    public GpuCommandFailure Reason { get; }
+
+    /// <summary>The platform's error code (for Metal, the <c>MTLCommandBufferError</c> value), or 0.</summary>
+    public long PlatformCode { get; }
+}
+
 /// <summary>The device was lost (driver reset, GPU removed). The device and everything created from it must be disposed; make a new device to continue.</summary>
 public sealed class GpuDeviceLostException : GpuException
 {
