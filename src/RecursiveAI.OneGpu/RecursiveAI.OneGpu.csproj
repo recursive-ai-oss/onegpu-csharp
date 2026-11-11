@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Graphics and compute API abstraction: devices, buffers, textures, pipelines and command encoders.</Description>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Support types of the shader library (resource bindings with their Metal indices). -->
+    <PackageReference Include="RecursiveAI.OneShader" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RecursiveAI.OneGpu.Tests" />
+  </ItemGroup>
+
+</Project>

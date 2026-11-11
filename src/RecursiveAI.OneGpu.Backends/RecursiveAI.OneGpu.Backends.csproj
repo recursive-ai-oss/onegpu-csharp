@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Picks the graphics backend for the machine: Metal on Apple platforms, WebGPU in a browser, Vulkan elsewhere.</Description>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../RecursiveAI.OneGpu/RecursiveAI.OneGpu.csproj" />
+    <ProjectReference Include="../RecursiveAI.OneGpu.Vulkan/RecursiveAI.OneGpu.Vulkan.csproj" />
+    <ProjectReference Include="../RecursiveAI.OneGpu.Metal/RecursiveAI.OneGpu.Metal.csproj" />
+    <ProjectReference Include="../RecursiveAI.OneGpu.WebGpu/RecursiveAI.OneGpu.WebGpu.csproj" />
+  </ItemGroup>
+
+</Project>

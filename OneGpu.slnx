@@ -1,2 +1,13 @@
 <Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RecursiveAI.OneGpu/RecursiveAI.OneGpu.csproj" />
+    <Project Path="src/RecursiveAI.OneGpu.Vulkan/RecursiveAI.OneGpu.Vulkan.csproj" />
+    <Project Path="src/RecursiveAI.OneGpu.Metal/RecursiveAI.OneGpu.Metal.csproj" />
+    <Project Path="src/RecursiveAI.OneGpu.WebGpu/RecursiveAI.OneGpu.WebGpu.csproj" />
+    <Project Path="src/RecursiveAI.OneGpu.Backends/RecursiveAI.OneGpu.Backends.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RecursiveAI.OneGpu.Tests/RecursiveAI.OneGpu.Tests.csproj" />
+    <Project Path="tests/RecursiveAI.OneGpu.Vulkan.Tests/RecursiveAI.OneGpu.Vulkan.Tests.csproj" />
+  </Folder>
 </Solution>

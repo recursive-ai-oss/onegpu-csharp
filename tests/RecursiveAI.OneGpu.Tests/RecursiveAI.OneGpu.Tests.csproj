@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/RecursiveAI.OneGpu/RecursiveAI.OneGpu.csproj" />
+  </ItemGroup>
+
+</Project>
