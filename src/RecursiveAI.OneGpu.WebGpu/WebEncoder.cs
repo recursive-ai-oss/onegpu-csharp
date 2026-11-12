@@ -122,7 +122,7 @@ internal sealed class WebEncoder : GpuCommandEncoder
         }
     }
 
-    public override GpuRenderPass BeginRenderPass(ReadOnlySpan<ColorAttachment> colors, DepthAttachment? depth = null)
+    public override GpuRenderPass BeginRenderPass(ReadOnlySpan<ColorAttachment> colors, DepthAttachment? depth)
     {
         Idle();
         if (colors.Length == 0 && depth is null)
@@ -177,6 +177,7 @@ internal sealed class WebEncoder : GpuCommandEncoder
     {
         Idle();
         _passOpen = true;
+        NoteComputePass();
         _s.U(Op.BeginComputePass);
         return new WebComputePass(this, _s);
     }
@@ -414,6 +415,7 @@ internal sealed class WebComputePass : GpuComputePass
     public override void Dispatch(uint x, uint y = 1, uint z = 1)
     {
         Live();
+        _e.NoteDispatch();
         _s.U(Op.Dispatch).U(x).U(y).U(z);
     }
 
@@ -421,6 +423,7 @@ internal sealed class WebComputePass : GpuComputePass
     {
         Live();
         WebEncoder.CheckIndirect(arguments, offset, DispatchIndirectArgs.Size);
+        _e.NoteDispatch();
         _s.U(Op.DispatchIndirect).U(((WebBuffer)arguments).Id).U(offset);
     }
 

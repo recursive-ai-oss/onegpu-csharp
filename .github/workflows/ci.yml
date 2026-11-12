@@ -1,7 +1,7 @@
 name: ci
 
-# The repository is private, so nothing runs on push or pull request: start a run by hand. Every step calls a script under
-# tools/ci, which also runs as plain shell on any machine with the .NET SDK.
+# Nothing runs on push or pull request: start a run by hand. Every step calls a script under tools/ci, which also runs as plain
+# shell on any machine with the .NET SDK and a GPU (or, for Vulkan, a software driver).
 on:
   workflow_dispatch:
 

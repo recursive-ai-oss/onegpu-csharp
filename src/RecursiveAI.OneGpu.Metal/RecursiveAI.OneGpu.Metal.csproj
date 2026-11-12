@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Metal backend of the GPU layer.</Description>
+    <Description>Metal backend for onegpu on macOS (Apple silicon), with no native binaries.</Description>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- Native interop for Metal: blittable structs and function-pointer calls into the Objective-C runtime. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

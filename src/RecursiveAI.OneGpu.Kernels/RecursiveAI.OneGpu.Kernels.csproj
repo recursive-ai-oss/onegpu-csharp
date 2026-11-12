@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Compute kernels for machine-learning inference, written in HLSL and compiled for Vulkan, Metal and WebGPU.</Description>
+    <Description>HLSL compute kernels for machine-learning inference on Vulkan, Metal and WebGPU: GEMM, attention, convolution and more.</Description>
     <ImplicitUsings>enable</ImplicitUsings>
     <OneShaderNamespace>RecursiveAI.OneGpu.Kernels.Shaders</OneShaderNamespace>
     <EnableDefaultOneShaderItems>false</EnableDefaultOneShaderItems>

@@ -46,7 +46,7 @@ run every layer set in four configurations (fast, fast with matrix hardware off,
   transforms must move: a floor no implementation can beat. RTX 4070, ResNet-50 stride-1 3x3 layers at b8 summed (host clock, indicative): **float32 direct 6.3 ms, floor 2.7 ms;
   half direct 2.4 ms, floor 1.0 ms.** The floor leaves room (the transforms run as three irregular passes, realistically 1.5x the copy floor, and half Winograd carries
   larger rounding error through the transformed data than the 2e-3 half tolerance leaves comfortably), but it is a speed-up for one model's 3x3 layers only, MobileNetV3 and DBNet
-  have almost none. Left for the speed milestone if ResNet-50 misses the bar; the variant would be a fourth `ConvVariant` behind the same `Encode`.
+  have almost none. Left until ResNet-50 speed needs it; the variant would be a fourth `ConvVariant` behind the same `Encode`.
 
 ### Apple M2, float32 (indicative, host clock, 10 calls per command buffer; Metal has no timestamp queries)
 

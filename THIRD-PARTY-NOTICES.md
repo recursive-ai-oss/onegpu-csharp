@@ -16,5 +16,15 @@ function names follow it. `tools/RecursiveAI.OneGpu.VkBindGen` produces it from 
 
 The tests and the build use these only as separate programs or build-time packages. None ships:
 
-- The Khronos Vulkan validation layer, which checks Vulkan usage during test runs.
-- Headless Chrome, which runs the WebGPU tests.
+- The Khronos Vulkan validation layer, which checks Vulkan usage during test runs (Apache-2.0).
+- Headless Chrome, which runs the WebGPU tests, and Node.js, which runs the small script that drives it (`tools/web`, Node's own modules only).
+- xUnit v3 (`xunit.v3`, Apache-2.0), the test framework.
+- `Microsoft.CodeAnalysis.PublicApiAnalyzers` (MIT), a build-time analyzer that checks the public API against `PublicAPI.Shipped.txt`.
+- `RecursiveAI.OneShader.Build`, the family's shader compiler, at build time. The runtime packages also reference `RecursiveAI.OneShader`, its
+  small support library of resource-binding types.
+
+## Test data and models
+
+`testdata/gpu/*.png` are reference images that this repository's own render tests produced (`ONEGPU_UPDATE_GOLDENS=1` rewrites them);
+they contain no third-party material. No model files are stored here. The kernel tests compare against plain C# reference code written
+for the tests, with reference values computed in the test run itself; no other implementation's output or data is bundled.

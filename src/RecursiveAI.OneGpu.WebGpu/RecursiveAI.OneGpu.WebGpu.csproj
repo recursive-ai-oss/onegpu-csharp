@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Razor">
 
   <PropertyGroup>
-    <Description>WebGPU backend of the GPU layer, for the browser.</Description>
+    <Description>WebGPU backend for onegpu in the browser (.NET WebAssembly).</Description>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- Source-generated JavaScript interop (JSImport) is the browser's counterpart of LibraryImport and needs unsafe code in the generated stubs. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

@@ -95,12 +95,25 @@ public abstract partial class GpuDevice
         return new GpuBuffer<T>(this, CreateBuffer(new BufferDesc((bytes + 3) & ~3UL, usage) { Label = label }), length);
     }
 
+    /// <summary>Creates a typed buffer holding <paramref name="data"/> with the default compute usage; the upload runs before the next submitted commands.</summary>
+    /// <typeparam name="T">A blittable element type.</typeparam>
+    /// <param name="data">Initial contents; at least one element.</param>
+    public GpuBuffer<T> CreateBuffer<T>(ReadOnlySpan<T> data)
+        where T : unmanaged => CreateBuffer(data, DefaultComputeUsage, null);
+
+    /// <summary>Creates a typed buffer holding <paramref name="data"/>; the upload runs before the next submitted commands.</summary>
+    /// <typeparam name="T">A blittable element type.</typeparam>
+    /// <param name="data">Initial contents; at least one element.</param>
+    /// <param name="usage">Every use the buffer will have; it must include <see cref="BufferUsage.CopyDestination"/>.</param>
+    public GpuBuffer<T> CreateBuffer<T>(ReadOnlySpan<T> data, BufferUsage usage)
+        where T : unmanaged => CreateBuffer(data, usage, null);
+
     /// <summary>Creates a typed buffer holding <paramref name="data"/>; the upload runs before the next submitted commands.</summary>
     /// <typeparam name="T">A blittable element type.</typeparam>
     /// <param name="data">Initial contents; at least one element.</param>
     /// <param name="usage">Every use the buffer will have; it must include <see cref="BufferUsage.CopyDestination"/>.</param>
     /// <param name="label">Optional name shown in debugging tools.</param>
-    public GpuBuffer<T> CreateBuffer<T>(ReadOnlySpan<T> data, BufferUsage usage = DefaultComputeUsage, string? label = null)
+    public GpuBuffer<T> CreateBuffer<T>(ReadOnlySpan<T> data, BufferUsage usage, string? label)
         where T : unmanaged
     {
         var buffer = CreateBuffer<T>(data.Length, usage, label);

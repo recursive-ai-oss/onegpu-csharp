@@ -54,6 +54,7 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
         _work = 0;
         LastLabel = null;
         Passes = 0;
+        ResetCounts();
     }
 
     /// <summary>Notes a compute pass using a pipeline, for the description of a failed submission.</summary>
@@ -186,7 +187,7 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
     // ---- passes ----
 
     /// <inheritdoc />
-    public override GpuRenderPass BeginRenderPass(ReadOnlySpan<ColorAttachment> colors, DepthAttachment? depth = null)
+    public override GpuRenderPass BeginRenderPass(ReadOnlySpan<ColorAttachment> colors, DepthAttachment? depth)
     {
         EnsureOpen();
         if (colors.Length == 0 && depth is null)
@@ -297,6 +298,7 @@ internal sealed unsafe class MetalEncoder : GpuCommandEncoder
     public override GpuComputePass BeginComputePass()
     {
         EnsureOpen();
+        NoteComputePass();
         EndBlit();
         var timed = TakeTiming();
         var pass = _computePass ??= new MetalComputePass(this);
@@ -974,6 +976,7 @@ internal sealed unsafe class MetalComputePass : GpuComputePass
     public override void Dispatch(uint x, uint y = 1, uint z = 1)
     {
         Check();
+        _owner.NoteDispatch();
         Apply();
         var g = _pipeline!.Group;
         if (x == 0 || y == 0 || z == 0)
@@ -987,6 +990,7 @@ internal sealed unsafe class MetalComputePass : GpuComputePass
     public override void DispatchIndirect(GpuBuffer arguments, ulong offset)
     {
         Check();
+        _owner.NoteDispatch();
         var b = arguments as MetalBuffer ?? throw new ArgumentException("buffer belongs to another backend", nameof(arguments));
         if ((b.Usage & BufferUsage.Indirect) == 0)
         {

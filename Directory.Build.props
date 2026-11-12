@@ -40,17 +40,19 @@
   <PropertyGroup Label="Package metadata">
     <Authors>Recursive AI, LLC</Authors>
     <Company>Recursive AI, LLC</Company>
-    <Copyright>Copyright (c) Recursive AI, LLC</Copyright>
+    <Copyright>Copyright © Recursive AI, LLC</Copyright>
     <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
     <PackageId Condition="'$(PackageId)' == ''">$(MSBuildProjectName)</PackageId>
     <RepositoryType>git</RepositoryType>
     <RepositoryUrl>https://github.com/recursive-ai-oss/onegpu-csharp</RepositoryUrl>
     <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageTags>gpu;compute;vulkan;metal;webgpu;nativeaot;trimmable</PackageTags>
+    <PackageTags>gpu;compute;vulkan;metal;webgpu;hlsl;onnx;nativeaot;trimmable</PackageTags>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <!-- Source Link comes with the SDK: the nuspec and the symbol package carry the commit, so a debugger fetches the exact sources. -->
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
 
   <!-- Only the libraries under src/ are packages. Tests, tools and benchmarks are built, not published. -->
@@ -58,7 +60,7 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup Condition="'$(IsPackable)' != 'false'">
-    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" Visible="false" />
+    <None Include="$(MSBuildProjectDirectory)/README.md" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
 
   <!-- "Ships" means the code goes into a consumer's program: everything under src/. Those projects get the package guard
@@ -75,5 +77,13 @@
     <IsAotCompatible>true</IsAotCompatible>
     <IsTrimmable>true</IsTrimmable>
   </PropertyGroup>
+
+  <!-- The public surface is frozen in PublicAPI.Shipped.txt next to each project. Any public change is a build error until the file
+       changes too, so it shows in review. New API goes in PublicAPI.Unshipped.txt first and moves to Shipped at the next release. -->
+  <ItemGroup Condition="'$(OneGpuShips)' == 'true'">
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" PrivateAssets="all" />
+    <AdditionalFiles Include="PublicAPI.Shipped.txt" />
+    <AdditionalFiles Include="PublicAPI.Unshipped.txt" />
+  </ItemGroup>
 
 </Project>

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Graphics and compute API abstraction: devices, buffers, textures, pipelines and command encoders.</Description>
+    <Description>Devices, buffers, compute pipelines and command encoders for .NET, on any backend.</Description>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 

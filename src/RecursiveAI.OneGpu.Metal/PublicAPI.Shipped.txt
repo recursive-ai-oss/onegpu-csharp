@@ -1,0 +1,5 @@
+#nullable enable
+RecursiveAI.OneGpu.Metal.MetalGpu
+static RecursiveAI.OneGpu.Metal.MetalGpu.CreateDevice(RecursiveAI.OneGpu.GpuDeviceOptions? options = null) -> RecursiveAI.OneGpu.GpuDevice!
+static RecursiveAI.OneGpu.Metal.MetalGpu.EnumerateAdapters() -> System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.GpuAdapterInfo!>!
+static RecursiveAI.OneGpu.Metal.MetalGpu.IsAvailable.get -> bool
