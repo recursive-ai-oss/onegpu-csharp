@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <OneShaderNamespace>RecursiveAI.OneGpu.Kernels.Shaders</OneShaderNamespace>
     <EnableDefaultOneShaderItems>false</EnableDefaultOneShaderItems>
+    <!-- The generated shader classes are an implementation detail; the public surface is the hand-written kernel families. -->
+    <OneShaderAccessibility>internal</OneShaderAccessibility>
   </PropertyGroup>
 
   <ItemGroup>
