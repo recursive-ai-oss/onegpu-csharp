@@ -71,10 +71,6 @@
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <EnablePackageValidation>true</EnablePackageValidation>
   </PropertyGroup>
-  <!-- Reproducible paths in published binaries and symbols: src/ only, because tests use [CallerFilePath]. -->
-  <PropertyGroup Condition="'$(CI)' == 'true' and $([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)')).StartsWith('$(_SrcRoot)')">
-    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
-  </PropertyGroup>
 
   <!-- "Ships" means the code goes into a consumer's program: everything under src/. Those projects get the package guard
        (build/PackageGuard.targets) and the AOT and trim analyzers. Tests and tools may use any package. -->
@@ -82,6 +78,11 @@
     <_ProjectDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)'))</_ProjectDir>
     <OneGpuShips Condition="'$(OneGpuShips)' == '' and $(_ProjectDir.StartsWith('$(_SrcRoot)'))">true</OneGpuShips>
   </PropertyGroup>
+  <!-- Reproducible paths in published binaries and symbols: src/ only, because tests use [CallerFilePath]. -->
+  <PropertyGroup Condition="'$(CI)' == 'true' and '$(OneGpuShips)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(OneGpuShips)' == 'true'">
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
