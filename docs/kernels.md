@@ -113,6 +113,12 @@ The tanh form of GELU computes its exponential with its own range reduction and 
 A float sum of n values has an error of about ε·√n·(Σ|x|/|Σx|) in the worst conditioning: a sum that cancels to almost nothing cannot be accurate in relative terms in any
 float implementation. The tests use mostly positive data for sums.
 
+## Float32 accumulation order
+
+Float32 products and convolutions accumulate k in blocks with block sums added in increasing order (see `gemm.md`), so their error against
+a double-precision sum grows far more slowly than one chain over k would. Measured scaled error at K = 3072: 1.5e-7 to 3.5e-7 on every
+device (a single chain gave 1.8e-6 to 4.5e-6). The tests that check it are `AccumulationAccuracyTests`.
+
 ## Fast and deterministic
 
 The reductions, softmax and normalisation have both modes.

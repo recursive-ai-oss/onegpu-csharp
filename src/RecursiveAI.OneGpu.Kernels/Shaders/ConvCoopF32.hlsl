@@ -203,13 +203,6 @@ void ConvCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     MatC part01 = MatC::Zero();
     MatC part11 = MatC::Zero();
 #endif
-    MatC mid00 = MatC::Zero();
-    MatC mid10 = MatC::Zero();
-#if !defined(NARROW)
-    MatC mid01 = MatC::Zero();
-    MatC mid11 = MatC::Zero();
-#endif
-    uint foldGroups = 0;
     uint foldSteps = 0;
 
     uint kStaged = kBegin;

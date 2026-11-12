@@ -60,6 +60,18 @@ struct GemmParams
 #define COOP_FOUR 1
 #endif
 #include "TileAccum.hlsli"
+#if !defined(GEMM_F32)
+// 16-bit inputs keep one chain: the products are exact in float and the hardware sums each 16-term step before it reaches the
+// accumulator, and a second accumulator cost half the throughput on NVIDIA tensor cores.
+#undef COOP_STEP_DONE
+#undef COOP_FOLD_ALL
+#define COOP_STEP_DONE
+#define COOP_FOLD_ALL
+#define part00 acc00
+#define part10 acc10
+#define part01 acc01
+#define part11 acc11
+#endif
 #include "GemmEpilogue.hlsli"
 
 static const uint BM = 64;
@@ -136,20 +148,15 @@ void GemmCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     MatC acc01 = MatC::Zero();
     MatC acc11 = MatC::Zero();
 #endif
+#if defined(GEMM_F32)
     MatC part00 = MatC::Zero();
     MatC part10 = MatC::Zero();
 #if !defined(GEMM_WIDE)
     MatC part01 = MatC::Zero();
     MatC part11 = MatC::Zero();
 #endif
-    MatC mid00 = MatC::Zero();
-    MatC mid10 = MatC::Zero();
-#if !defined(GEMM_WIDE)
-    MatC mid01 = MatC::Zero();
-    MatC mid11 = MatC::Zero();
-#endif
-    uint foldGroups = 0;
     uint foldSteps = 0;
+#endif
 
     uint kStaged = 0;
 #if defined(GEMM_DIRECT)

@@ -132,15 +132,20 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     TILE_DECLARE(u)
     uint groupSteps = 0;
 
-    for (uint k0 = 0; k0 < P.K; k0 += BK)
+    for (uint k0 = 0; k0 < P.K; k0 += 2 * BK)
     {
+        // Two staged steps (32 terms) chain into one block sum t.
+        TILE_DECLARE(t)
+        [unroll] for (uint sub = 0; sub < 2; sub++)
+        {
+        uint kb = k0 + sub * BK;
         [unroll] for (uint e = 0; e < (BM * BK) / TILE_THREADS; e++)
         {
             uint idx = tid + e * TILE_THREADS;
             uint r = idx / BK;
             uint k = idx % BK;
             uint gm = m0 + r;
-            uint gk = k0 + k;
+            uint gk = kb + k;
             float v = 0.0;
             if (gm < P.M && gk < P.K)
             {
@@ -152,7 +157,7 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
         [unroll] for (uint f = 0; f < (BK * BN) / TILE_THREADS; f++)
         {
             uint k = bk0 + f * 4u;
-            uint gk = k0 + k;
+            uint gk = kb + k;
             float v = 0.0;
             if (pixelValid && gk < P.K)
             {
@@ -179,7 +184,6 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
 
         GroupMemoryBarrierWithGroupSync();
 
-        TILE_DECLARE(t)
         [unroll] for (uint kk2 = 0; kk2 < BK; kk2++)
         {
             float a0 = As[kk2][ty + 0];
@@ -193,6 +197,9 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
             TILE_STEP(t, a0, a1, a2, a3, b0, b1, b2, b3)
         }
 
+        GroupMemoryBarrierWithGroupSync();
+        }
+
         TILE_ADD(u, t)
         if (++groupSteps == TILE_STEPS_PER_GROUP)
         {
@@ -200,8 +207,6 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
             TILE_ZERO(u)
             groupSteps = 0;
         }
-
-        GroupMemoryBarrierWithGroupSync();
     }
 
     TILE_ADD(c, u)

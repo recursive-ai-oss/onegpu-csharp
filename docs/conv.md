@@ -38,6 +38,7 @@ run every layer set in four configurations (fast, fast with matrix hardware off,
 
 ### Not built, with the numbers
 
+- **Accumulation order.** The implicit-GEMM kernels sum k in blocks exactly as `Gemm` does (portable tile: 32-term block sums in 128-term groups; Apple matrix tile: a second accumulator over 128 terms); the im2col path inherits it from `Gemm`. Depthwise and direct kernels sum at most kernel-area terms in one chain. Scaled error against double at the Whisper stems and ResNet-50 3x3 layers is 1.4e-7 to 3.3e-7 (a single chain gave 4.6e-7 to 3.4e-6).
 - **Cooperative-matrix implicit GEMM** (window gather in the matrix tile load). On the RTX 4070, f16 ResNet-50 at b8 the im2col+`Gemm` layers already run at 6.6-13 TFLOP/s
   for 3x3 and 11-21 TFLOP/s for the 1x1 layers that use `Gemm` directly; the unfold pass is a bandwidth-bound write and read of at most a few tens of megabytes per layer. The
   ceiling for the change is the gap between the 3x3 and the 1x1 rate, about 1.3-1.6x on 3x3 layers, which are 2.4 of about 5.8 ms. Dropped as not worth a second coop kernel family now.

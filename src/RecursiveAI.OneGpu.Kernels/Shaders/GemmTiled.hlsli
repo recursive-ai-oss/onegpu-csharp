@@ -102,8 +102,13 @@ void GemmTiledBody(uint3 group, uint tid)
     TILE_DECLARE(u)
     uint groupSteps = 0;
 
-    for (uint k0 = 0; k0 < P.K; k0 += BK)
+    for (uint k0 = 0; k0 < P.K; k0 += 2 * BK)
     {
+        // Two staged steps (32 terms) chain into one block sum t.
+        TILE_DECLARE(t)
+        [unroll] for (uint sub = 0; sub < 2; sub++)
+        {
+        uint kb = k0 + sub * BK;
         // Stage the A tile (BM x BK) and the B tile (BK x BN). The thread-to-element map follows the memory layout so a
         // warp reads consecutive addresses in either orientation.
         [unroll] for (uint e = 0; e < (BM * BK) / TILE_THREADS; e++)
@@ -113,7 +118,7 @@ void GemmTiledBody(uint3 group, uint tid)
             if (transA) { r = idx % BM; k = idx / BM; }
             else { r = idx / BK; k = idx % BK; }
             uint gm = m0 + r;
-            uint gk = k0 + k;
+            uint gk = kb + k;
             float v = 0.0;
             if (gm < P.M && gk < P.K)
             {
@@ -129,7 +134,7 @@ void GemmTiledBody(uint3 group, uint tid)
             if (transB) { c = idx / BK; k = idx % BK; }
             else { c = idx % BN; k = idx / BN; }
             uint gn = n0 + c;
-            uint gk = k0 + k;
+            uint gk = kb + k;
             float v = 0.0;
             if (gn < P.N && gk < P.K)
             {
@@ -140,7 +145,6 @@ void GemmTiledBody(uint3 group, uint tid)
 
         GroupMemoryBarrierWithGroupSync();
 
-        TILE_DECLARE(t)
         [unroll] for (uint kk = 0; kk < BK; kk++)
         {
             float a0 = As[kk][ty + 0];
@@ -154,6 +158,9 @@ void GemmTiledBody(uint3 group, uint tid)
             TILE_STEP(t, a0, a1, a2, a3, b0, b1, b2, b3)
         }
 
+        GroupMemoryBarrierWithGroupSync();
+        }
+
         TILE_ADD(u, t)
         if (++groupSteps == TILE_STEPS_PER_GROUP)
         {
@@ -161,8 +168,6 @@ void GemmTiledBody(uint3 group, uint tid)
             TILE_ZERO(u)
             groupSteps = 0;
         }
-
-        GroupMemoryBarrierWithGroupSync();
     }
 
     TILE_ADD(c, u)

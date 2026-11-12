@@ -101,6 +101,13 @@ public sealed class GemmTests
 
     [Fact] public Task F16DeterministicRunsAreBitIdentical() => BitIdentical(GemmElementType.F16);
 
+#if WEB_BACKEND
+    // 16M float32 elements (64 MB) across A and B.
+    const long BrowserOperandLimit = 16L << 20;
+
+    static long OperandElements(in GemmProblem p) => ((long)p.M * p.K) + ((long)p.K * p.N);
+
+#endif
     static async Task BitIdentical(GemmElementType type)
     {
         using var f = new GemmFixture();
@@ -110,10 +117,19 @@ public sealed class GemmTests
         {
             var s = seed++;
             float[] first, second;
+#if WEB_BACKEND
+            // The browser's WebAssembly heap cannot hold the multi-hundred-megabyte operands of the vocabulary projection next to the earlier
+            // cases' arrays; the same shape is still checked against the reference by the parity tests.
+            if (OperandElements(c.Problem) > BrowserOperandLimit)
+            {
+                Report($"DETERMINISM\t{f.Device.Adapter.Name}\t{f.Device.Backend}\t{gemm.Variant}\t{type}\t{c.Name}\t-\t-\tskipped: operands over the browser heap budget");
+                continue;
+            }
+#endif
             try
             {
-                first = (await f.Run(gemm, c, s)).Gpu;
-                second = (await f.Run(gemm, c, s)).Gpu;
+                first = (await f.Run(gemm, c, s, withReference: false)).Gpu;
+                second = (await f.Run(gemm, c, s, withReference: false)).Gpu;
             }
             catch (GpuUnsupportedException e) when (e.Capability == nameof(GpuComputeCapabilities.MaxStorageBufferBindingBytes))
             {
