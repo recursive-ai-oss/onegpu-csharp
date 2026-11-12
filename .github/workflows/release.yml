@@ -1,29 +1,183 @@
 name: release
 
-# Packs the libraries. Publishing to a package feed is a separate, manual step that this workflow does not perform.
+# Publishes the NuGet packages when a version tag is pushed. nuget.org trusts this
+# workflow through Trusted Publishing: the job exchanges its GitHub identity token for
+# a short-lived API key, so no key is stored in the repository or its secrets.
+#
+# Three jobs, each with only the permissions it needs:
+#   verify   the tag is well formed, on main, CI passed on that commit, the changelog has the version
+#   publish  build, test, pack, attest, push to nuget.org
+#   release  create the GitHub release with the changelog section as notes and the packages attached
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Package version
-        required: true
+  push:
+    tags: ['v*']
 
-permissions:
-  contents: read
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+  # Deterministic paths in the published binaries and symbols come from Directory.Build.props (CI=true on GitHub), for src/ only.
 
 jobs:
-  pack:
+  verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      # Actions are pinned by commit because the publish job can obtain a publishing key.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag is well formed
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::$TAG is not a version tag such as v1.2.3 or v1.2.3-preview.1"; exit 1; }
+      - name: Tag is on main
+        run: |
+          # Only commits that are already on main are published.
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::the tagged commit is not on main"; exit 1; }
+      - name: CI passed on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&per_page=100" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          if [ "$passed" -lt 1 ]; then
+            echo "::error::no successful ci run for $GITHUB_SHA; wait for CI on this commit and push the tag again"
+            exit 1
+          fi
+      - name: Changelog has a section for the version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=${TAG#v}
+          awk -v heading="## [$version]" 'index($0, heading) == 1 { found = 1 } END { exit !found }' CHANGELOG.md \
+            || { echo "::error::CHANGELOG.md has no \"## [$version]\" section"; exit 1; }
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: nuget
+    permissions:
+      id-token: write       # nuget.org Trusted Publishing and the provenance attestation
+      attestations: write   # provenance for the packages
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Keep build output out of the checkout
+        run: echo "ONEGPU_ARTIFACTS=$RUNNER_TEMP/artifacts" >> "$GITHUB_ENV"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
-      - name: Pack
+
+      - name: Install the tools the solution needs
+        # The WebAssembly tools build the browser runner; the Vulkan software driver and validation layer run the GPU tests (the runner has
+        # no GPU); clang and zlib are Native AOT's linker.
         run: |
-          dotnet restore OneGpu.slnx
-          dotnet pack OneGpu.slnx -c Release --no-restore -p:Version="${{ inputs.version }}" -p:ContinuousIntegrationBuild=true -o packages
-      - uses: actions/upload-artifact@v4
+          dotnet workload install wasm-tools
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers clang zlib1g-dev
+
+      - name: Restore
+        run: dotnet restore OneGpu.slnx
+
+      - name: Tag matches the package version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # The version is whatever the project builds; the tag has to say the same.
+          version=$(dotnet msbuild src/RecursiveAI.OneGpu -getProperty:PackageVersion | tr -d '[:space:]')
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match the package version $version"
+            exit 1
+          fi
+
+      # A tag that does not build and pass its tests never publishes.
+      - name: Build
+        run: dotnet build OneGpu.slnx -c Release --no-restore
+      - name: Test
+        run: |
+          export ONEGPU_REQUIRE_DEVICE=1 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+          for project in RecursiveAI.OneGpu.Tests RecursiveAI.OneGpu.Vulkan.Tests RecursiveAI.OneGpu.Kernels.Tests; do
+            dotnet test --project "tests/$project" -c Release --no-build --results-directory "$ONEGPU_ARTIFACTS/TestResults"
+          done
+
+      - name: Pack
+        # The six shipped packages, from the binaries the tests ran on. Symbols come out as .snupkg files.
+        run: |
+          for project in src/*/*.csproj; do dotnet pack "$project" -c Release --no-build -o "$RUNNER_TEMP/packages"; done
+          ls -l "$RUNNER_TEMP/packages"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/packages/*.nupkg
+            ${{ runner.temp }}/packages/*.snupkg
+
+      - name: Keep the packages for the release job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages
-          path: packages/*.nupkg
+          path: |
+            ${{ runner.temp }}/packages/*.nupkg
+            ${{ runner.temp }}/packages/*.snupkg
+          if-no-files-found: error
+
+      - name: Log in to nuget.org
+        id: login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: recursiveai.org
+
+      - name: Push
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          # --no-symbols: pushing a .nupkg would otherwise also push the .snupkg beside it, and the next line pushes it again.
+          dotnet nuget push "$RUNNER_TEMP/packages/*.nupkg" --api-key "$NUGET_API_KEY" --no-symbols \
+            --source https://api.nuget.org/v3/index.json --skip-duplicate
+          dotnet nuget push "$RUNNER_TEMP/packages/*.snupkg" --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: packages
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=${TAG#v}
+          # The notes are the changelog section of this version: from its heading up to the
+          # next version heading or the link definitions at the end of the file.
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { on = 1; next }
+            on && (index($0, "## [") == 1 || $0 ~ /^\[[^]]+\]: /) { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then echo "::error::the changelog section for $version is empty"; exit 1; fi
+          flags=()
+          case "$version" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md "${flags[@]}" packages/*

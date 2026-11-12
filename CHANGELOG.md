@@ -1,6 +1,8 @@
 # Changelog
 
-## 1.0.0
+All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/).
+
+## [1.0.0] - 2026-11-12
 
 First stable release. Everything below is new in 1.0; the public API of every package is recorded in its `PublicAPI.Shipped.txt`, and
 names (package ids, namespaces, `ONEGPU_*` variables, the `onegpu` JavaScript module) are listed in [`docs/environment.md`](docs/environment.md).
@@ -33,3 +35,5 @@ names (package ids, namespaces, `ONEGPU_*` variables, the `onegpu` JavaScript mo
 - Tests run with the Khronos validation layer required and clean on Vulkan, with API and shader validation fatal on Metal, and in headless
   Chrome (SwiftShader and a hardware adapter) on WebGPU. `tools/ci` holds the scripts.
 - `PublicAPI.Shipped.txt` per package makes any public change a build error until the file changes in the same diff.
+
+[1.0.0]: https://github.com/recursive-ai-oss/onegpu-csharp/releases/tag/v1.0.0

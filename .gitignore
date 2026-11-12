@@ -4,6 +4,7 @@
 !/.gitignore
 !/.editorconfig
 !/.github
+!/assets
 !/CHANGELOG.md
 !/Directory.Build.props
 !/Directory.Build.targets

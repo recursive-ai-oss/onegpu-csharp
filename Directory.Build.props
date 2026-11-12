@@ -7,7 +7,7 @@
   <PropertyGroup Label="Name">
     <!-- Package IDs equal project names, which all start with this prefix. The prefix is written here only. -->
     <PackagePrefix>RecursiveAI.OneGpu</PackagePrefix>
-    <Version>0.1.0</Version>
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <PropertyGroup Label="Output">
@@ -45,9 +45,10 @@
     <PackageId Condition="'$(PackageId)' == ''">$(MSBuildProjectName)</PackageId>
     <RepositoryType>git</RepositoryType>
     <RepositoryUrl>https://github.com/recursive-ai-oss/onegpu-csharp</RepositoryUrl>
-    <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
+    <PackageProjectUrl>https://recursiveai.org/onegpu/</PackageProjectUrl>
+    <PackageIcon>icon.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageTags>gpu;compute;vulkan;metal;webgpu;hlsl;onnx;nativeaot;trimmable</PackageTags>
+    <PackageTags>gpu;gpgpu;compute;vulkan;metal;webgpu;hlsl;kernels;gemm;attention;convolution;inference;onnx;machine-learning;nativeaot;trimmable</PackageTags>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
@@ -61,7 +62,19 @@
   </PropertyGroup>
   <ItemGroup Condition="'$(IsPackable)' != 'false'">
     <None Include="$(MSBuildProjectDirectory)/README.md" Pack="true" PackagePath="/" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)LICENSE-MIT;$(MSBuildThisFileDirectory)LICENSE-APACHE;$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="/" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)assets/icon.png" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
+
+  <!-- Package validation fails a pack on an unintended breaking change. This is the first release, so there is no baseline version yet;
+       set PackageValidationBaselineVersion to the last published version after each release. -->
+  <PropertyGroup Condition="'$(IsPackable)' != 'false'">
+    <EnablePackageValidation>true</EnablePackageValidation>
+  </PropertyGroup>
+  <!-- Reproducible paths in published binaries and symbols: src/ only, because tests use [CallerFilePath]. -->
+  <PropertyGroup Condition="'$(CI)' == 'true' and $([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)')).StartsWith('$(_SrcRoot)')">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
 
   <!-- "Ships" means the code goes into a consumer's program: everything under src/. Those projects get the package guard
        (build/PackageGuard.targets) and the AOT and trim analyzers. Tests and tools may use any package. -->

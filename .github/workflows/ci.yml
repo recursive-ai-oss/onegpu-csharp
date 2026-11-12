@@ -1,51 +1,90 @@
 name: ci
 
-# Nothing runs on push or pull request: start a run by hand. Every step calls a script under tools/ci, which also runs as plain
-# shell on any machine with the .NET SDK and a GPU (or, for Vulkan, a software driver).
+# Runs on every push to main, on ci-check/** branches (a release candidate is checked there before its tag) and on pull requests.
+#
+# GitHub-hosted runners have no GPU. The Vulkan tests run on Mesa's software driver (lavapipe) with the Khronos validation layer, both from
+# the runner's package manager; that proves correctness and validation-cleanliness, not speed. Metal and hardware Vulkan are checked on
+# real machines with tools/ci/test-metal.sh and tools/ci/test-vulkan.sh, and the browser with tools/ci/test-web.sh.
 on:
-  workflow_dispatch:
+  push:
+    branches: [main, 'ci-check/**']
+  pull_request:
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
 
 jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Keep build output out of the checkout
+        run: echo "ONEGPU_ARTIFACTS=$RUNNER_TEMP/artifacts" >> "$GITHUB_ENV"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
-      - name: Install Vulkan software driver and validation layer
-        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers vulkan-validationlayers
-      - name: Build and check
+      - name: Install the Vulkan software driver, the validation layer and the Native AOT toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers clang zlib1g-dev
+      - name: Restore
+        run: dotnet restore tests/RecursiveAI.OneGpu.Vulkan.Tests && dotnet restore tests/RecursiveAI.OneGpu.Tests && dotnet restore tests/RecursiveAI.OneGpu.Kernels.Tests && dotnet restore tests/RecursiveAI.OneGpu.AotSmoke
+      - name: Build (warnings are errors) and repository checks
         run: tools/ci/build.sh
-      - name: Test on Vulkan (software driver, validation on)
+      - name: Core tests (no device needed)
+        run: dotnet test --no-build -c Release --project tests/RecursiveAI.OneGpu.Tests
+      - name: Vulkan tests on lavapipe (validation layer required, no messages allowed)
         run: VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json tools/ci/test-vulkan.sh
-      - name: Native AOT smoke
+      - name: Native AOT smoke (warnings are errors)
         run: VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json tools/ci/aot-smoke.sh
 
-  browser:
+  browser-wasm:
+    # Builds the WebGPU backend and the browser test runner for WebAssembly. Running them needs a browser, which tools/ci/test-web.sh does.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Keep build output out of the checkout
+        run: echo "ONEGPU_ARTIFACTS=$RUNNER_TEMP/artifacts" >> "$GITHUB_ENV"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - name: Install the WebAssembly tools
         run: dotnet workload install wasm-tools
-      - name: Test in headless Chrome (SwiftShader)
-        run: tools/ci/test-web.sh
+      - name: Publish the browser runner (builds the WebGPU backend and the kernels for WebAssembly)
+        run: dotnet publish tests/RecursiveAI.OneGpu.WebRunner -c Release -o "$RUNNER_TEMP/web"
+      - name: The script module is in the output
+        run: find "$RUNNER_TEMP/web/wwwroot" -name 'onegpu*.js' | grep .
 
-  macos:
-    runs-on: macos-latest
+  pack:
+    # Packs the six packages at the version in Directory.Build.props with package validation on. Nothing is pushed anywhere.
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Keep build output out of the checkout
+        run: echo "ONEGPU_ARTIFACTS=$RUNNER_TEMP/artifacts" >> "$GITHUB_ENV"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
-      - name: Test on Metal (validation fatal)
-        run: tools/ci/test-metal.sh
+      - name: Pack
+        run: |
+          for project in src/*/*.csproj; do dotnet pack "$project" -c Release -o "$RUNNER_TEMP/packages"; done
+          ls -l "$RUNNER_TEMP/packages"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: ${{ runner.temp }}/packages/*
+          if-no-files-found: error

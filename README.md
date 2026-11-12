@@ -11,6 +11,8 @@ machine-learning inference needs, written in HLSL and compiled at build time for
 onemodel's `RecursiveAI.OneModel.Gpu` runs ONNX models on these kernels, and onegame, the family's game engine, takes its GPU layer from
 these packages (its render graph and 2D/3D rendering stay in onegame).
 
+**Status:** 1.0.0, released on [nuget.org](https://www.nuget.org/packages/RecursiveAI.OneGpu.Backends/1.0.0). The public API is frozen: a change that breaks it needs a new major version.
+
 | Package | What it is |
 |---|---|
 | `RecursiveAI.OneGpu` | Devices, adapters and capabilities, typed buffers, uploads and async readback, compute pipelines, command encoders, dispatch, timestamps, memory statistics, plus surfaces, textures and graphics pipelines. BCL only; no interop. |
@@ -33,8 +35,8 @@ these packages (its render graph and 2D/3D rendering stay in onegame).
 ## Install
 
 ```
-dotnet add package RecursiveAI.OneGpu.Backends
-dotnet add package RecursiveAI.OneGpu.Kernels
+dotnet add package RecursiveAI.OneGpu.Backends --version 1.0.0
+dotnet add package RecursiveAI.OneGpu.Kernels --version 1.0.0
 ```
 
 `Backends` brings the three backends; reference `RecursiveAI.OneGpu` and one backend alone to be smaller.
