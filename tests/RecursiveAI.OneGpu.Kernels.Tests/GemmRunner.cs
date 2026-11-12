@@ -53,7 +53,7 @@ internal sealed class GemmFixture : IDisposable
     };
 
     /// <summary>Runs the case once and returns C as read back, plus the inputs' reference and masks.</summary>
-    public async Task<(float[] Gpu, double[] Reference, bool[] Written, string Variant)> Run(Gemm gemm, GemmCase c, uint seed, float[]? previousOut = null)
+    public async Task<(float[] Gpu, double[] Reference, bool[] Written, string Variant)> Run(Gemm gemm, GemmCase c, uint seed, float[]? previousOut = null, bool withReference = true)
     {
         var p = c.Problem;
         var storedColsA = p.TransposeA ? p.M : p.K;
@@ -92,7 +92,8 @@ internal sealed class GemmFixture : IDisposable
             b[i] = Round(gemm.ElementType, b[i]);
         }
 
-        var reference = GemmReference.Multiply(p, a, b, cOld, p.Lda, p.Ldb, p.Ldc);
+        // A determinism check compares two GPU runs and never reads the reference, so it can skip the double-precision pass.
+        var reference = withReference ? GemmReference.Multiply(p, a, b, cOld, p.Lda, p.Ldb, p.Ldc) : [];
         using var cb = Device.CreateBuffer<float>(cOld);
         var enc = Device.BeginCommands();
         switch (gemm.ElementType)

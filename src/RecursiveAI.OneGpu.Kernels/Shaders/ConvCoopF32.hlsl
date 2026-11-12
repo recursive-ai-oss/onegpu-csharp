@@ -19,6 +19,12 @@
 // subgroup size to 32 and runs full subgroups.
 
 #include "Functions.hlsl"
+#if defined(NARROW)
+#define COOP_FOUR 0
+#else
+#define COOP_FOUR 1
+#endif
+#include "TileAccum.hlsli"
 
 [[vk::binding(0, 0)]] StructuredBuffer<float> ConvX;
 [[vk::binding(1, 0)]] StructuredBuffer<float> ConvW;
@@ -191,6 +197,13 @@ void ConvCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     MatC acc01 = MatC::Zero();
     MatC acc11 = MatC::Zero();
 #endif
+    MatC part00 = MatC::Zero();
+    MatC part10 = MatC::Zero();
+#if !defined(NARROW)
+    MatC part01 = MatC::Zero();
+    MatC part11 = MatC::Zero();
+#endif
+    uint foldSteps = 0;
 
     uint kStaged = kBegin;
     if (pointwise && m0 + BM <= P.M && n0 + BN <= P.N)
@@ -205,14 +218,15 @@ void ConvCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
             a0.Load(ConvW, wBase + rowA * P.K + kd, P.K, MatrixLayout::RowMajor);
             a1.Load(ConvW, wBase + (rowA + 16) * P.K + kd, P.K, MatrixLayout::RowMajor);
             b0.Load(ConvX, xBase + kd * P.N + n0 + colTile, P.N, MatrixLayout::RowMajor);
-            acc00 = MatC::MulAdd(a0, b0, acc00);
-            acc10 = MatC::MulAdd(a1, b0, acc10);
+            part00 = MatC::MulAdd(a0, b0, part00);
+            part10 = MatC::MulAdd(a1, b0, part10);
 #if !defined(NARROW)
             MatB b1;
             b1.Load(ConvX, xBase + kd * P.N + n0 + colTile + 16, P.N, MatrixLayout::RowMajor);
-            acc01 = MatC::MulAdd(a0, b1, acc01);
-            acc11 = MatC::MulAdd(a1, b1, acc11);
+            part01 = MatC::MulAdd(a0, b1, part01);
+            part11 = MatC::MulAdd(a1, b1, part11);
 #endif
+COOP_STEP_DONE
         }
     }
 
@@ -284,20 +298,22 @@ void ConvCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
         a0.Load(TileA, (sgRow * 32 + 0) * A_STRIDE, A_STRIDE, MatrixLayout::RowMajor);
         a1.Load(TileA, (sgRow * 32 + 16) * A_STRIDE, A_STRIDE, MatrixLayout::RowMajor);
         b0.Load(TileB, colTile, B_STRIDE, MatrixLayout::RowMajor);
-        acc00 = MatC::MulAdd(a0, b0, acc00);
-        acc10 = MatC::MulAdd(a1, b0, acc10);
+        part00 = MatC::MulAdd(a0, b0, part00);
+        part10 = MatC::MulAdd(a1, b0, part10);
 #if !defined(NARROW)
         MatB b1;
         b1.Load(TileB, colTile + 16, B_STRIDE, MatrixLayout::RowMajor);
-        acc01 = MatC::MulAdd(a0, b1, acc01);
-        acc11 = MatC::MulAdd(a1, b1, acc11);
+        part01 = MatC::MulAdd(a0, b1, part01);
+        part11 = MatC::MulAdd(a1, b1, part11);
 #endif
+COOP_STEP_DONE
 
         GroupMemoryBarrierWithGroupSync();
     }
 
     uint rowBase = m0 + sgRow * 32;
     uint colBase = n0 + colTile;
+    COOP_FOLD_ALL
     STORE_ACC(acc00, rowBase + 0, colBase + 0)
     STORE_ACC(acc10, rowBase + 16, colBase + 0)
 #if !defined(NARROW)

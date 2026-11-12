@@ -54,6 +54,24 @@ struct GemmParams
 [[vk::push_constant]] ConstantBuffer<GemmParams> P;
 
 #include "Functions.hlsl"
+#if defined(GEMM_WIDE)
+#define COOP_FOUR 0
+#else
+#define COOP_FOUR 1
+#endif
+#include "TileAccum.hlsli"
+#if !defined(GEMM_F32)
+// 16-bit inputs keep one chain: the products are exact in float and the hardware sums each 16-term step before it reaches the
+// accumulator, and a second accumulator cost half the throughput on NVIDIA tensor cores.
+#undef COOP_STEP_DONE
+#undef COOP_FOLD_ALL
+#define COOP_STEP_DONE
+#define COOP_FOLD_ALL
+#define part00 acc00
+#define part10 acc10
+#define part01 acc01
+#define part11 acc11
+#endif
 #include "GemmEpilogue.hlsli"
 
 static const uint BM = 64;
@@ -130,6 +148,15 @@ void GemmCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     MatC acc01 = MatC::Zero();
     MatC acc11 = MatC::Zero();
 #endif
+#if defined(GEMM_F32)
+    MatC part00 = MatC::Zero();
+    MatC part10 = MatC::Zero();
+#if !defined(GEMM_WIDE)
+    MatC part01 = MatC::Zero();
+    MatC part11 = MatC::Zero();
+#endif
+    uint foldSteps = 0;
+#endif
 
     uint kStaged = 0;
 #if defined(GEMM_DIRECT)
@@ -157,15 +184,16 @@ void GemmCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
 
             if (transB) { b0.Load(B, baseB + (n0 + colTile) * P.Ldb + kd, P.Ldb, MatrixLayout::ColumnMajor); }
             else { b0.Load(B, baseB + kd * P.Ldb + n0 + colTile, P.Ldb, MatrixLayout::RowMajor); }
-            acc00 = MatC::MulAdd(a0, b0, acc00);
-            acc10 = MatC::MulAdd(a1, b0, acc10);
+            part00 = MatC::MulAdd(a0, b0, part00);
+            part10 = MatC::MulAdd(a1, b0, part10);
 #if !defined(GEMM_WIDE)
             MatB b1;
             if (transB) { b1.Load(B, baseB + (n0 + colTile + 16) * P.Ldb + kd, P.Ldb, MatrixLayout::ColumnMajor); }
             else { b1.Load(B, baseB + kd * P.Ldb + n0 + colTile + 16, P.Ldb, MatrixLayout::RowMajor); }
-            acc01 = MatC::MulAdd(a0, b1, acc01);
-            acc11 = MatC::MulAdd(a1, b1, acc11);
+            part01 = MatC::MulAdd(a0, b1, part01);
+            part11 = MatC::MulAdd(a1, b1, part11);
 #endif
+COOP_STEP_DONE
         }
     }
 #endif
@@ -214,14 +242,15 @@ void GemmCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
         a0.Load(TileA, (sgRow * 32 + 0) * A_STRIDE, A_STRIDE, MatrixLayout::RowMajor);
         a1.Load(TileA, (sgRow * 32 + 16) * A_STRIDE, A_STRIDE, MatrixLayout::RowMajor);
         b0.Load(TileB, colTile, B_STRIDE, MatrixLayout::RowMajor);
-        acc00 = MatC::MulAdd(a0, b0, acc00);
-        acc10 = MatC::MulAdd(a1, b0, acc10);
+        part00 = MatC::MulAdd(a0, b0, part00);
+        part10 = MatC::MulAdd(a1, b0, part10);
 #if !defined(GEMM_WIDE)
         MatB b1;
         b1.Load(TileB, colTile + 16, B_STRIDE, MatrixLayout::RowMajor);
-        acc01 = MatC::MulAdd(a0, b1, acc01);
-        acc11 = MatC::MulAdd(a1, b1, acc11);
+        part01 = MatC::MulAdd(a0, b1, part01);
+        part11 = MatC::MulAdd(a1, b1, part11);
 #endif
+COOP_STEP_DONE
 
         GroupMemoryBarrierWithGroupSync();
     }
@@ -229,6 +258,7 @@ void GemmCoop(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     // beta == 0 never reads C, so uninitialised output memory (even NaN) is fine, as in BLAS.
     uint rowBase = m0 + sgRow * 32;
     uint colBase = n0 + colTile;
+    COOP_FOLD_ALL
     STORE_ACC(acc00, rowBase + 0, colBase + 0)
     STORE_ACC(acc10, rowBase + 16, colBase + 0)
 #if !defined(GEMM_WIDE)

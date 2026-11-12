@@ -51,6 +51,22 @@ runs on one device and driver give the same bits. Different devices and drivers 
 contraction and rounding of the compiler's output are theirs). `Fast` may use another summation order and the matrix-hardware variants, so
 `Fast` and `Deterministic` results differ by rounding.
 
+## Accumulation order
+
+Rounding in one chain over k grows roughly in proportion to k, because every addition rounds a partial sum that keeps growing (Higham,
+*Accuracy and Stability of Numerical Algorithms*, chapter 4). The float32 kernels sum in blocks and add the block sums, so each rounding
+happens on a smaller partial sum. The order depends only on the shape and the variant: no atomics, no subgroup operations, nothing that
+varies with scheduling, so two runs on one device and driver are bit-identical in both modes.
+
+- Portable kernel (all element types, and the convolution kernel that shares its tile): the 16 products of one staged step chain in a
+  register; two staged steps (32 terms) form a block sum; four block sums (128 terms) form a group sum; group sums join the total in
+  increasing k. Float16 and bfloat16 inputs read through the same kernel use the same order.
+- Float32 matrix hardware (Apple, and the implicit-GEMM convolution on it): each subgroup keeps a second accumulator that takes eight
+  staged steps (128 terms) and then joins the total, in increasing k.
+- Float16 and bfloat16 on matrix hardware keep a single chain: the hardware sums each 16-term step before it reaches the accumulator, the
+  inputs' own rounding dominates the error at these types' tolerances, and the second accumulator cost about half the throughput on NVIDIA.
+- Convolution split along k (Apple small grids) adds its partial results in range order, as before.
+
 ## Bias and activation epilogue
 
 `Encode` takes an optional `GemmEpilogue`: a float32 bias vector (element `j` is added to column `j` of every row of every product in the batch, from an element offset) and an activation
@@ -72,8 +88,9 @@ type. The tests report it together with the largest element-wise relative error 
 | float16 with float32 accumulation | 2e-3 |
 | bfloat16 with float32 accumulation | 8e-3 |
 
-All variants measured far below these (about 1e-6 to 8e-6 for K up to 3072), because the inputs are exactly the rounded values and only
-the float32 accumulation order differs. Elements outside the written region of C are checked to be untouched. With `Beta = 0` C is never
+All variants measured far below these, because the inputs are exactly the rounded values and only the float32 accumulation order differs.
+The float32 accumulation order is described under "Accumulation order" below; with it the scaled error against a double-precision sum is
+about 1.5e-7 to 4e-7 at K = 768 to 4096 (a single chain over k gave 1e-6 to 4.5e-6 there). Elements outside the written region of C are checked to be untouched. With `Beta = 0` C is never
 read.
 
 ## Limits and errors
