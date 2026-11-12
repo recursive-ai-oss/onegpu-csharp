@@ -52,8 +52,33 @@ memory. Two kernels share that structure (`AttentionKernels.Variant`, chosen onc
 
 The compiler keeps loops as loops and a thread-local array indexed by a loop variable can live in slow memory (Apple's compiler does that), so the
 SPIR-V and Metal builds write every access to the query and accumulator registers as a separate statement with a literal index (macros in
-`Attention.hlsl`). The WebGPU build (`AttentionLoops.hlsl`) keeps plain loops instead: the software adapter's compiler does not finish compiling the unrolled
-form, and the browsers' real GPU back ends unroll small loops themselves.
+`Attention.hlsl`). The WebGPU build for the software adapter (`AttentionLoops.hlsl`) keeps plain loops instead: its compiler does not finish compiling the unrolled
+form. A browser on a real GPU gets the unrolled form like the other targets (see *In a browser* below).
+
+### In a browser
+
+Chrome's WGSL compiler did not keep a loop-indexed private array in registers: with plain loops the fused kernel was 3 to 18 times slower than GEMM + softmax + GEMM
+on an RTX 4070 (Chrome 155, wall time per call from a batch of calls closed by a one-element readback; indicative). Two changes closed the gap, and neither moves a bit on the other targets:
+
+- A WebGPU device on a hardware adapter uses the unrolled statements (WGSL is generated from `Attention.hlsl`); a software adapter (SwiftShader) keeps `AttentionLoops.hlsl`.
+- Key and value tiles are read as `float4` (`VEC4` build). WGSL checks every dynamic index of a workgroup array, so reading four floats per access also removes three of four
+  checks, and the unrolled form's index arithmetic is the same either way. The sums keep the element-wise order (each group of four adds its products in increasing element order), so the
+  results equal the scalar form's bit for bit. Apple GPUs ran the `float4` form 17 to 25% slower (rows variant, M2) and keep the scalar one.
+
+| Shape (12 heads) | fused, plain loops | fused, unrolled + `float4` | GEMM + softmax + GEMM |
+|---|---|---|---|
+| MiniLM B1 S128 (head 32) | 0.47 ms | 0.14 | 0.16 |
+| MiniLM B8 S128 | 1.12 | 0.27 | 0.30 |
+| BERT B1 S128 | 1.15 | 0.14 | 0.15 |
+| BERT B1 S512 | 5.14 | 0.38 | 0.40 |
+| BERT B8 S128 | 2.49 | 0.27 | 0.28 |
+| BERT B8 S512 | 25.97 | 1.23 | 1.93 |
+| Whisper encoder, 1500 keys | 41.20 | 1.93 | 2.30 |
+| Whisper decoder, 448 cached keys | 1.32 | 0.14 | 0.15 |
+| Whisper cross-attention, 1 query | 2.31 | 0.14 | 0.31 |
+
+The 0.14 ms rows are the floor of one submit and readback in the browser, not kernel time. The same kernel in Vulkan on that card takes 1.09 ms for the Whisper encoder (GPU timestamps), so
+the browser form is within 1.8x of native (wall time, which includes the readback). `AttentionBrowserTiming` reruns the table in a browser on a hardware adapter.
 
 ### Long calls
 

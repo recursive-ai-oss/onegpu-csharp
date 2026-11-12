@@ -118,7 +118,6 @@ public sealed class AttentionKernels : IDisposable
 
         // Apple GPUs give a thread about 128 registers before it spills; halving the registers per thread made the kernel 2 to 5 times faster there,
         // and slower on the NVIDIA GPU measured, which has registers to spare.
-        const uint AppleVendorId = 0x106B;
         var matrices = allowMatrixHardware && (variant is GpuAttentionVariant.Auto or GpuAttentionVariant.Cooperative) && CoopFits(device, bfloat16: false);
         if (variant == GpuAttentionVariant.Cooperative && !matrices)
         {
@@ -521,18 +520,21 @@ public sealed class AttentionKernels : IDisposable
         }
     }
 
+    // Apple's PCI-style vendor id as the Metal backend reports it.
+    const uint AppleVendorId = 0x106B;
+
     KernelPipeline CreateTile(bool half, int dim, bool blockwise)
     {
         var d = dim switch { 0 => Attention.HdValue.D32, 1 => Attention.HdValue.D64, 2 => Attention.HdValue.D128, _ => Attention.HdValue.D256 };
         var wd = dim switch { 0 => AttentionLoops.HdValue.D32, 1 => AttentionLoops.HdValue.D64, 2 => AttentionLoops.HdValue.D128, _ => AttentionLoops.HdValue.D256 };
-        if (_device.Backend == GpuBackend.WebGpu)
+        if (_device.Backend == GpuBackend.WebGpu && _device.Adapter.Kind == AdapterKind.Software)
         {
             var w = AttentionLoops.Variants.Get(new AttentionLoops.Key(f16: half, wave: _pairs, acc: blockwise, hd: wd)).AttentionTile;
             return new KernelPipeline(_device, KernelSources.Make(w.EntryPoint, default, default, null, w.Wgsl, w.WgslEntryPoint, w.Layout), 7, TileWords, "attention-tile", _maxBindGroups);
         }
 
-        var e = Attention.Variants.Get(new Attention.Key(f16: half, wave: _pairs, acc: blockwise, hd: d)).AttentionTile;
-        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, default, null, e.Layout), 7, TileWords, "attention-tile", _maxBindGroups);
+        var e = Attention.Variants.Get(new Attention.Key(f16: half, wave: _pairs, acc: blockwise, vec4: _device.Adapter.VendorId != AppleVendorId, hd: d)).AttentionTile;
+        return new KernelPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 7, TileWords, "attention-tile", _maxBindGroups);
     }
 
     // The matrix kernel is written for 32-wide subgroups (four per workgroup) and 16x16x16 fragments of the 16-bit element type with a float32
