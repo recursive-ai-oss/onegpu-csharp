@@ -9,6 +9,8 @@ namespace RecursiveAI.OneGpu.Kernels.Tests;
 /// </summary>
 public sealed class ConvThroughput
 {
+    static readonly bool[] HalfModes = [false, true];
+
     [Fact]
     public void Run()
     {
@@ -23,14 +25,15 @@ public sealed class ConvThroughput
         var deterministic = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_MODE") == "deterministic";
         var noHardware = Environment.GetEnvironmentVariable("ONEGPU_GEMM_NO_HARDWARE") == "1";
         var batches = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_BATCHES") is { Length: > 0 } b ? b.Split(',').Select(int.Parse).ToArray() : [1, 8];
-        foreach (var half in new[] { false, true })
+        foreach (var half in HalfModes.Where(h => Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_ELEM") is not { Length: > 0 } el || el == (h ? "f16" : "f32")))
         {
             using var k = ConvTests.Make(d, deterministic ? GpuKernelMode.Deterministic : GpuKernelMode.Fast, !noHardware);
             k.AllowKSplit = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_NOSPLIT") != "1";
+            k.AllowTap = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_NOTAP") != "1";
             k.AllowCoopImplicit = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_NOCOOP") != "1";
             foreach (var batch in batches)
             {
-                foreach (var (model, layers) in new (string, List<ConvTests.Layer>)[] { ("ResNet-50", ConvTests.ResNet50(batch, 224)), ("MobileNetV3-large", ConvTests.MobileNetV3(batch, 224)), ("DBNet 512", ConvTests.DbNet(batch, 512)) })
+                foreach (var (model, layers) in new (string, List<ConvTests.Layer>)[] { ("ResNet-50", ConvTests.ResNet50(batch, 224)), ("MobileNetV3-large", ConvTests.MobileNetV3(batch, 224)), ("DBNet 512", ConvTests.DbNet(batch, 512)) }.Where(m => Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_MODEL") is not { Length: > 0 } mm || m.Item1.StartsWith(mm, StringComparison.Ordinal)))
                 {
                     double gpuTotal = 0, wallTotal = 0, flops = 0;
                     var byVariant = new Dictionary<ConvVariant, double>();

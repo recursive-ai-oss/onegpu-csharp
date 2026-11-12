@@ -28,7 +28,8 @@
 |---|---|
 | depthwise (one input channel per group, any channel multiplier) | direct kernel, one thread per output element, window order fixed |
 | every other convolution on the portable matrix kernel (float32 everywhere; half on devices without matrix hardware) | **implicit GEMM**: a 64x64x16 tile kernel that gathers the input window while it loads the tile; float32 fuses bias, residual and activation into the store, half writes float32 accumulators and an epilogue pass finishes. A float32 grid of fewer than 384 workgroups **splits k** (below) |
-| float32 on Metal (simdgroup matrices) | **implicit GEMM on matrix hardware** (`ConvCoopF32.hlsl`): the 4-subgroup 64x64x16 simdgroup tile of `Gemm`, the window gathered while the input tile is staged (no column matrix), the bias, residual and activation applied as the result is stored, so the output is written once. A pointwise convolution (1x1, stride 1, no padding) whose tile lies inside the output reads weights and input straight from memory with no staging. Grids under 40 workgroups use a 64x32 tile. Both modes (see Determinism) |
+| float32 on Metal, fast mode, windows and strided or small-image pointwise layers (channels per group a multiple of 16) | **taps-innermost implicit GEMM** (`ConvTap.hlsli`, 64 x 64 or, for small grids, 64 x 32 tiles), described under "Apple M2, float32, taps innermost" below; the pointwise layers of a normal image size keep the kernel of the next row |
+| float32 on Metal (simdgroup matrices) | **implicit GEMM on matrix hardware** (`ConvCoopF32.hlsl`): the 4-subgroup 64x64x16 simdgroup tile of `Gemm`, the window gathered while the input tile is staged (no column matrix), the bias, residual and activation applied as the result is stored, so the output is written once. A pointwise convolution (1x1, stride 1, no padding) whose tile lies inside the output reads weights and input straight from memory with no staging. Grids under 40 workgroups use a 64x32 tile. Deterministic mode, and fast mode where the row above does not apply (stem, depthwise-like channel counts, 1x1 layers of 64 or more pixels): both modes (see Determinism) |
 | float16 on Metal (simdgroup matrices) | the same implicit kernel with half operands (`ConvCoop.hlsli` with `CONV_F16`): float32 accumulation on one chain, bias, residual and activation applied as the halves are stored; with split k or an activation the kernel does not fuse, it leaves float32 planes in the accumulator scratch for the epilogue pass |
 | 1x1, stride 1, no padding, with matrix hardware (half) | `Gemm` on the input as it lies (no unfolding) |
 | any other shape with matrix hardware (half) | im2col (Chellapilla et al., 2006) into the column scratch, then `Gemm` (cooperative or simdgroup matrices) and the epilogue pass; groups loop |
@@ -103,6 +104,39 @@ with the split turned off):
 
 ResNet-50 batch 1, layers (microseconds, whole k then split k): 3x3 512 -> 512 at 7 x 7 520 -> 73; 3x3 512 -> 512 stride 2 on 14 x 14 532 -> 74; 3x3 256 -> 256 at 14 x 14 264 -> 70;
 1x1 2048 -> 512 at 7 x 7 209 -> 36; 1x1 1024 -> 256 at 14 x 14 104 -> 36; 3x3 128 -> 128 at 28 x 28 138 -> 67. Scaled error against double over the 32 accumulation-test rows is at most 2.7e-7 (2.1e-7 to 3.3e-7 before).
+
+### Apple M2, float32, taps innermost (indicative, GPU timestamps, 30 calls per command buffer)
+
+`ConvCoop.hlsli` numbers k as (input channel, kernel row, kernel column), so each staged element needs a division chain, two bounds tests and a tap update, and the float32 wide tile staged without
+prefetch. Measured with a register-only kernel the M2's simdgroup matrices do 3.25 TFLOP/s in float32 (90 % of the ALU peak) and a plain 64 x 64 matrix product with the blocked sums above does 1.9 TFLOP/s,
+so the convolutions' 0.4-0.8 TFLOP/s were staging cost, not matrix throughput. `ConvTap.hlsli` runs k in chunks of 16 input channels and, inside a chunk, over the taps of the window: a step of 16 is one tap of
+16 channels, so the tap's row, column and padding test are the same for every element a thread stages, the channels' addresses differ by one input plane, and a thread's step is one test and eight independent
+loads (plus eight weight loads, next step in flight). Bias, residual and activation are still applied as the result is stored. It is used for float32 in fast mode when the channels per group are a multiple of 16,
+for every layer except pointwise ones with at least 64 (32 for the narrow tile) pixels, whose direct fragment loads measured 1.4-1.5x faster than staging. Deterministic mode and every other shape keep the previous kernel,
+so deterministic results are unchanged bit for bit (the two-run hashes of the conv tests equal those of the previous build); the fast sums differ in order only, with the same block structure.
+
+Convolution layers of ResNet-50 summed by class (ms; each shape counted as often as the model uses it; the stem, 7 x 7 with 3 input channels, is untouched):
+
+| Class | b1 before | b1 now | b8 before | b8 now |
+|---|---|---|---|---|
+| 3x3 stride 1 | 5.08 | 4.50 | 45.2 | 27.2 |
+| 3x3 stride 2 | 1.14 | 1.06 | 11.5 | 6.4 |
+| 1x1 stride 2 (downsample) | 1.42 | 0.90 | 11.7 | 6.3 |
+| 1x1 stride 1 (reduce, expand) | 4.36 | 4.57 | 32.3 | 27.9 |
+| stem | 0.50 | 0.50 | 3.7 | 3.7 |
+| **sum** | **12.4** | **11.5** | **104** | **71.5** |
+
+Scaled error against float64 on the 23 ResNet-50 layers at batch 1 and 8, the MobileNetV3 and DBNet layers and the 35 edge shapes: at most 5.9e-7 (3.8e-7 for ResNet-50), the same as the previous kernel. Whole model through
+onemodel's `.Gpu` (fast mode, 10 runs, same session, alternating builds): ResNet-50 float32 b1 14.55 -> 13.15 ms, b8 110.9 -> 78.1 ms, scaled error against onemodel's CPU exact mode 1.28e-6 (before: 1.3e-6).
+
+What is left between this and a Core ML run of the same model on the same GPU (6.1 ms at b1, 35.3 ms at b8; its float32 output differs from ours by 1e-6 as ours does):
+- Ours is 0.9 TFLOP/s over the convolutions at b8 (0.7 at b1), against 1.9 TFLOP/s for a plain matrix product, and a run at 35 ms means 1.9 TFLOP/s over the whole 65 GFLOP model: more than a direct convolution can
+  reach on this GPU, so the reference must also save arithmetic (Winograd or similar) on the 3 x 3 layers (45 % of the model's flops).
+- The weights of a 3 x 3 layer are read as 16 words at a stride of 9 per row and step; with the weights re-laid out so those reads are contiguous (a timing-only change, results wrong) the 3 x 3 layers ran 27 % faster.
+  A real layout needs a per-model weight preparation pass, which this API does not have.
+- Table-driven window decode with the weights in their own order (contiguous weight reads) cost more per staged element than it saved: b8 71.5 -> 89.9 ms.
+- At batch 1 the layers are latency bound (12 to 140 workgroups, 4 to 150 steps each): moving the narrow-tile and split-k thresholds in either direction measured slower (best 11.8 against 12.6-14.0 ms).
+- Pointwise layers with 64 or more pixels still use the direct-load kernel at 0.6-1.6 TFLOP/s; those with few input channels are bound by the epilogue (tile through workgroup memory, scalar stores).
 
 ## Pooling and resize
 

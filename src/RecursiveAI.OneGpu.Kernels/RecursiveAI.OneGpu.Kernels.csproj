@@ -30,6 +30,8 @@
     <OneShader Include="Shaders/ConvIntegerPack.hlsl" />
     <OneShader Include="Shaders/ConvCoopF32.hlsl" Targets="Msl" />
     <OneShader Include="Shaders/ConvCoopNarrowF32.hlsl" Targets="Msl" />
+    <OneShader Include="Shaders/ConvTapF32.hlsl" Targets="Msl" />
+    <OneShader Include="Shaders/ConvTapNarrowF32.hlsl" Targets="Msl" />
     <OneShader Include="Shaders/ConvCoopF16.hlsl" Targets="Msl" Enable16BitTypes="true" />
     <OneShader Include="Shaders/ConvCoopNarrowF16.hlsl" Targets="Msl" Enable16BitTypes="true" />
     <OneShader Include="Shaders/ConvCoopSplitF16.hlsl" Targets="Msl" Enable16BitTypes="true" />

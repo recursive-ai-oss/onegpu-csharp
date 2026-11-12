@@ -72,6 +72,8 @@ public sealed class ConvKernels : IDisposable
     readonly ConvPipeline?[] _convGemm = new ConvPipeline?[3];
     ConvPipeline? _convCoop;
     ConvPipeline? _convCoopNarrow;
+    ConvPipeline? _convTap;
+    ConvPipeline? _convTapNarrow;
     readonly ConvPipeline?[] _convCoopHalf = new ConvPipeline?[4];   // index: 2 if the narrow tile + 1 if it leaves float32 planes for the epilogue pass
     Gemm? _gemm32;
     Gemm? _gemm16;
@@ -101,6 +103,9 @@ public sealed class ConvKernels : IDisposable
 
     /// <summary>Lets tests turn the matrix-hardware implicit kernel off to compare it with the column-matrix path.</summary>
     internal bool AllowCoopImplicit { get; set; } = true;
+
+    /// <summary>Test switch: false keeps the float32 matrix kernel that numbers k by channel, row and column instead of the one that runs taps innermost.</summary>
+    internal bool AllowTap { get; set; } = true;
 
     /// <summary>Lets tests and timing runs turn the split of k off to compare with the whole-k kernel.</summary>
     internal bool AllowKSplit { get; set; } = true;
@@ -449,7 +454,10 @@ public sealed class ConvKernels : IDisposable
             var cn = (int)Math.Min(chunk, p.Batch - n0);
             if (implicitGemm)
             {
-                var pipe = coop ? (half ? (_convCoopHalf[(narrow ? 2 : 0) + (planes ? 1 : 0)] ??= CreateConvCoopHalf(narrow, planes)) : narrow ? (_convCoopNarrow ??= CreateConvCoop(true)) : (_convCoop ??= CreateConvCoop(false))) : (_convGemm[kind] ??= CreateConvGemm(half));
+                // Float32 on matrix hardware, fast mode: the kernel with the window taps innermost (ConvTap.hlsli), for whole 16-channel chunks. Deterministic
+                // mode keeps the channel-major kernel, so its bits do not change.
+                var tap = coop && !half && !(pointwise && ohw >= (narrow ? 32 : 64)) && AllowTap && _mode == GpuKernelMode.Fast && cinG % 16 == 0;
+                var pipe = tap ? (narrow ? (_convTapNarrow ??= CreateConvTap(true)) : (_convTap ??= CreateConvTap(false))) : coop ? (half ? (_convCoopHalf[(narrow ? 2 : 0) + (planes ? 1 : 0)] ??= CreateConvCoopHalf(narrow, planes)) : narrow ? (_convCoopNarrow ??= CreateConvCoop(true)) : (_convCoop ??= CreateConvCoop(false))) : (_convGemm[kind] ??= CreateConvGemm(half));
                 cg[0] = (uint)coutG;
                 cg[1] = (uint)ohw;
                 cg[2] = (uint)kElems;
@@ -978,7 +986,7 @@ public sealed class ConvKernels : IDisposable
     }
 
     /// <summary>How many bind groups the family has built so far; it stops growing once the buffer sets in use are cached (see <see cref="ReleaseBindings"/>).</summary>
-    public int BindGroupsCreated => KernelPipeline.Total(_im2col, _epilogue, _depthwise, _col2im) + ConvPipeline.Total(_convGemm) + (_convCoop?.Created ?? 0) + (_convCoopNarrow?.Created ?? 0) + ConvPipeline.Total(_convCoopHalf) + (_gemm32?.BindGroupsCreated ?? 0) + (_gemm16?.BindGroupsCreated ?? 0) + (_probe?.BindGroupsCreated ?? 0) + (_probe16?.BindGroupsCreated ?? 0);
+    public int BindGroupsCreated => KernelPipeline.Total(_im2col, _epilogue, _depthwise, _col2im) + ConvPipeline.Total(_convGemm) + (_convCoop?.Created ?? 0) + (_convCoopNarrow?.Created ?? 0) + (_convTap?.Created ?? 0) + (_convTapNarrow?.Created ?? 0) + ConvPipeline.Total(_convCoopHalf) + (_gemm32?.BindGroupsCreated ?? 0) + (_gemm16?.BindGroupsCreated ?? 0) + (_probe?.BindGroupsCreated ?? 0) + (_probe16?.BindGroupsCreated ?? 0);
 
     /// <summary>
     /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.
@@ -1001,6 +1009,8 @@ public sealed class ConvKernels : IDisposable
 
         _convCoop?.ReleaseBindings();
         _convCoopNarrow?.ReleaseBindings();
+        _convTap?.ReleaseBindings();
+        _convTapNarrow?.ReleaseBindings();
         foreach (var c in _convCoopHalf)
         {
             c?.ReleaseBindings();
@@ -1034,6 +1044,10 @@ public sealed class ConvKernels : IDisposable
         _convCoop?.Dispose();
         _convCoop = null;
         _convCoopNarrow?.Dispose();
+        _convTap?.Dispose();
+        _convTap = null;
+        _convTapNarrow?.Dispose();
+        _convTapNarrow = null;
         _convCoopNarrow = null;
         for (var i = 0; i < _convCoopHalf.Length; i++)
         {
@@ -1096,6 +1110,10 @@ public sealed class ConvKernels : IDisposable
             ? new ConvPipeline(_device, new ShaderSource(ShaderStage.Compute, ConvCoopNarrowF16.ConvCoop.EntryPoint) { Msl = ConvCoopNarrowF16.ConvCoop.Msl, MslFunctionName = ConvCoopNarrowF16.ConvCoop.MslFunctionName, Layout = ConvCoopNarrowF16.ConvCoop.Layout }, 29, "conv-coop-f16-narrow", _maxBindGroups, 32)
             : new ConvPipeline(_device, new ShaderSource(ShaderStage.Compute, ConvCoopF16.ConvCoop.EntryPoint) { Msl = ConvCoopF16.ConvCoop.Msl, MslFunctionName = ConvCoopF16.ConvCoop.MslFunctionName, Layout = ConvCoopF16.ConvCoop.Layout }, 29, "conv-coop-f16", _maxBindGroups, 32);
     }
+
+    ConvPipeline CreateConvTap(bool narrow) => narrow
+        ? new(_device, new ShaderSource(ShaderStage.Compute, ConvTapNarrowF32.ConvTap.EntryPoint) { Msl = ConvTapNarrowF32.ConvTap.Msl, MslFunctionName = ConvTapNarrowF32.ConvTap.MslFunctionName, Layout = ConvTapNarrowF32.ConvTap.Layout }, 29, "conv-tap-narrow", _maxBindGroups, 32)
+        : new(_device, new ShaderSource(ShaderStage.Compute, ConvTapF32.ConvTap.EntryPoint) { Msl = ConvTapF32.ConvTap.Msl, MslFunctionName = ConvTapF32.ConvTap.MslFunctionName, Layout = ConvTapF32.ConvTap.Layout }, 29, "conv-tap", _maxBindGroups, 32);
 
     ConvPipeline CreateConvCoop(bool narrow)
     {
