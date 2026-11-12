@@ -98,6 +98,8 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
         }
     }
 
+    bool _stagingOrdered;
+
     void CloseCurrent()
     {
         if (_curOpen)
@@ -105,6 +107,7 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
             End(_cur);
             Done.Add(_cur);
             _curOpen = false;
+            _stagingOrdered = false;
         }
     }
 
@@ -141,6 +144,7 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
         Done.Clear();
         _swapTouched.Clear();
         _curOpen = false;
+        _stagingOrdered = false;
         _finished = false;
         InPass = false;
         _timingSet = null;
@@ -339,9 +343,34 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
         _dev.Fns.vkCmdCopyBuffer(Current, s.Handle, d.Handle, 1, &region);
     }
 
+    // Staging buffers are reused, and their memory is also handed back to the allocator and bound to other buffers, so earlier queue work
+    // may have read or written the same bytes. The host wait that proved that work finished is not a dependency the queue can rely on (the
+    // spec orders memory accesses only through barriers, semaphores and fences on the device side), so every copy that touches staging
+    // says in its own command buffer that all earlier work must finish first.
+    void OrderStagingAccess()
+    {
+        // One barrier per command buffer is enough: it orders everything submitted before the buffer against every copy recorded after it.
+        if (_stagingOrdered)
+        {
+            return;
+        }
+
+        _stagingOrdered = true;
+        var b = new VkMemoryBarrier2
+        {
+            srcStageMask = VkPipelineStageFlagBits2.AllCommands,
+            srcAccessMask = VkAccessFlagBits2.MemoryRead | VkAccessFlagBits2.MemoryWrite,
+            dstStageMask = VkPipelineStageFlagBits2.AllTransfer,
+            dstAccessMask = VkAccessFlagBits2.TransferRead | VkAccessFlagBits2.TransferWrite,
+        };
+        var dep = new VkDependencyInfo { memoryBarrierCount = 1, pMemoryBarriers = &b };
+        _dev.Fns.vkCmdPipelineBarrier2(Current, &dep);
+    }
+
     internal void CopyRawToBuffer(VkBuffer staging, ulong srcOffset, VulkanBuffer dst, ulong dstOffset, ulong size)
     {
         Barrier(dst, Use.CopyDestination);
+        OrderStagingAccess();
         var region = new VkBufferCopy { srcOffset = srcOffset, dstOffset = dstOffset, size = size };
         _dev.Fns.vkCmdCopyBuffer(Current, staging, dst.Handle, 1, &region);
     }
@@ -349,6 +378,7 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
     internal void CopyBufferToRaw(VulkanBuffer src, ulong srcOffset, VkBuffer staging, ulong size)
     {
         Barrier(src, Use.CopySource);
+        OrderStagingAccess();
         var region = new VkBufferCopy { srcOffset = srcOffset, dstOffset = 0, size = size };
         _dev.Fns.vkCmdCopyBuffer(Current, src.Handle, staging, 1, &region);
     }
@@ -356,6 +386,7 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
     internal void CopyRawToTexture(VkBuffer staging, ulong srcOffset, VulkanTexture dst, in TextureRegion r)
     {
         Barrier(dst, Use.CopyDestination);
+        OrderStagingAccess();
         var region = new VkBufferImageCopy
         {
             bufferOffset = srcOffset,
@@ -369,6 +400,7 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
     internal void CopyTextureToRaw(VulkanTexture src, uint mip, uint layer, VkBuffer staging)
     {
         Barrier(src, Use.CopySource);
+        OrderStagingAccess();
         var region = new VkBufferImageCopy { bufferOffset = 0, imageSubresource = Layers(src, mip, layer), imageExtent = LevelExtent(src, mip) };
         _dev.Fns.vkCmdCopyImageToBuffer(Current, src.Handle, VkImageLayout.TransferSrcOptimal, staging, 1, &region);
     }

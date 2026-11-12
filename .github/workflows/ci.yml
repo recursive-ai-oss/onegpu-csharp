@@ -36,7 +36,9 @@ jobs:
       - name: Install the Vulkan software driver, the validation layer and the Native AOT toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers clang zlib1g-dev
+          # The layer version is pinned in tools/ci/fetch-validation-layer.sh, the one place local runs read too.
+          layer=$(sed -n 's/^LAYER_PACKAGE_VERSION="\(.*\)"$/\1/p' tools/ci/fetch-validation-layer.sh)
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers "vulkan-validationlayers=$layer" clang zlib1g-dev
       - name: Restore
         run: dotnet restore tests/RecursiveAI.OneGpu.Vulkan.Tests && dotnet restore tests/RecursiveAI.OneGpu.Tests && dotnet restore tests/RecursiveAI.OneGpu.Kernels.Tests && dotnet restore tests/RecursiveAI.OneGpu.AotSmoke
       - name: Build (warnings are errors) and repository checks

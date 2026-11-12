@@ -29,7 +29,9 @@ Read by the tests, tools and benchmarks only (never by a package):
 | `ONEGPU_GEMM_BENCH`, `ONEGPU_CONV_BENCH`, `ONEGPU_CONV_BENCH_BATCHES`, `ONEGPU_CONV_BENCH_LAYERS`, `ONEGPU_CONV_BENCH_MODE`, `ONEGPU_CONV_BENCH_ONLY`, `ONEGPU_ATTN_BENCH`, `ONEGPU_RECURRENT_BENCH`, `ONEGPU_DISPATCH_BENCH` | Select and shape the throughput tests (they are skipped unless set). |
 
 The Vulkan loader's and drivers' own variables also apply: `VK_ICD_FILENAMES` picks a driver, `VK_INSTANCE_LAYERS` and `VK_ADD_LAYER_PATH`
-control layers. On Metal, `MTL_DEBUG_LAYER=1`, `MTL_DEBUG_LAYER_ERROR_MODE=assert` and `MTL_SHADER_VALIDATION=1` make misuse fatal.
+control layers. `tools/ci/fetch-validation-layer.sh [folder]` downloads the validation layer the hosted CI runs (Ubuntu 24.04's
+`vulkan-validationlayers`, version pinned in that script and read from it by `ci.yml`) into a folder; point `VK_ADD_LAYER_PATH` at it to
+reproduce CI locally. A second run against the newest Khronos release catches what the older layer does not model. On Metal, `MTL_DEBUG_LAYER=1`, `MTL_DEBUG_LAYER_ERROR_MODE=assert` and `MTL_SHADER_VALIDATION=1` make misuse fatal.
 
 ## The JavaScript module `onegpu`
 

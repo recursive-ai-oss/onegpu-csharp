@@ -27,6 +27,10 @@ internal struct SyncState
     public VkAccessFlagBits2 WriteAccess;
     public VkPipelineStageFlagBits2 ReadStages;
 
+    // False until the first command uses the resource. Resources are bound to sub-allocated device memory that earlier resources used, so
+    // the first use must wait for, and see the writes of, whatever the queue did to that memory before (Vulkan spec, "Memory aliasing").
+    bool _used;
+
     const VkPipelineStageFlagBits2 AllShaders = VkPipelineStageFlagBits2.VertexShader | VkPipelineStageFlagBits2.FragmentShader | VkPipelineStageFlagBits2.ComputeShader;
 
     public static void Describe(Use use, out VkPipelineStageFlagBits2 stage, out VkAccessFlagBits2 access, out VkImageLayout layout, out bool write)
@@ -117,15 +121,20 @@ internal struct SyncState
 
         var layoutChange = isImage && Layout != newLayout;
         var hadWrite = WriteAccess != VkAccessFlagBits2.None || WriteStage != VkPipelineStageFlagBits2.None;
+        var first = !_used;
+        _used = true;
 
-        if (!write && !layoutChange && (ReadStages & dstStage) == dstStage && (hadWrite || ReadStages != 0))
+        if (first)
+        {
+            // Skips the two shortcuts below: a first use always gets a barrier.
+        }
+        else if (!write && !layoutChange && (ReadStages & dstStage) == dstStage && (hadWrite || ReadStages != 0))
         {
             srcStage = 0;
             srcAccess = 0;
             return false;
         }
-
-        if (!write && !layoutChange && !hadWrite && Layout == VkImageLayout.Undefined && !isImage)
+        else if (!write && !layoutChange && !hadWrite && Layout == VkImageLayout.Undefined && !isImage)
         {
             // Buffer never written on the GPU: contents came from the host or earlier transfers that are ordered by submission.
             ReadStages |= dstStage;
@@ -136,9 +145,10 @@ internal struct SyncState
 
         srcStage = WriteStage | ReadStages;
         srcAccess = WriteAccess;
-        if (srcStage == VkPipelineStageFlagBits2.None)
+        if (first)
         {
-            srcStage = VkPipelineStageFlagBits2.None;
+            srcStage = VkPipelineStageFlagBits2.AllCommands;
+            srcAccess = VkAccessFlagBits2.MemoryWrite;
         }
 
         if (write || layoutChange)
