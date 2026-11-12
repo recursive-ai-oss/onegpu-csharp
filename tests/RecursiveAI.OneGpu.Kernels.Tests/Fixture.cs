@@ -5,6 +5,9 @@ internal sealed class GpuFixture : IDisposable
 {
     public GpuDevice Device { get; }
 
+    /// <summary>Another device on the same backend, for tests that use more than one at a time.</summary>
+    public static async Task<GpuDevice> NewDeviceAsync() => await GpuBackends.CreateDeviceAsync(new GpuDeviceOptions { Validation = true, RequireValidation = true });
+
     public GpuFixture()
     {
         try

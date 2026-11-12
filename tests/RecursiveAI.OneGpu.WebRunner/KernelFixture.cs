@@ -5,6 +5,9 @@ internal sealed class GpuFixture : IDisposable
 {
     public GpuDevice Device { get; } = RecursiveAI.OneGpu.Vulkan.Tests.GpuFixture.Shared ?? throw new InvalidOperationException("No WebGPU device.");
 
+    /// <summary>Another device in the same page, for tests that use more than one at a time.</summary>
+    public static Task<GpuDevice> NewDeviceAsync() => RecursiveAI.OneGpu.WebGpu.WebGpu.CreateDeviceAsync();
+
     public void Dispose()
     {
         var messages = Device.TakeValidationMessages();

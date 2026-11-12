@@ -18,11 +18,15 @@ internal sealed class WebGpuDevice : GpuDevice
     private int _nextId = 1;
     private bool _disposed;
 
-    public WebGpuDevice(GpuAdapterInfo adapter, GpuCapabilities caps)
+    public WebGpuDevice(GpuAdapterInfo adapter, GpuCapabilities caps, int context)
     {
         _adapter = adapter;
         _caps = caps;
+        Context = context;
     }
+
+    /// <summary>The script-side context of this device: its WebGPU device, handle table and pass state.</summary>
+    internal int Context { get; }
 
     public override GpuAdapterInfo Adapter => _adapter;
 
@@ -61,7 +65,7 @@ internal sealed class WebGpuDevice : GpuDevice
             return;
         }
 
-        Js.Exec(_stream.Mutable);
+        Js.Exec(Context, _stream.Mutable);
         _stream.Clear();
     }
 
@@ -361,7 +365,7 @@ internal sealed class WebGpuDevice : GpuDevice
         }
 
         Flush();
-        var ticket = await Js.ReadBuffer(((WebBuffer)buffer).Id, offset, destination.Length).ConfigureAwait(true);
+        var ticket = await Js.ReadBuffer(Context, ((WebBuffer)buffer).Id, offset, destination.Length).ConfigureAwait(true);
         Js.TakeRead(ticket, destination.Span[..destination.Length]);
     }
 
@@ -385,7 +389,7 @@ internal sealed class WebGpuDevice : GpuDevice
             throw new ArgumentException($"expected a destination of {need} bytes for mip {mipLevel}, got {destination.Length}", nameof(destination));
         }
 
-        var ticket = await Js.ReadTexture(((IWebGpuObject)texture).Id, (int)mipLevel, (int)layer, (int)w, (int)h, (int)d, (int)bpt).ConfigureAwait(true);
+        var ticket = await Js.ReadTexture(Context, ((IWebGpuObject)texture).Id, (int)mipLevel, (int)layer, (int)w, (int)h, (int)d, (int)bpt).ConfigureAwait(true);
         Js.TakeRead(ticket, destination.Span[..(int)need]);
     }
 
@@ -396,7 +400,7 @@ internal sealed class WebGpuDevice : GpuDevice
     public override string[] TakeValidationMessages()
     {
         Flush();
-        var text = Js.TakeMessages();
+        var text = Js.TakeMessages(Context);
         return string.IsNullOrEmpty(text) ? [] : text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
     }
 
