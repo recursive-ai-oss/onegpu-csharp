@@ -146,6 +146,7 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
         _timingSet = null;
         _endSet = null;
         _endQuery = -1;
+        ResetCounts();
     }
 
     // ---- pass timing ----
@@ -501,7 +502,7 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
 
     // ---- passes ----
 
-    public override GpuRenderPass BeginRenderPass(ReadOnlySpan<ColorAttachment> colors, DepthAttachment? depth = null)
+    public override GpuRenderPass BeginRenderPass(ReadOnlySpan<ColorAttachment> colors, DepthAttachment? depth)
     {
         EnsureNoPass();
         if (_finished)
@@ -654,6 +655,7 @@ internal sealed unsafe class VulkanEncoder : GpuCommandEncoder
     public override GpuComputePass BeginComputePass()
     {
         EnsureNoPass();
+        NoteComputePass();
         var timed = TakeTiming(out var timingSet);
         var cb = Current;
         if (timed >= 0)
@@ -890,6 +892,7 @@ internal sealed unsafe class VulkanComputePass : GpuComputePass
     public override void DispatchIndirect(GpuBuffer arguments, ulong offset)
     {
         Check();
+        _enc.NoteDispatch();
         var b = (VulkanBuffer)arguments;
         if ((b.Usage & BufferUsage.Indirect) == 0)
         {
@@ -934,6 +937,7 @@ internal sealed unsafe class VulkanComputePass : GpuComputePass
     public override void Dispatch(uint x, uint y = 1, uint z = 1)
     {
         Check();
+        _enc.NoteDispatch();
         // Earlier dispatches may have written what this one reads; barriers go between dispatches, outside any render pass.
         foreach (var g in _bound)
         {

@@ -147,15 +147,49 @@ public abstract class GpuSwapchain : GpuObject
 /// <summary>Records a sequence of copy, render and compute work, then is handed to <see cref="GpuDevice.Submit"/>. Encoders are reused after submission; do not touch one afterwards.</summary>
 public abstract class GpuCommandEncoder
 {
-    /// <summary>Begins a render pass into one color attachment, with an optional depth attachment. End it before recording anything else.</summary>
-    public GpuRenderPass BeginRenderPass(in ColorAttachment color, DepthAttachment? depth = null)
+    uint _computePasses;
+    uint _dispatches;
+
+    /// <summary>
+    /// How many compute passes were begun on this encoder since it was handed out by <see cref="GpuDevice.BeginCommands"/>. Counted by the
+    /// encoder as it records: no timestamps are needed and reading it costs nothing. Backends that merge several passes into one native
+    /// encoder still count each <see cref="BeginComputePass"/>. Read it before <see cref="GpuDevice.Submit"/>; afterwards the encoder may be reused.
+    /// Not thread-safe, like the encoder itself.
+    /// </summary>
+    public uint ComputePassCount => _computePasses;
+
+    /// <summary>
+    /// How many <see cref="GpuComputePass.Dispatch"/> and <see cref="GpuComputePass.DispatchIndirect"/> calls were recorded on this encoder since
+    /// it was handed out, empty grids included (a dispatch with a zero dimension is counted although it runs nothing). Same lifetime and
+    /// threading as <see cref="ComputePassCount"/>.
+    /// </summary>
+    public uint DispatchCount => _dispatches;
+
+    internal void NoteComputePass() => _computePasses++;
+
+    internal void NoteDispatch() => _dispatches++;
+
+    internal void ResetCounts()
+    {
+        _computePasses = 0;
+        _dispatches = 0;
+    }
+
+    /// <summary>Begins a render pass into one color attachment, without a depth attachment. End it before recording anything else.</summary>
+    public GpuRenderPass BeginRenderPass(in ColorAttachment color) => BeginRenderPass(color, null);
+
+    /// <summary>Begins a render pass into one color attachment and a depth attachment (null for none). End it before recording anything else.</summary>
+    public GpuRenderPass BeginRenderPass(in ColorAttachment color, DepthAttachment? depth)
     {
         ReadOnlySpan<ColorAttachment> one = [color];
         return BeginRenderPass(one, depth);
     }
 
-    /// <summary>Begins a render pass into several color attachments, with an optional depth attachment.</summary>
-    public abstract GpuRenderPass BeginRenderPass(ReadOnlySpan<ColorAttachment> colors, DepthAttachment? depth = null);
+    /// <summary>Begins a render pass into several color attachments, without a depth attachment.</summary>
+    public GpuRenderPass BeginRenderPass(ReadOnlySpan<ColorAttachment> colors) => BeginRenderPass(colors, null);
+
+    /// <summary>Begins a render pass into several color attachments, with an optional depth attachment (null for none).</summary>
+    public abstract GpuRenderPass BeginRenderPass(ReadOnlySpan<ColorAttachment> colors, DepthAttachment? depth);
 
     /// <summary>Begins a compute pass.</summary>
     public abstract GpuComputePass BeginComputePass();
