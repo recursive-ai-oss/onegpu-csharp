@@ -8,6 +8,10 @@
     <PackageVersion Include="RecursiveAI.OneShader.Build" Version="1.6.1" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Build-time only (PrivateAssets="all"): tracks the public API in PublicAPI.Shipped.txt. -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="3.3.4" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- Test projects only. -->
     <PackageVersion Include="xunit.v3" Version="4.0.2" />
     <PackageVersion Include="xunit.v3.assert" Version="4.0.2" />

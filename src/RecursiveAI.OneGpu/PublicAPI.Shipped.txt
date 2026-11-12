@@ -1,0 +1,902 @@
+#nullable enable
+RecursiveAI.OneGpu.AcquireStatus
+RecursiveAI.OneGpu.AcquireStatus.Ready = 0 -> RecursiveAI.OneGpu.AcquireStatus
+RecursiveAI.OneGpu.AcquireStatus.Skipped = 1 -> RecursiveAI.OneGpu.AcquireStatus
+RecursiveAI.OneGpu.AdapterKind
+RecursiveAI.OneGpu.AdapterKind.Discrete = 1 -> RecursiveAI.OneGpu.AdapterKind
+RecursiveAI.OneGpu.AdapterKind.Integrated = 2 -> RecursiveAI.OneGpu.AdapterKind
+RecursiveAI.OneGpu.AdapterKind.Other = 0 -> RecursiveAI.OneGpu.AdapterKind
+RecursiveAI.OneGpu.AdapterKind.Software = 4 -> RecursiveAI.OneGpu.AdapterKind
+RecursiveAI.OneGpu.AdapterKind.Virtual = 3 -> RecursiveAI.OneGpu.AdapterKind
+RecursiveAI.OneGpu.AddressMode
+RecursiveAI.OneGpu.AddressMode.ClampToEdge = 0 -> RecursiveAI.OneGpu.AddressMode
+RecursiveAI.OneGpu.AddressMode.MirrorRepeat = 2 -> RecursiveAI.OneGpu.AddressMode
+RecursiveAI.OneGpu.AddressMode.Repeat = 1 -> RecursiveAI.OneGpu.AddressMode
+RecursiveAI.OneGpu.BindGroupEntry
+RecursiveAI.OneGpu.BindGroupEntry.BindGroupEntry() -> void
+RecursiveAI.OneGpu.BindGroupEntry.Binding.get -> uint
+RecursiveAI.OneGpu.BindGroupEntry.Binding.init -> void
+RecursiveAI.OneGpu.BindGroupEntry.Buffer.get -> RecursiveAI.OneGpu.GpuBuffer?
+RecursiveAI.OneGpu.BindGroupEntry.Buffer.init -> void
+RecursiveAI.OneGpu.BindGroupEntry.Buffers.get -> System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.GpuBuffer!>?
+RecursiveAI.OneGpu.BindGroupEntry.Buffers.init -> void
+RecursiveAI.OneGpu.BindGroupEntry.Offset.get -> ulong
+RecursiveAI.OneGpu.BindGroupEntry.Offset.init -> void
+RecursiveAI.OneGpu.BindGroupEntry.Sampler.get -> RecursiveAI.OneGpu.GpuSampler?
+RecursiveAI.OneGpu.BindGroupEntry.Sampler.init -> void
+RecursiveAI.OneGpu.BindGroupEntry.Samplers.get -> System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.GpuSampler!>?
+RecursiveAI.OneGpu.BindGroupEntry.Samplers.init -> void
+RecursiveAI.OneGpu.BindGroupEntry.Size.get -> ulong
+RecursiveAI.OneGpu.BindGroupEntry.Size.init -> void
+RecursiveAI.OneGpu.BindGroupEntry.Texture.get -> RecursiveAI.OneGpu.GpuTexture?
+RecursiveAI.OneGpu.BindGroupEntry.Texture.init -> void
+RecursiveAI.OneGpu.BindGroupEntry.Textures.get -> System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.GpuTexture!>?
+RecursiveAI.OneGpu.BindGroupEntry.Textures.init -> void
+RecursiveAI.OneGpu.BindGroupEntry.View.get -> RecursiveAI.OneGpu.TextureViewDesc?
+RecursiveAI.OneGpu.BindGroupEntry.View.init -> void
+RecursiveAI.OneGpu.BlendComponent
+RecursiveAI.OneGpu.BlendComponent.BlendComponent() -> void
+RecursiveAI.OneGpu.BlendComponent.BlendComponent(RecursiveAI.OneGpu.BlendFactor Source, RecursiveAI.OneGpu.BlendFactor Destination, RecursiveAI.OneGpu.BlendOperation Operation) -> void
+RecursiveAI.OneGpu.BlendComponent.Destination.get -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendComponent.Destination.init -> void
+RecursiveAI.OneGpu.BlendComponent.Operation.get -> RecursiveAI.OneGpu.BlendOperation
+RecursiveAI.OneGpu.BlendComponent.Operation.init -> void
+RecursiveAI.OneGpu.BlendComponent.Source.get -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendComponent.Source.init -> void
+RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendFactor.Destination = 6 -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendFactor.DestinationAlpha = 8 -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendFactor.One = 1 -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendFactor.OneMinusDestination = 7 -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendFactor.OneMinusDestinationAlpha = 9 -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendFactor.OneMinusSource = 3 -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendFactor.OneMinusSourceAlpha = 5 -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendFactor.Source = 2 -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendFactor.SourceAlpha = 4 -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendFactor.Zero = 0 -> RecursiveAI.OneGpu.BlendFactor
+RecursiveAI.OneGpu.BlendOperation
+RecursiveAI.OneGpu.BlendOperation.Add = 0 -> RecursiveAI.OneGpu.BlendOperation
+RecursiveAI.OneGpu.BlendOperation.Max = 4 -> RecursiveAI.OneGpu.BlendOperation
+RecursiveAI.OneGpu.BlendOperation.Min = 3 -> RecursiveAI.OneGpu.BlendOperation
+RecursiveAI.OneGpu.BlendOperation.ReverseSubtract = 2 -> RecursiveAI.OneGpu.BlendOperation
+RecursiveAI.OneGpu.BlendOperation.Subtract = 1 -> RecursiveAI.OneGpu.BlendOperation
+RecursiveAI.OneGpu.BlendState
+RecursiveAI.OneGpu.BlendState.Alpha.get -> RecursiveAI.OneGpu.BlendComponent
+RecursiveAI.OneGpu.BlendState.Alpha.init -> void
+RecursiveAI.OneGpu.BlendState.BlendState() -> void
+RecursiveAI.OneGpu.BlendState.BlendState(RecursiveAI.OneGpu.BlendComponent Color, RecursiveAI.OneGpu.BlendComponent Alpha) -> void
+RecursiveAI.OneGpu.BlendState.Color.get -> RecursiveAI.OneGpu.BlendComponent
+RecursiveAI.OneGpu.BlendState.Color.init -> void
+RecursiveAI.OneGpu.BufferDesc
+RecursiveAI.OneGpu.BufferDesc.BufferDesc() -> void
+RecursiveAI.OneGpu.BufferDesc.BufferDesc(ulong Size, RecursiveAI.OneGpu.BufferUsage Usage) -> void
+RecursiveAI.OneGpu.BufferDesc.Label.get -> string?
+RecursiveAI.OneGpu.BufferDesc.Label.init -> void
+RecursiveAI.OneGpu.BufferDesc.Size.get -> ulong
+RecursiveAI.OneGpu.BufferDesc.Size.init -> void
+RecursiveAI.OneGpu.BufferDesc.Usage.get -> RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.BufferDesc.Usage.init -> void
+RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.BufferUsage.CopyDestination = 32 -> RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.BufferUsage.CopySource = 16 -> RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.BufferUsage.Index = 2 -> RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.BufferUsage.Indirect = 64 -> RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.BufferUsage.None = 0 -> RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.BufferUsage.Storage = 8 -> RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.BufferUsage.Uniform = 4 -> RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.BufferUsage.Vertex = 1 -> RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.ColorAttachment
+RecursiveAI.OneGpu.ColorAttachment.ClearA.get -> float
+RecursiveAI.OneGpu.ColorAttachment.ClearA.init -> void
+RecursiveAI.OneGpu.ColorAttachment.ClearB.get -> float
+RecursiveAI.OneGpu.ColorAttachment.ClearB.init -> void
+RecursiveAI.OneGpu.ColorAttachment.ClearG.get -> float
+RecursiveAI.OneGpu.ColorAttachment.ClearG.init -> void
+RecursiveAI.OneGpu.ColorAttachment.ClearR.get -> float
+RecursiveAI.OneGpu.ColorAttachment.ClearR.init -> void
+RecursiveAI.OneGpu.ColorAttachment.ColorAttachment() -> void
+RecursiveAI.OneGpu.ColorAttachment.Layer.get -> uint
+RecursiveAI.OneGpu.ColorAttachment.Layer.init -> void
+RecursiveAI.OneGpu.ColorAttachment.Load.get -> RecursiveAI.OneGpu.LoadOp
+RecursiveAI.OneGpu.ColorAttachment.Load.init -> void
+RecursiveAI.OneGpu.ColorAttachment.MipLevel.get -> uint
+RecursiveAI.OneGpu.ColorAttachment.MipLevel.init -> void
+RecursiveAI.OneGpu.ColorAttachment.Resolve.get -> RecursiveAI.OneGpu.GpuTexture?
+RecursiveAI.OneGpu.ColorAttachment.Resolve.init -> void
+RecursiveAI.OneGpu.ColorAttachment.Store.get -> RecursiveAI.OneGpu.StoreOp
+RecursiveAI.OneGpu.ColorAttachment.Store.init -> void
+RecursiveAI.OneGpu.ColorAttachment.Target.get -> RecursiveAI.OneGpu.GpuTexture!
+RecursiveAI.OneGpu.ColorAttachment.Target.init -> void
+RecursiveAI.OneGpu.ColorTargetState
+RecursiveAI.OneGpu.ColorTargetState.Blend.get -> RecursiveAI.OneGpu.BlendState?
+RecursiveAI.OneGpu.ColorTargetState.Blend.init -> void
+RecursiveAI.OneGpu.ColorTargetState.ColorTargetState() -> void
+RecursiveAI.OneGpu.ColorTargetState.ColorTargetState(RecursiveAI.OneGpu.GpuFormat Format) -> void
+RecursiveAI.OneGpu.ColorTargetState.Format.get -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.ColorTargetState.Format.init -> void
+RecursiveAI.OneGpu.ColorTargetState.WriteMask.get -> RecursiveAI.OneGpu.ColorWriteMask
+RecursiveAI.OneGpu.ColorTargetState.WriteMask.init -> void
+RecursiveAI.OneGpu.ColorWriteMask
+RecursiveAI.OneGpu.ColorWriteMask.All = RecursiveAI.OneGpu.ColorWriteMask.Red | RecursiveAI.OneGpu.ColorWriteMask.Green | RecursiveAI.OneGpu.ColorWriteMask.Blue | RecursiveAI.OneGpu.ColorWriteMask.Alpha -> RecursiveAI.OneGpu.ColorWriteMask
+RecursiveAI.OneGpu.ColorWriteMask.Alpha = 8 -> RecursiveAI.OneGpu.ColorWriteMask
+RecursiveAI.OneGpu.ColorWriteMask.Blue = 4 -> RecursiveAI.OneGpu.ColorWriteMask
+RecursiveAI.OneGpu.ColorWriteMask.Green = 2 -> RecursiveAI.OneGpu.ColorWriteMask
+RecursiveAI.OneGpu.ColorWriteMask.None = 0 -> RecursiveAI.OneGpu.ColorWriteMask
+RecursiveAI.OneGpu.ColorWriteMask.Red = 1 -> RecursiveAI.OneGpu.ColorWriteMask
+RecursiveAI.OneGpu.CompareFunction
+RecursiveAI.OneGpu.CompareFunction.Always = 7 -> RecursiveAI.OneGpu.CompareFunction
+RecursiveAI.OneGpu.CompareFunction.Equal = 2 -> RecursiveAI.OneGpu.CompareFunction
+RecursiveAI.OneGpu.CompareFunction.Greater = 4 -> RecursiveAI.OneGpu.CompareFunction
+RecursiveAI.OneGpu.CompareFunction.GreaterEqual = 6 -> RecursiveAI.OneGpu.CompareFunction
+RecursiveAI.OneGpu.CompareFunction.Less = 1 -> RecursiveAI.OneGpu.CompareFunction
+RecursiveAI.OneGpu.CompareFunction.LessEqual = 3 -> RecursiveAI.OneGpu.CompareFunction
+RecursiveAI.OneGpu.CompareFunction.Never = 0 -> RecursiveAI.OneGpu.CompareFunction
+RecursiveAI.OneGpu.CompareFunction.NotEqual = 5 -> RecursiveAI.OneGpu.CompareFunction
+RecursiveAI.OneGpu.ComputePipelineDesc
+RecursiveAI.OneGpu.ComputePipelineDesc.Compute.get -> RecursiveAI.OneGpu.GpuShader!
+RecursiveAI.OneGpu.ComputePipelineDesc.Compute.init -> void
+RecursiveAI.OneGpu.ComputePipelineDesc.ComputePipelineDesc() -> void
+RecursiveAI.OneGpu.ComputePipelineDesc.Label.get -> string?
+RecursiveAI.OneGpu.ComputePipelineDesc.Label.init -> void
+RecursiveAI.OneGpu.ComputePipelineDesc.Layout.get -> RecursiveAI.OneGpu.GpuPipelineLayout!
+RecursiveAI.OneGpu.ComputePipelineDesc.Layout.init -> void
+RecursiveAI.OneGpu.ComputePipelineDesc.RequireFullSubgroups.get -> bool
+RecursiveAI.OneGpu.ComputePipelineDesc.RequireFullSubgroups.init -> void
+RecursiveAI.OneGpu.ComputePipelineDesc.RequiredSubgroupSize.get -> uint
+RecursiveAI.OneGpu.ComputePipelineDesc.RequiredSubgroupSize.init -> void
+RecursiveAI.OneGpu.CullMode
+RecursiveAI.OneGpu.CullMode.Back = 2 -> RecursiveAI.OneGpu.CullMode
+RecursiveAI.OneGpu.CullMode.Front = 1 -> RecursiveAI.OneGpu.CullMode
+RecursiveAI.OneGpu.CullMode.None = 0 -> RecursiveAI.OneGpu.CullMode
+RecursiveAI.OneGpu.DepthAttachment
+RecursiveAI.OneGpu.DepthAttachment.ClearDepth.get -> float
+RecursiveAI.OneGpu.DepthAttachment.ClearDepth.init -> void
+RecursiveAI.OneGpu.DepthAttachment.DepthAttachment() -> void
+RecursiveAI.OneGpu.DepthAttachment.Layer.get -> uint
+RecursiveAI.OneGpu.DepthAttachment.Layer.init -> void
+RecursiveAI.OneGpu.DepthAttachment.Load.get -> RecursiveAI.OneGpu.LoadOp
+RecursiveAI.OneGpu.DepthAttachment.Load.init -> void
+RecursiveAI.OneGpu.DepthAttachment.MipLevel.get -> uint
+RecursiveAI.OneGpu.DepthAttachment.MipLevel.init -> void
+RecursiveAI.OneGpu.DepthAttachment.Store.get -> RecursiveAI.OneGpu.StoreOp
+RecursiveAI.OneGpu.DepthAttachment.Store.init -> void
+RecursiveAI.OneGpu.DepthAttachment.Target.get -> RecursiveAI.OneGpu.GpuTexture!
+RecursiveAI.OneGpu.DepthAttachment.Target.init -> void
+RecursiveAI.OneGpu.DepthStencilState
+RecursiveAI.OneGpu.DepthStencilState.DepthBias.get -> int
+RecursiveAI.OneGpu.DepthStencilState.DepthBias.init -> void
+RecursiveAI.OneGpu.DepthStencilState.DepthBiasClamp.get -> float
+RecursiveAI.OneGpu.DepthStencilState.DepthBiasClamp.init -> void
+RecursiveAI.OneGpu.DepthStencilState.DepthBiasSlopeScale.get -> float
+RecursiveAI.OneGpu.DepthStencilState.DepthBiasSlopeScale.init -> void
+RecursiveAI.OneGpu.DepthStencilState.DepthCompare.get -> RecursiveAI.OneGpu.CompareFunction
+RecursiveAI.OneGpu.DepthStencilState.DepthCompare.init -> void
+RecursiveAI.OneGpu.DepthStencilState.DepthStencilState() -> void
+RecursiveAI.OneGpu.DepthStencilState.DepthStencilState(RecursiveAI.OneGpu.GpuFormat Format) -> void
+RecursiveAI.OneGpu.DepthStencilState.DepthWrite.get -> bool
+RecursiveAI.OneGpu.DepthStencilState.DepthWrite.init -> void
+RecursiveAI.OneGpu.DepthStencilState.Format.get -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.DepthStencilState.Format.init -> void
+RecursiveAI.OneGpu.DispatchIndirectArgs
+RecursiveAI.OneGpu.DispatchIndirectArgs.DispatchIndirectArgs() -> void
+RecursiveAI.OneGpu.DispatchIndirectArgs.DispatchIndirectArgs(uint X, uint Y, uint Z) -> void
+RecursiveAI.OneGpu.DispatchIndirectArgs.X.get -> uint
+RecursiveAI.OneGpu.DispatchIndirectArgs.X.init -> void
+RecursiveAI.OneGpu.DispatchIndirectArgs.Y.get -> uint
+RecursiveAI.OneGpu.DispatchIndirectArgs.Y.init -> void
+RecursiveAI.OneGpu.DispatchIndirectArgs.Z.get -> uint
+RecursiveAI.OneGpu.DispatchIndirectArgs.Z.init -> void
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.BaseVertex.get -> int
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.BaseVertex.init -> void
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.DrawIndexedIndirectArgs() -> void
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.DrawIndexedIndirectArgs(uint IndexCount, uint InstanceCount, uint FirstIndex, int BaseVertex, uint FirstInstance) -> void
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.FirstIndex.get -> uint
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.FirstIndex.init -> void
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.FirstInstance.get -> uint
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.FirstInstance.init -> void
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.IndexCount.get -> uint
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.IndexCount.init -> void
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.InstanceCount.get -> uint
+RecursiveAI.OneGpu.DrawIndexedIndirectArgs.InstanceCount.init -> void
+RecursiveAI.OneGpu.DrawIndirectArgs
+RecursiveAI.OneGpu.DrawIndirectArgs.DrawIndirectArgs() -> void
+RecursiveAI.OneGpu.DrawIndirectArgs.DrawIndirectArgs(uint VertexCount, uint InstanceCount, uint FirstVertex, uint FirstInstance) -> void
+RecursiveAI.OneGpu.DrawIndirectArgs.FirstInstance.get -> uint
+RecursiveAI.OneGpu.DrawIndirectArgs.FirstInstance.init -> void
+RecursiveAI.OneGpu.DrawIndirectArgs.FirstVertex.get -> uint
+RecursiveAI.OneGpu.DrawIndirectArgs.FirstVertex.init -> void
+RecursiveAI.OneGpu.DrawIndirectArgs.InstanceCount.get -> uint
+RecursiveAI.OneGpu.DrawIndirectArgs.InstanceCount.init -> void
+RecursiveAI.OneGpu.DrawIndirectArgs.VertexCount.get -> uint
+RecursiveAI.OneGpu.DrawIndirectArgs.VertexCount.init -> void
+RecursiveAI.OneGpu.FilterMode
+RecursiveAI.OneGpu.FilterMode.Linear = 1 -> RecursiveAI.OneGpu.FilterMode
+RecursiveAI.OneGpu.FilterMode.Nearest = 0 -> RecursiveAI.OneGpu.FilterMode
+RecursiveAI.OneGpu.FrontFace
+RecursiveAI.OneGpu.FrontFace.Clockwise = 1 -> RecursiveAI.OneGpu.FrontFace
+RecursiveAI.OneGpu.FrontFace.CounterClockwise = 0 -> RecursiveAI.OneGpu.FrontFace
+RecursiveAI.OneGpu.GpuAdapterInfo
+RecursiveAI.OneGpu.GpuAdapterInfo.ApiVersion.get -> string!
+RecursiveAI.OneGpu.GpuAdapterInfo.ApiVersion.init -> void
+RecursiveAI.OneGpu.GpuAdapterInfo.DeviceId.get -> uint
+RecursiveAI.OneGpu.GpuAdapterInfo.DeviceId.init -> void
+RecursiveAI.OneGpu.GpuAdapterInfo.GpuAdapterInfo(string! Name, RecursiveAI.OneGpu.AdapterKind Kind, uint VendorId, uint DeviceId, string! ApiVersion) -> void
+RecursiveAI.OneGpu.GpuAdapterInfo.Kind.get -> RecursiveAI.OneGpu.AdapterKind
+RecursiveAI.OneGpu.GpuAdapterInfo.Kind.init -> void
+RecursiveAI.OneGpu.GpuAdapterInfo.Name.get -> string!
+RecursiveAI.OneGpu.GpuAdapterInfo.Name.init -> void
+RecursiveAI.OneGpu.GpuAdapterInfo.VendorId.get -> uint
+RecursiveAI.OneGpu.GpuAdapterInfo.VendorId.init -> void
+RecursiveAI.OneGpu.GpuBackend
+RecursiveAI.OneGpu.GpuBackend.Metal = 1 -> RecursiveAI.OneGpu.GpuBackend
+RecursiveAI.OneGpu.GpuBackend.Vulkan = 0 -> RecursiveAI.OneGpu.GpuBackend
+RecursiveAI.OneGpu.GpuBackend.WebGpu = 2 -> RecursiveAI.OneGpu.GpuBackend
+RecursiveAI.OneGpu.GpuBindGroup
+RecursiveAI.OneGpu.GpuBindGroup.GpuBindGroup() -> void
+RecursiveAI.OneGpu.GpuBuffer
+RecursiveAI.OneGpu.GpuBuffer.GpuBuffer() -> void
+RecursiveAI.OneGpu.GpuBuffer.Size.get -> ulong
+RecursiveAI.OneGpu.GpuBuffer.Size.init -> void
+RecursiveAI.OneGpu.GpuBuffer.Usage.get -> RecursiveAI.OneGpu.BufferUsage
+RecursiveAI.OneGpu.GpuBuffer.Usage.init -> void
+RecursiveAI.OneGpu.GpuBuffer<T>
+RecursiveAI.OneGpu.GpuBuffer<T>.Buffer.get -> RecursiveAI.OneGpu.GpuBuffer!
+RecursiveAI.OneGpu.GpuBuffer<T>.Device.get -> RecursiveAI.OneGpu.GpuDevice!
+RecursiveAI.OneGpu.GpuBuffer<T>.Dispose() -> void
+RecursiveAI.OneGpu.GpuBuffer<T>.ElementBytes.get -> int
+RecursiveAI.OneGpu.GpuBuffer<T>.Length.get -> int
+RecursiveAI.OneGpu.GpuBuffer<T>.Read(System.Span<T> destination, int elementOffset = 0) -> void
+RecursiveAI.OneGpu.GpuBuffer<T>.ReadAsync(System.Memory<T> destination, int elementOffset = 0) -> System.Threading.Tasks.ValueTask
+RecursiveAI.OneGpu.GpuBuffer<T>.SizeInBytes.get -> ulong
+RecursiveAI.OneGpu.GpuBuffer<T>.Write(System.ReadOnlySpan<T> data, int elementOffset = 0) -> void
+RecursiveAI.OneGpu.GpuCapabilities
+RecursiveAI.OneGpu.GpuCapabilities.Compute.get -> RecursiveAI.OneGpu.GpuComputeCapabilities!
+RecursiveAI.OneGpu.GpuCapabilities.Compute.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.DepthBiasClamp.get -> bool
+RecursiveAI.OneGpu.GpuCapabilities.DepthBiasClamp.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.DepthClamp.get -> bool
+RecursiveAI.OneGpu.GpuCapabilities.DepthClamp.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.GpuCapabilities() -> void
+RecursiveAI.OneGpu.GpuCapabilities.GpuCapabilities(bool Timestamps, bool MultiDrawIndirect, bool IndirectFirstInstance, bool DepthClamp, bool DepthBiasClamp, bool NonUniformArrayIndexing, uint MaxSampleCount, uint MaxTextureSize, uint MaxTextureSize3D, uint MaxArrayLayers, uint MaxResourceArrayCount) -> void
+RecursiveAI.OneGpu.GpuCapabilities.IndirectFirstInstance.get -> bool
+RecursiveAI.OneGpu.GpuCapabilities.IndirectFirstInstance.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.MaxArrayLayers.get -> uint
+RecursiveAI.OneGpu.GpuCapabilities.MaxArrayLayers.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.MaxResourceArrayCount.get -> uint
+RecursiveAI.OneGpu.GpuCapabilities.MaxResourceArrayCount.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.MaxSampleCount.get -> uint
+RecursiveAI.OneGpu.GpuCapabilities.MaxSampleCount.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.MaxTextureSize.get -> uint
+RecursiveAI.OneGpu.GpuCapabilities.MaxTextureSize.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.MaxTextureSize3D.get -> uint
+RecursiveAI.OneGpu.GpuCapabilities.MaxTextureSize3D.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.MultiDrawIndirect.get -> bool
+RecursiveAI.OneGpu.GpuCapabilities.MultiDrawIndirect.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.NonUniformArrayIndexing.get -> bool
+RecursiveAI.OneGpu.GpuCapabilities.NonUniformArrayIndexing.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.PushConstants.get -> bool
+RecursiveAI.OneGpu.GpuCapabilities.PushConstants.init -> void
+RecursiveAI.OneGpu.GpuCapabilities.Timestamps.get -> bool
+RecursiveAI.OneGpu.GpuCapabilities.Timestamps.init -> void
+RecursiveAI.OneGpu.GpuCommandEncoder
+RecursiveAI.OneGpu.GpuCommandEncoder.BeginRenderPass(System.ReadOnlySpan<RecursiveAI.OneGpu.ColorAttachment> colors) -> RecursiveAI.OneGpu.GpuRenderPass!
+RecursiveAI.OneGpu.GpuCommandEncoder.BeginRenderPass(in RecursiveAI.OneGpu.ColorAttachment color) -> RecursiveAI.OneGpu.GpuRenderPass!
+RecursiveAI.OneGpu.GpuCommandEncoder.BeginRenderPass(in RecursiveAI.OneGpu.ColorAttachment color, RecursiveAI.OneGpu.DepthAttachment? depth) -> RecursiveAI.OneGpu.GpuRenderPass!
+RecursiveAI.OneGpu.GpuCommandEncoder.ComputePassCount.get -> uint
+RecursiveAI.OneGpu.GpuCommandEncoder.DispatchCount.get -> uint
+RecursiveAI.OneGpu.GpuCommandEncoder.GpuCommandEncoder() -> void
+RecursiveAI.OneGpu.GpuCommandFailedException
+RecursiveAI.OneGpu.GpuCommandFailedException.GpuCommandFailedException(string! message, RecursiveAI.OneGpu.GpuCommandFailure reason, long platformCode = 0) -> void
+RecursiveAI.OneGpu.GpuCommandFailedException.PlatformCode.get -> long
+RecursiveAI.OneGpu.GpuCommandFailedException.Reason.get -> RecursiveAI.OneGpu.GpuCommandFailure
+RecursiveAI.OneGpu.GpuCommandFailure
+RecursiveAI.OneGpu.GpuCommandFailure.InvalidResource = 3 -> RecursiveAI.OneGpu.GpuCommandFailure
+RecursiveAI.OneGpu.GpuCommandFailure.OutOfMemory = 2 -> RecursiveAI.OneGpu.GpuCommandFailure
+RecursiveAI.OneGpu.GpuCommandFailure.Unknown = 0 -> RecursiveAI.OneGpu.GpuCommandFailure
+RecursiveAI.OneGpu.GpuCommandFailure.Watchdog = 1 -> RecursiveAI.OneGpu.GpuCommandFailure
+RecursiveAI.OneGpu.GpuComputeCapabilities
+RecursiveAI.OneGpu.GpuComputeCapabilities.BFloat16.get -> bool
+RecursiveAI.OneGpu.GpuComputeCapabilities.BFloat16.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.CooperativeMatrices.get -> System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.GpuCooperativeMatrixShape>!
+RecursiveAI.OneGpu.GpuComputeCapabilities.CooperativeMatrices.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.CooperativeMatrix.get -> bool
+RecursiveAI.OneGpu.GpuComputeCapabilities.Describe() -> string!
+RecursiveAI.OneGpu.GpuComputeCapabilities.FullSubgroups.get -> bool
+RecursiveAI.OneGpu.GpuComputeCapabilities.FullSubgroups.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.Int8DotProduct.get -> bool
+RecursiveAI.OneGpu.GpuComputeCapabilities.Int8DotProduct.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.Integer8.get -> bool
+RecursiveAI.OneGpu.GpuComputeCapabilities.Integer8.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxBindGroups.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxBindGroups.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxBufferBytes.get -> ulong
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxBufferBytes.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxStorageBufferBindingBytes.get -> ulong
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxStorageBufferBindingBytes.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxStorageBuffersPerStage.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxStorageBuffersPerStage.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupCount.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupCount.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupInvocations.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupInvocations.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupMemoryBytes.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupMemoryBytes.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupSizeX.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupSizeX.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupSizeY.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupSizeY.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupSizeZ.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.MaxWorkgroupSizeZ.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.ShaderFeatures.get -> OneShader.Reflection.DeviceFeatures
+RecursiveAI.OneGpu.GpuComputeCapabilities.ShaderFeatures.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.StorageBufferOffsetAlignment.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.StorageBufferOffsetAlignment.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubgroupMaxSize.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubgroupMaxSize.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubgroupMinSize.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubgroupMinSize.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubgroupOperations.get -> RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubgroupOperations.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubgroupSize.get -> uint
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubgroupSize.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubgroupSizeControl.get -> bool
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubgroupSizeControl.init -> void
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubmissionWorkBudget.get -> ulong
+RecursiveAI.OneGpu.GpuComputeCapabilities.SubmissionWorkBudget.init -> void
+RecursiveAI.OneGpu.GpuComputeKernel
+RecursiveAI.OneGpu.GpuComputeKernel.Bindings.get -> System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.ResourceBinding>!
+RecursiveAI.OneGpu.GpuComputeKernel.CreateBindGroup(RecursiveAI.OneGpu.GpuDevice! device, uint setIndex, System.ReadOnlySpan<RecursiveAI.OneGpu.BindGroupEntry> entries) -> RecursiveAI.OneGpu.GpuBindGroup!
+RecursiveAI.OneGpu.GpuComputeKernel.Dispose() -> void
+RecursiveAI.OneGpu.GpuComputeKernel.GroupsFor(uint threadsX, uint threadsY = 1, uint threadsZ = 1) -> (uint X, uint Y, uint Z)
+RecursiveAI.OneGpu.GpuComputeKernel.Pipeline.get -> RecursiveAI.OneGpu.GpuComputePipeline!
+RecursiveAI.OneGpu.GpuComputeKernel.PipelineLayout.get -> RecursiveAI.OneGpu.GpuPipelineLayout!
+RecursiveAI.OneGpu.GpuComputeKernel.PushConstants.get -> RecursiveAI.OneGpu.PushConstantRange
+RecursiveAI.OneGpu.GpuComputeKernel.Reflection.get -> OneShader.Layouts.EntryLayout!
+RecursiveAI.OneGpu.GpuComputeKernel.WorkgroupSizeX.get -> uint
+RecursiveAI.OneGpu.GpuComputeKernel.WorkgroupSizeY.get -> uint
+RecursiveAI.OneGpu.GpuComputeKernel.WorkgroupSizeZ.get -> uint
+RecursiveAI.OneGpu.GpuComputePass
+RecursiveAI.OneGpu.GpuComputePass.GpuComputePass() -> void
+RecursiveAI.OneGpu.GpuComputePass.SetBindGroup(uint setIndex, RecursiveAI.OneGpu.GpuBindGroup! group) -> void
+RecursiveAI.OneGpu.GpuComputePipeline
+RecursiveAI.OneGpu.GpuComputePipeline.GpuComputePipeline() -> void
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.AType.get -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.AType.init -> void
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.BType.get -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.BType.init -> void
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.CType.get -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.CType.init -> void
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.GpuCooperativeMatrixShape() -> void
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.GpuCooperativeMatrixShape(uint M, uint N, uint K, RecursiveAI.OneGpu.GpuScalarType AType, RecursiveAI.OneGpu.GpuScalarType BType, RecursiveAI.OneGpu.GpuScalarType CType, RecursiveAI.OneGpu.GpuScalarType ResultType, bool Saturating = false) -> void
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.K.get -> uint
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.K.init -> void
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.M.get -> uint
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.M.init -> void
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.N.get -> uint
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.N.init -> void
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.ResultType.get -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.ResultType.init -> void
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.Saturating.get -> bool
+RecursiveAI.OneGpu.GpuCooperativeMatrixShape.Saturating.init -> void
+RecursiveAI.OneGpu.GpuDevice
+RecursiveAI.OneGpu.GpuDevice.CheckSubgroupRequirements(RecursiveAI.OneGpu.ComputePipelineDesc! desc) -> void
+RecursiveAI.OneGpu.GpuDevice.CreateBuffer<T>(System.ReadOnlySpan<T> data) -> RecursiveAI.OneGpu.GpuBuffer<T>!
+RecursiveAI.OneGpu.GpuDevice.CreateBuffer<T>(System.ReadOnlySpan<T> data, RecursiveAI.OneGpu.BufferUsage usage) -> RecursiveAI.OneGpu.GpuBuffer<T>!
+RecursiveAI.OneGpu.GpuDevice.CreateBuffer<T>(System.ReadOnlySpan<T> data, RecursiveAI.OneGpu.BufferUsage usage, string? label) -> RecursiveAI.OneGpu.GpuBuffer<T>!
+RecursiveAI.OneGpu.GpuDevice.CreateBuffer<T>(int length, RecursiveAI.OneGpu.BufferUsage usage = RecursiveAI.OneGpu.BufferUsage.Storage | RecursiveAI.OneGpu.BufferUsage.CopySource | RecursiveAI.OneGpu.BufferUsage.CopyDestination, string? label = null) -> RecursiveAI.OneGpu.GpuBuffer<T>!
+RecursiveAI.OneGpu.GpuDevice.CreateComputeKernel(in RecursiveAI.OneGpu.ShaderSource source, string? label = null, uint requiredSubgroupSize = 0) -> RecursiveAI.OneGpu.GpuComputeKernel!
+RecursiveAI.OneGpu.GpuDevice.GpuDevice() -> void
+RecursiveAI.OneGpu.GpuDeviceLostException
+RecursiveAI.OneGpu.GpuDeviceLostException.GpuDeviceLostException(string! message) -> void
+RecursiveAI.OneGpu.GpuDeviceLostException.GpuDeviceLostException(string! message, string! operation) -> void
+RecursiveAI.OneGpu.GpuDeviceLostException.Operation.get -> string?
+RecursiveAI.OneGpu.GpuDeviceOptions
+RecursiveAI.OneGpu.GpuDeviceOptions.Adapter.get -> string?
+RecursiveAI.OneGpu.GpuDeviceOptions.Adapter.init -> void
+RecursiveAI.OneGpu.GpuDeviceOptions.ApplicationName.get -> string!
+RecursiveAI.OneGpu.GpuDeviceOptions.ApplicationName.init -> void
+RecursiveAI.OneGpu.GpuDeviceOptions.GpuDeviceOptions() -> void
+RecursiveAI.OneGpu.GpuDeviceOptions.RequireValidation.get -> bool
+RecursiveAI.OneGpu.GpuDeviceOptions.RequireValidation.init -> void
+RecursiveAI.OneGpu.GpuDeviceOptions.Validation.get -> bool
+RecursiveAI.OneGpu.GpuDeviceOptions.Validation.init -> void
+RecursiveAI.OneGpu.GpuException
+RecursiveAI.OneGpu.GpuException.GpuException(string! message) -> void
+RecursiveAI.OneGpu.GpuException.GpuException(string! message, System.Exception! inner) -> void
+RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Bgra8Unorm = 5 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Bgra8UnormSrgb = 6 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Depth16Unorm = 18 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Depth32Float = 13 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Depth32FloatStencil8 = 14 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.R16Float = 7 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.R32Float = 9 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.R32Uint = 12 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.R8Unorm = 1 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Rg11B10Float = 16 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Rg16Float = 15 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Rg32Float = 10 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Rg8Unorm = 2 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Rgb10A2Unorm = 17 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Rgba16Float = 8 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Rgba32Float = 11 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Rgba8Unorm = 3 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Rgba8UnormSrgb = 4 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuFormat.Undefined = 0 -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuGraphicsPipeline
+RecursiveAI.OneGpu.GpuGraphicsPipeline.GpuGraphicsPipeline() -> void
+RecursiveAI.OneGpu.GpuMemoryStats
+RecursiveAI.OneGpu.GpuMemoryStats.Allocations.get -> int
+RecursiveAI.OneGpu.GpuMemoryStats.Allocations.init -> void
+RecursiveAI.OneGpu.GpuMemoryStats.GpuMemoryStats() -> void
+RecursiveAI.OneGpu.GpuMemoryStats.GpuMemoryStats(ulong ReservedBytes, ulong UsedBytes, int Allocations, ulong StagingBytes = 0) -> void
+RecursiveAI.OneGpu.GpuMemoryStats.ReservedBytes.get -> ulong
+RecursiveAI.OneGpu.GpuMemoryStats.ReservedBytes.init -> void
+RecursiveAI.OneGpu.GpuMemoryStats.StagingBytes.get -> ulong
+RecursiveAI.OneGpu.GpuMemoryStats.StagingBytes.init -> void
+RecursiveAI.OneGpu.GpuMemoryStats.UsedBytes.get -> ulong
+RecursiveAI.OneGpu.GpuMemoryStats.UsedBytes.init -> void
+RecursiveAI.OneGpu.GpuObject
+RecursiveAI.OneGpu.GpuObject.GpuObject() -> void
+RecursiveAI.OneGpu.GpuObject.Label.get -> string?
+RecursiveAI.OneGpu.GpuObject.Label.init -> void
+RecursiveAI.OneGpu.GpuOutOfMemoryException
+RecursiveAI.OneGpu.GpuOutOfMemoryException.GpuOutOfMemoryException(string! message) -> void
+RecursiveAI.OneGpu.GpuOutOfMemoryException.GpuOutOfMemoryException(string! message, ulong requestedBytes) -> void
+RecursiveAI.OneGpu.GpuOutOfMemoryException.RequestedBytes.get -> ulong
+RecursiveAI.OneGpu.GpuPipelineLayout
+RecursiveAI.OneGpu.GpuPipelineLayout.GpuPipelineLayout() -> void
+RecursiveAI.OneGpu.GpuPipelineLayout.SetCount.get -> int
+RecursiveAI.OneGpu.GpuPipelineLayout.SetCount.init -> void
+RecursiveAI.OneGpu.GpuRenderPass
+RecursiveAI.OneGpu.GpuRenderPass.GpuRenderPass() -> void
+RecursiveAI.OneGpu.GpuRenderPass.SetBindGroup(uint setIndex, RecursiveAI.OneGpu.GpuBindGroup! group) -> void
+RecursiveAI.OneGpu.GpuSampler
+RecursiveAI.OneGpu.GpuSampler.GpuSampler() -> void
+RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.BF16 = 1000141000 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.F16 = 0 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.F32 = 1 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.F64 = 2 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.F8E4M3 = 1000491002 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.F8E5M2 = 1000491003 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.I16 = 4 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.I32 = 5 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.I64 = 6 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.I8 = 3 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.I8Packed = 1000491000 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.U16 = 8 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.U32 = 9 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.U64 = 10 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.U8 = 7 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuScalarType.U8Packed = 1000491001 -> RecursiveAI.OneGpu.GpuScalarType
+RecursiveAI.OneGpu.GpuShader
+RecursiveAI.OneGpu.GpuShader.EntryPoint.get -> string!
+RecursiveAI.OneGpu.GpuShader.EntryPoint.init -> void
+RecursiveAI.OneGpu.GpuShader.GpuShader() -> void
+RecursiveAI.OneGpu.GpuShader.Stage.get -> RecursiveAI.OneGpu.ShaderStage
+RecursiveAI.OneGpu.GpuShader.Stage.init -> void
+RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuSubgroupOperations.Arithmetic = 4 -> RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuSubgroupOperations.Ballot = 8 -> RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuSubgroupOperations.Basic = 1 -> RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuSubgroupOperations.Clustered = 64 -> RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuSubgroupOperations.None = 0 -> RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuSubgroupOperations.Quad = 128 -> RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuSubgroupOperations.Shuffle = 16 -> RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuSubgroupOperations.ShuffleRelative = 32 -> RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuSubgroupOperations.Vote = 2 -> RecursiveAI.OneGpu.GpuSubgroupOperations
+RecursiveAI.OneGpu.GpuSurfaceLostException
+RecursiveAI.OneGpu.GpuSurfaceLostException.GpuSurfaceLostException() -> void
+RecursiveAI.OneGpu.GpuSwapchain
+RecursiveAI.OneGpu.GpuSwapchain.AcquireTimeout.get -> System.TimeSpan
+RecursiveAI.OneGpu.GpuSwapchain.AcquireTimeout.set -> void
+RecursiveAI.OneGpu.GpuSwapchain.GpuSwapchain() -> void
+RecursiveAI.OneGpu.GpuTexture
+RecursiveAI.OneGpu.GpuTexture.ArrayLayers.get -> uint
+RecursiveAI.OneGpu.GpuTexture.ArrayLayers.init -> void
+RecursiveAI.OneGpu.GpuTexture.Depth.get -> uint
+RecursiveAI.OneGpu.GpuTexture.Depth.init -> void
+RecursiveAI.OneGpu.GpuTexture.Dimension.get -> RecursiveAI.OneGpu.TextureDimension
+RecursiveAI.OneGpu.GpuTexture.Dimension.init -> void
+RecursiveAI.OneGpu.GpuTexture.Format.get -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.GpuTexture.Format.init -> void
+RecursiveAI.OneGpu.GpuTexture.GpuTexture() -> void
+RecursiveAI.OneGpu.GpuTexture.Height.get -> uint
+RecursiveAI.OneGpu.GpuTexture.Height.init -> void
+RecursiveAI.OneGpu.GpuTexture.MipLevels.get -> uint
+RecursiveAI.OneGpu.GpuTexture.MipLevels.init -> void
+RecursiveAI.OneGpu.GpuTexture.SampleCount.get -> uint
+RecursiveAI.OneGpu.GpuTexture.SampleCount.init -> void
+RecursiveAI.OneGpu.GpuTexture.Usage.get -> RecursiveAI.OneGpu.TextureUsage
+RecursiveAI.OneGpu.GpuTexture.Usage.init -> void
+RecursiveAI.OneGpu.GpuTexture.Width.get -> uint
+RecursiveAI.OneGpu.GpuTexture.Width.init -> void
+RecursiveAI.OneGpu.GpuTimestampSet
+RecursiveAI.OneGpu.GpuTimestampSet.Count.get -> uint
+RecursiveAI.OneGpu.GpuTimestampSet.Count.init -> void
+RecursiveAI.OneGpu.GpuTimestampSet.GpuTimestampSet() -> void
+RecursiveAI.OneGpu.GpuUnsupportedException
+RecursiveAI.OneGpu.GpuUnsupportedException.Actual.get -> string?
+RecursiveAI.OneGpu.GpuUnsupportedException.Capability.get -> string?
+RecursiveAI.OneGpu.GpuUnsupportedException.Expected.get -> string?
+RecursiveAI.OneGpu.GpuUnsupportedException.GpuUnsupportedException(string! message) -> void
+RecursiveAI.OneGpu.GpuUnsupportedException.GpuUnsupportedException(string! message, string! capability, string! expected, string? actual = null) -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc
+RecursiveAI.OneGpu.GraphicsPipelineDesc.ColorTargets.get -> System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.ColorTargetState>!
+RecursiveAI.OneGpu.GraphicsPipelineDesc.ColorTargets.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Cull.get -> RecursiveAI.OneGpu.CullMode
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Cull.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.DepthClamp.get -> bool
+RecursiveAI.OneGpu.GraphicsPipelineDesc.DepthClamp.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.DepthStencil.get -> RecursiveAI.OneGpu.DepthStencilState?
+RecursiveAI.OneGpu.GraphicsPipelineDesc.DepthStencil.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Front.get -> RecursiveAI.OneGpu.FrontFace
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Front.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.GraphicsPipelineDesc() -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Label.get -> string?
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Label.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Layout.get -> RecursiveAI.OneGpu.GpuPipelineLayout!
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Layout.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Pixel.get -> RecursiveAI.OneGpu.GpuShader?
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Pixel.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.SampleCount.get -> uint
+RecursiveAI.OneGpu.GraphicsPipelineDesc.SampleCount.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Topology.get -> RecursiveAI.OneGpu.PrimitiveTopology
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Topology.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Vertex.get -> RecursiveAI.OneGpu.GpuShader!
+RecursiveAI.OneGpu.GraphicsPipelineDesc.Vertex.init -> void
+RecursiveAI.OneGpu.GraphicsPipelineDesc.VertexBuffers.get -> System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.VertexBufferLayout!>!
+RecursiveAI.OneGpu.GraphicsPipelineDesc.VertexBuffers.init -> void
+RecursiveAI.OneGpu.IndexFormat
+RecursiveAI.OneGpu.IndexFormat.Index16 = 0 -> RecursiveAI.OneGpu.IndexFormat
+RecursiveAI.OneGpu.IndexFormat.Index32 = 1 -> RecursiveAI.OneGpu.IndexFormat
+RecursiveAI.OneGpu.LoadOp
+RecursiveAI.OneGpu.LoadOp.Clear = 1 -> RecursiveAI.OneGpu.LoadOp
+RecursiveAI.OneGpu.LoadOp.DontCare = 2 -> RecursiveAI.OneGpu.LoadOp
+RecursiveAI.OneGpu.LoadOp.Load = 0 -> RecursiveAI.OneGpu.LoadOp
+RecursiveAI.OneGpu.PassTiming
+RecursiveAI.OneGpu.PassTiming.First.get -> uint
+RecursiveAI.OneGpu.PassTiming.First.init -> void
+RecursiveAI.OneGpu.PassTiming.MaxPasses.get -> uint
+RecursiveAI.OneGpu.PassTiming.MaxPasses.init -> void
+RecursiveAI.OneGpu.PassTiming.PassTiming() -> void
+RecursiveAI.OneGpu.PassTiming.PassTiming(RecursiveAI.OneGpu.GpuTimestampSet! Set, uint First, uint MaxPasses) -> void
+RecursiveAI.OneGpu.PassTiming.Set.get -> RecursiveAI.OneGpu.GpuTimestampSet!
+RecursiveAI.OneGpu.PassTiming.Set.init -> void
+RecursiveAI.OneGpu.PresentMode
+RecursiveAI.OneGpu.PresentMode.Immediate = 2 -> RecursiveAI.OneGpu.PresentMode
+RecursiveAI.OneGpu.PresentMode.LowLatency = 1 -> RecursiveAI.OneGpu.PresentMode
+RecursiveAI.OneGpu.PresentMode.Vsync = 0 -> RecursiveAI.OneGpu.PresentMode
+RecursiveAI.OneGpu.PrimitiveTopology
+RecursiveAI.OneGpu.PrimitiveTopology.LineList = 2 -> RecursiveAI.OneGpu.PrimitiveTopology
+RecursiveAI.OneGpu.PrimitiveTopology.PointList = 3 -> RecursiveAI.OneGpu.PrimitiveTopology
+RecursiveAI.OneGpu.PrimitiveTopology.TriangleList = 0 -> RecursiveAI.OneGpu.PrimitiveTopology
+RecursiveAI.OneGpu.PrimitiveTopology.TriangleStrip = 1 -> RecursiveAI.OneGpu.PrimitiveTopology
+RecursiveAI.OneGpu.PushConstantRange
+RecursiveAI.OneGpu.PushConstantRange.PushConstantRange() -> void
+RecursiveAI.OneGpu.PushConstantRange.PushConstantRange(uint Size, RecursiveAI.OneGpu.ShaderStage Stages) -> void
+RecursiveAI.OneGpu.PushConstantRange.Size.get -> uint
+RecursiveAI.OneGpu.PushConstantRange.Size.init -> void
+RecursiveAI.OneGpu.PushConstantRange.Stages.get -> RecursiveAI.OneGpu.ShaderStage
+RecursiveAI.OneGpu.PushConstantRange.Stages.init -> void
+RecursiveAI.OneGpu.ResourceBinding
+RecursiveAI.OneGpu.ResourceBinding.Binding.get -> uint
+RecursiveAI.OneGpu.ResourceBinding.Binding.init -> void
+RecursiveAI.OneGpu.ResourceBinding.Count.get -> uint
+RecursiveAI.OneGpu.ResourceBinding.Count.init -> void
+RecursiveAI.OneGpu.ResourceBinding.Dynamic.get -> bool
+RecursiveAI.OneGpu.ResourceBinding.Dynamic.init -> void
+RecursiveAI.OneGpu.ResourceBinding.Kind.get -> RecursiveAI.OneGpu.ResourceKind
+RecursiveAI.OneGpu.ResourceBinding.Kind.init -> void
+RecursiveAI.OneGpu.ResourceBinding.ResourceBinding() -> void
+RecursiveAI.OneGpu.ResourceBinding.ResourceBinding(uint Set, uint Binding, uint Count, RecursiveAI.OneGpu.ResourceKind Kind, RecursiveAI.OneGpu.ShaderStage Stages) -> void
+RecursiveAI.OneGpu.ResourceBinding.Set.get -> uint
+RecursiveAI.OneGpu.ResourceBinding.Set.init -> void
+RecursiveAI.OneGpu.ResourceBinding.Stages.get -> RecursiveAI.OneGpu.ShaderStage
+RecursiveAI.OneGpu.ResourceBinding.Stages.init -> void
+RecursiveAI.OneGpu.ResourceKind
+RecursiveAI.OneGpu.ResourceKind.ConstantBuffer = 0 -> RecursiveAI.OneGpu.ResourceKind
+RecursiveAI.OneGpu.ResourceKind.ReadOnlyStorageBuffer = 2 -> RecursiveAI.OneGpu.ResourceKind
+RecursiveAI.OneGpu.ResourceKind.SampledTexture = 3 -> RecursiveAI.OneGpu.ResourceKind
+RecursiveAI.OneGpu.ResourceKind.Sampler = 4 -> RecursiveAI.OneGpu.ResourceKind
+RecursiveAI.OneGpu.ResourceKind.StorageBuffer = 1 -> RecursiveAI.OneGpu.ResourceKind
+RecursiveAI.OneGpu.ResourceKind.StorageTexture = 5 -> RecursiveAI.OneGpu.ResourceKind
+RecursiveAI.OneGpu.SamplerDesc
+RecursiveAI.OneGpu.SamplerDesc.AddressU.get -> RecursiveAI.OneGpu.AddressMode
+RecursiveAI.OneGpu.SamplerDesc.AddressU.init -> void
+RecursiveAI.OneGpu.SamplerDesc.AddressV.get -> RecursiveAI.OneGpu.AddressMode
+RecursiveAI.OneGpu.SamplerDesc.AddressV.init -> void
+RecursiveAI.OneGpu.SamplerDesc.AddressW.get -> RecursiveAI.OneGpu.AddressMode
+RecursiveAI.OneGpu.SamplerDesc.AddressW.init -> void
+RecursiveAI.OneGpu.SamplerDesc.Compare.get -> RecursiveAI.OneGpu.CompareFunction?
+RecursiveAI.OneGpu.SamplerDesc.Compare.init -> void
+RecursiveAI.OneGpu.SamplerDesc.MagFilter.get -> RecursiveAI.OneGpu.FilterMode
+RecursiveAI.OneGpu.SamplerDesc.MagFilter.init -> void
+RecursiveAI.OneGpu.SamplerDesc.MaxAnisotropy.get -> float
+RecursiveAI.OneGpu.SamplerDesc.MaxAnisotropy.init -> void
+RecursiveAI.OneGpu.SamplerDesc.MaxLod.get -> float
+RecursiveAI.OneGpu.SamplerDesc.MaxLod.init -> void
+RecursiveAI.OneGpu.SamplerDesc.MinFilter.get -> RecursiveAI.OneGpu.FilterMode
+RecursiveAI.OneGpu.SamplerDesc.MinFilter.init -> void
+RecursiveAI.OneGpu.SamplerDesc.MinLod.get -> float
+RecursiveAI.OneGpu.SamplerDesc.MinLod.init -> void
+RecursiveAI.OneGpu.SamplerDesc.MipFilter.get -> RecursiveAI.OneGpu.FilterMode
+RecursiveAI.OneGpu.SamplerDesc.MipFilter.init -> void
+RecursiveAI.OneGpu.SamplerDesc.SamplerDesc() -> void
+RecursiveAI.OneGpu.ShaderLayouts
+RecursiveAI.OneGpu.ShaderSource
+RecursiveAI.OneGpu.ShaderSource.EntryPoint.get -> string!
+RecursiveAI.OneGpu.ShaderSource.Layout.get -> OneShader.Layouts.EntryLayout?
+RecursiveAI.OneGpu.ShaderSource.Layout.init -> void
+RecursiveAI.OneGpu.ShaderSource.Msl.get -> System.ReadOnlySpan<byte>
+RecursiveAI.OneGpu.ShaderSource.Msl.init -> void
+RecursiveAI.OneGpu.ShaderSource.MslFunctionName.get -> string?
+RecursiveAI.OneGpu.ShaderSource.MslFunctionName.init -> void
+RecursiveAI.OneGpu.ShaderSource.ShaderSource() -> void
+RecursiveAI.OneGpu.ShaderSource.ShaderSource(RecursiveAI.OneGpu.ShaderStage stage, string! entryPoint) -> void
+RecursiveAI.OneGpu.ShaderSource.SpirV.get -> System.ReadOnlySpan<byte>
+RecursiveAI.OneGpu.ShaderSource.SpirV.init -> void
+RecursiveAI.OneGpu.ShaderSource.Stage.get -> RecursiveAI.OneGpu.ShaderStage
+RecursiveAI.OneGpu.ShaderSource.Wgsl.get -> System.ReadOnlySpan<byte>
+RecursiveAI.OneGpu.ShaderSource.Wgsl.init -> void
+RecursiveAI.OneGpu.ShaderSource.WgslEntryPoint.get -> string?
+RecursiveAI.OneGpu.ShaderSource.WgslEntryPoint.init -> void
+RecursiveAI.OneGpu.ShaderStage
+RecursiveAI.OneGpu.ShaderStage.All = RecursiveAI.OneGpu.ShaderStage.Vertex | RecursiveAI.OneGpu.ShaderStage.Pixel | RecursiveAI.OneGpu.ShaderStage.Compute -> RecursiveAI.OneGpu.ShaderStage
+RecursiveAI.OneGpu.ShaderStage.Compute = 4 -> RecursiveAI.OneGpu.ShaderStage
+RecursiveAI.OneGpu.ShaderStage.None = 0 -> RecursiveAI.OneGpu.ShaderStage
+RecursiveAI.OneGpu.ShaderStage.Pixel = 2 -> RecursiveAI.OneGpu.ShaderStage
+RecursiveAI.OneGpu.ShaderStage.Vertex = 1 -> RecursiveAI.OneGpu.ShaderStage
+RecursiveAI.OneGpu.StoreOp
+RecursiveAI.OneGpu.StoreOp.Discard = 1 -> RecursiveAI.OneGpu.StoreOp
+RecursiveAI.OneGpu.StoreOp.Store = 0 -> RecursiveAI.OneGpu.StoreOp
+RecursiveAI.OneGpu.SurfaceKind
+RecursiveAI.OneGpu.SurfaceKind.Android = 4 -> RecursiveAI.OneGpu.SurfaceKind
+RecursiveAI.OneGpu.SurfaceKind.Canvas = 3 -> RecursiveAI.OneGpu.SurfaceKind
+RecursiveAI.OneGpu.SurfaceKind.Metal = 5 -> RecursiveAI.OneGpu.SurfaceKind
+RecursiveAI.OneGpu.SurfaceKind.Wayland = 1 -> RecursiveAI.OneGpu.SurfaceKind
+RecursiveAI.OneGpu.SurfaceKind.Win32 = 2 -> RecursiveAI.OneGpu.SurfaceKind
+RecursiveAI.OneGpu.SurfaceKind.X11 = 0 -> RecursiveAI.OneGpu.SurfaceKind
+RecursiveAI.OneGpu.SurfaceSource
+RecursiveAI.OneGpu.SurfaceSource.CanvasId.get -> string?
+RecursiveAI.OneGpu.SurfaceSource.CanvasId.init -> void
+RecursiveAI.OneGpu.SurfaceSource.Display.get -> nint
+RecursiveAI.OneGpu.SurfaceSource.Display.init -> void
+RecursiveAI.OneGpu.SurfaceSource.Kind.get -> RecursiveAI.OneGpu.SurfaceKind
+RecursiveAI.OneGpu.SurfaceSource.Kind.init -> void
+RecursiveAI.OneGpu.SurfaceSource.SurfaceSource() -> void
+RecursiveAI.OneGpu.SurfaceSource.Window.get -> nint
+RecursiveAI.OneGpu.SurfaceSource.Window.init -> void
+RecursiveAI.OneGpu.SwapchainDesc
+RecursiveAI.OneGpu.SwapchainDesc.ExtraUsage.get -> RecursiveAI.OneGpu.TextureUsage
+RecursiveAI.OneGpu.SwapchainDesc.ExtraUsage.init -> void
+RecursiveAI.OneGpu.SwapchainDesc.Height.get -> uint
+RecursiveAI.OneGpu.SwapchainDesc.Height.init -> void
+RecursiveAI.OneGpu.SwapchainDesc.PresentMode.get -> RecursiveAI.OneGpu.PresentMode
+RecursiveAI.OneGpu.SwapchainDesc.PresentMode.init -> void
+RecursiveAI.OneGpu.SwapchainDesc.Srgb.get -> bool
+RecursiveAI.OneGpu.SwapchainDesc.Srgb.init -> void
+RecursiveAI.OneGpu.SwapchainDesc.SwapchainDesc() -> void
+RecursiveAI.OneGpu.SwapchainDesc.SwapchainDesc(uint Width, uint Height) -> void
+RecursiveAI.OneGpu.SwapchainDesc.Width.get -> uint
+RecursiveAI.OneGpu.SwapchainDesc.Width.init -> void
+RecursiveAI.OneGpu.TextureDesc
+RecursiveAI.OneGpu.TextureDesc.ArrayLayers.get -> uint
+RecursiveAI.OneGpu.TextureDesc.ArrayLayers.init -> void
+RecursiveAI.OneGpu.TextureDesc.Depth.get -> uint
+RecursiveAI.OneGpu.TextureDesc.Depth.init -> void
+RecursiveAI.OneGpu.TextureDesc.Dimension.get -> RecursiveAI.OneGpu.TextureDimension
+RecursiveAI.OneGpu.TextureDesc.Dimension.init -> void
+RecursiveAI.OneGpu.TextureDesc.Format.get -> RecursiveAI.OneGpu.GpuFormat
+RecursiveAI.OneGpu.TextureDesc.Format.init -> void
+RecursiveAI.OneGpu.TextureDesc.Height.get -> uint
+RecursiveAI.OneGpu.TextureDesc.Height.init -> void
+RecursiveAI.OneGpu.TextureDesc.Label.get -> string?
+RecursiveAI.OneGpu.TextureDesc.Label.init -> void
+RecursiveAI.OneGpu.TextureDesc.MipLevels.get -> uint
+RecursiveAI.OneGpu.TextureDesc.MipLevels.init -> void
+RecursiveAI.OneGpu.TextureDesc.SampleCount.get -> uint
+RecursiveAI.OneGpu.TextureDesc.SampleCount.init -> void
+RecursiveAI.OneGpu.TextureDesc.TextureDesc() -> void
+RecursiveAI.OneGpu.TextureDesc.TextureDesc(uint Width, uint Height, RecursiveAI.OneGpu.GpuFormat Format, RecursiveAI.OneGpu.TextureUsage Usage) -> void
+RecursiveAI.OneGpu.TextureDesc.Usage.get -> RecursiveAI.OneGpu.TextureUsage
+RecursiveAI.OneGpu.TextureDesc.Usage.init -> void
+RecursiveAI.OneGpu.TextureDesc.Width.get -> uint
+RecursiveAI.OneGpu.TextureDesc.Width.init -> void
+RecursiveAI.OneGpu.TextureDimension
+RecursiveAI.OneGpu.TextureDimension.Cube = 1 -> RecursiveAI.OneGpu.TextureDimension
+RecursiveAI.OneGpu.TextureDimension.D2 = 0 -> RecursiveAI.OneGpu.TextureDimension
+RecursiveAI.OneGpu.TextureDimension.D3 = 2 -> RecursiveAI.OneGpu.TextureDimension
+RecursiveAI.OneGpu.TextureRegion
+RecursiveAI.OneGpu.TextureRegion.Depth.get -> uint
+RecursiveAI.OneGpu.TextureRegion.Depth.init -> void
+RecursiveAI.OneGpu.TextureRegion.Height.get -> uint
+RecursiveAI.OneGpu.TextureRegion.Height.init -> void
+RecursiveAI.OneGpu.TextureRegion.Layer.get -> uint
+RecursiveAI.OneGpu.TextureRegion.Layer.init -> void
+RecursiveAI.OneGpu.TextureRegion.MipLevel.get -> uint
+RecursiveAI.OneGpu.TextureRegion.MipLevel.init -> void
+RecursiveAI.OneGpu.TextureRegion.TextureRegion() -> void
+RecursiveAI.OneGpu.TextureRegion.TextureRegion(uint MipLevel, uint Layer, uint X, uint Y, uint Z, uint Width, uint Height, uint Depth = 1) -> void
+RecursiveAI.OneGpu.TextureRegion.Width.get -> uint
+RecursiveAI.OneGpu.TextureRegion.Width.init -> void
+RecursiveAI.OneGpu.TextureRegion.X.get -> uint
+RecursiveAI.OneGpu.TextureRegion.X.init -> void
+RecursiveAI.OneGpu.TextureRegion.Y.get -> uint
+RecursiveAI.OneGpu.TextureRegion.Y.init -> void
+RecursiveAI.OneGpu.TextureRegion.Z.get -> uint
+RecursiveAI.OneGpu.TextureRegion.Z.init -> void
+RecursiveAI.OneGpu.TextureUsage
+RecursiveAI.OneGpu.TextureUsage.CopyDestination = 16 -> RecursiveAI.OneGpu.TextureUsage
+RecursiveAI.OneGpu.TextureUsage.CopySource = 8 -> RecursiveAI.OneGpu.TextureUsage
+RecursiveAI.OneGpu.TextureUsage.None = 0 -> RecursiveAI.OneGpu.TextureUsage
+RecursiveAI.OneGpu.TextureUsage.RenderTarget = 4 -> RecursiveAI.OneGpu.TextureUsage
+RecursiveAI.OneGpu.TextureUsage.Sampled = 1 -> RecursiveAI.OneGpu.TextureUsage
+RecursiveAI.OneGpu.TextureUsage.Storage = 2 -> RecursiveAI.OneGpu.TextureUsage
+RecursiveAI.OneGpu.TextureViewDesc
+RecursiveAI.OneGpu.TextureViewDesc.BaseLayer.get -> uint
+RecursiveAI.OneGpu.TextureViewDesc.BaseLayer.init -> void
+RecursiveAI.OneGpu.TextureViewDesc.BaseMip.get -> uint
+RecursiveAI.OneGpu.TextureViewDesc.BaseMip.init -> void
+RecursiveAI.OneGpu.TextureViewDesc.Kind.get -> RecursiveAI.OneGpu.TextureViewKind
+RecursiveAI.OneGpu.TextureViewDesc.Kind.init -> void
+RecursiveAI.OneGpu.TextureViewDesc.LayerCount.get -> uint
+RecursiveAI.OneGpu.TextureViewDesc.LayerCount.init -> void
+RecursiveAI.OneGpu.TextureViewDesc.MipCount.get -> uint
+RecursiveAI.OneGpu.TextureViewDesc.MipCount.init -> void
+RecursiveAI.OneGpu.TextureViewDesc.TextureViewDesc() -> void
+RecursiveAI.OneGpu.TextureViewKind
+RecursiveAI.OneGpu.TextureViewKind.Auto = 0 -> RecursiveAI.OneGpu.TextureViewKind
+RecursiveAI.OneGpu.TextureViewKind.Cube = 3 -> RecursiveAI.OneGpu.TextureViewKind
+RecursiveAI.OneGpu.TextureViewKind.CubeArray = 4 -> RecursiveAI.OneGpu.TextureViewKind
+RecursiveAI.OneGpu.TextureViewKind.D2 = 1 -> RecursiveAI.OneGpu.TextureViewKind
+RecursiveAI.OneGpu.TextureViewKind.D2Array = 2 -> RecursiveAI.OneGpu.TextureViewKind
+RecursiveAI.OneGpu.TextureViewKind.D3 = 5 -> RecursiveAI.OneGpu.TextureViewKind
+RecursiveAI.OneGpu.VertexBufferLayout
+RecursiveAI.OneGpu.VertexBufferLayout.Attributes.get -> System.ReadOnlyMemory<RecursiveAI.OneGpu.VertexElement>
+RecursiveAI.OneGpu.VertexBufferLayout.Attributes.init -> void
+RecursiveAI.OneGpu.VertexBufferLayout.StepMode.get -> RecursiveAI.OneGpu.VertexStepMode
+RecursiveAI.OneGpu.VertexBufferLayout.StepMode.init -> void
+RecursiveAI.OneGpu.VertexBufferLayout.Stride.get -> uint
+RecursiveAI.OneGpu.VertexBufferLayout.Stride.init -> void
+RecursiveAI.OneGpu.VertexBufferLayout.VertexBufferLayout() -> void
+RecursiveAI.OneGpu.VertexElement
+RecursiveAI.OneGpu.VertexElement.Format.get -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexElement.Format.init -> void
+RecursiveAI.OneGpu.VertexElement.Location.get -> uint
+RecursiveAI.OneGpu.VertexElement.Location.init -> void
+RecursiveAI.OneGpu.VertexElement.Offset.get -> uint
+RecursiveAI.OneGpu.VertexElement.Offset.init -> void
+RecursiveAI.OneGpu.VertexElement.VertexElement() -> void
+RecursiveAI.OneGpu.VertexElement.VertexElement(uint Location, RecursiveAI.OneGpu.VertexFormat Format, uint Offset) -> void
+RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.Float1 = 0 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.Float2 = 1 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.Float3 = 2 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.Float4 = 3 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.Half2 = 4 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.Half4 = 5 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.SInt1 = 9 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.SInt2 = 10 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.UInt1 = 6 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.UInt2 = 7 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.UInt4 = 8 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.UInt8x4 = 12 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.UNorm16x2 = 13 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.UNorm16x4 = 14 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexFormat.UNorm8x4 = 11 -> RecursiveAI.OneGpu.VertexFormat
+RecursiveAI.OneGpu.VertexStepMode
+RecursiveAI.OneGpu.VertexStepMode.Instance = 1 -> RecursiveAI.OneGpu.VertexStepMode
+RecursiveAI.OneGpu.VertexStepMode.Vertex = 0 -> RecursiveAI.OneGpu.VertexStepMode
+abstract RecursiveAI.OneGpu.GpuCommandEncoder.BeginComputePass() -> RecursiveAI.OneGpu.GpuComputePass!
+abstract RecursiveAI.OneGpu.GpuCommandEncoder.BeginPassTiming(in RecursiveAI.OneGpu.PassTiming timing) -> void
+abstract RecursiveAI.OneGpu.GpuCommandEncoder.BeginRenderPass(System.ReadOnlySpan<RecursiveAI.OneGpu.ColorAttachment> colors, RecursiveAI.OneGpu.DepthAttachment? depth) -> RecursiveAI.OneGpu.GpuRenderPass!
+abstract RecursiveAI.OneGpu.GpuCommandEncoder.CopyBuffer(RecursiveAI.OneGpu.GpuBuffer! source, ulong sourceOffset, RecursiveAI.OneGpu.GpuBuffer! destination, ulong destinationOffset, ulong size) -> void
+abstract RecursiveAI.OneGpu.GpuCommandEncoder.CopyBufferToTexture(RecursiveAI.OneGpu.GpuBuffer! source, ulong sourceOffset, RecursiveAI.OneGpu.GpuTexture! destination, uint mipLevel, uint layer) -> void
+abstract RecursiveAI.OneGpu.GpuCommandEncoder.CopyTexture(RecursiveAI.OneGpu.GpuTexture! source, RecursiveAI.OneGpu.GpuTexture! destination) -> void
+abstract RecursiveAI.OneGpu.GpuCommandEncoder.CopyTextureToBuffer(RecursiveAI.OneGpu.GpuTexture! source, uint mipLevel, uint layer, RecursiveAI.OneGpu.GpuBuffer! destination, ulong destinationOffset) -> void
+abstract RecursiveAI.OneGpu.GpuCommandEncoder.EndPassTiming() -> uint
+abstract RecursiveAI.OneGpu.GpuCommandEncoder.GenerateMips(RecursiveAI.OneGpu.GpuTexture! texture) -> void
+abstract RecursiveAI.OneGpu.GpuComputePass.Dispatch(uint x, uint y = 1, uint z = 1) -> void
+abstract RecursiveAI.OneGpu.GpuComputePass.DispatchIndirect(RecursiveAI.OneGpu.GpuBuffer! arguments, ulong offset) -> void
+abstract RecursiveAI.OneGpu.GpuComputePass.EndPass() -> void
+abstract RecursiveAI.OneGpu.GpuComputePass.SetBindGroup(uint setIndex, RecursiveAI.OneGpu.GpuBindGroup! group, System.ReadOnlySpan<uint> dynamicOffsets) -> void
+abstract RecursiveAI.OneGpu.GpuComputePass.SetPipeline(RecursiveAI.OneGpu.GpuComputePipeline! pipeline) -> void
+abstract RecursiveAI.OneGpu.GpuComputePass.SetPushConstants(uint offset, System.ReadOnlySpan<byte> data) -> void
+abstract RecursiveAI.OneGpu.GpuDevice.Adapter.get -> RecursiveAI.OneGpu.GpuAdapterInfo!
+abstract RecursiveAI.OneGpu.GpuDevice.Backend.get -> RecursiveAI.OneGpu.GpuBackend
+abstract RecursiveAI.OneGpu.GpuDevice.BeginCommands() -> RecursiveAI.OneGpu.GpuCommandEncoder!
+abstract RecursiveAI.OneGpu.GpuDevice.Capabilities.get -> RecursiveAI.OneGpu.GpuCapabilities
+abstract RecursiveAI.OneGpu.GpuDevice.CreateBindGroup(RecursiveAI.OneGpu.GpuPipelineLayout! layout, uint setIndex, System.ReadOnlySpan<RecursiveAI.OneGpu.BindGroupEntry> entries) -> RecursiveAI.OneGpu.GpuBindGroup!
+abstract RecursiveAI.OneGpu.GpuDevice.CreateBuffer(in RecursiveAI.OneGpu.BufferDesc desc) -> RecursiveAI.OneGpu.GpuBuffer!
+abstract RecursiveAI.OneGpu.GpuDevice.CreateComputePipeline(RecursiveAI.OneGpu.ComputePipelineDesc! desc) -> RecursiveAI.OneGpu.GpuComputePipeline!
+abstract RecursiveAI.OneGpu.GpuDevice.CreateGraphicsPipeline(RecursiveAI.OneGpu.GraphicsPipelineDesc! desc) -> RecursiveAI.OneGpu.GpuGraphicsPipeline!
+abstract RecursiveAI.OneGpu.GpuDevice.CreatePipelineLayout(System.ReadOnlySpan<RecursiveAI.OneGpu.ResourceBinding> bindings) -> RecursiveAI.OneGpu.GpuPipelineLayout!
+abstract RecursiveAI.OneGpu.GpuDevice.CreatePipelineLayout(System.ReadOnlySpan<RecursiveAI.OneGpu.ResourceBinding> bindings, in RecursiveAI.OneGpu.PushConstantRange pushConstants) -> RecursiveAI.OneGpu.GpuPipelineLayout!
+abstract RecursiveAI.OneGpu.GpuDevice.CreateSampler(in RecursiveAI.OneGpu.SamplerDesc desc) -> RecursiveAI.OneGpu.GpuSampler!
+abstract RecursiveAI.OneGpu.GpuDevice.CreateShader(RecursiveAI.OneGpu.ShaderStage stage, System.ReadOnlySpan<byte> spirv, string! entryPoint) -> RecursiveAI.OneGpu.GpuShader!
+abstract RecursiveAI.OneGpu.GpuDevice.CreateSwapchain(in RecursiveAI.OneGpu.SurfaceSource surface, in RecursiveAI.OneGpu.SwapchainDesc desc) -> RecursiveAI.OneGpu.GpuSwapchain!
+abstract RecursiveAI.OneGpu.GpuDevice.CreateTexture(in RecursiveAI.OneGpu.TextureDesc desc) -> RecursiveAI.OneGpu.GpuTexture!
+abstract RecursiveAI.OneGpu.GpuDevice.CreateTimestampSet(uint count) -> RecursiveAI.OneGpu.GpuTimestampSet!
+abstract RecursiveAI.OneGpu.GpuDevice.Dispose() -> void
+abstract RecursiveAI.OneGpu.GpuDevice.ReadBuffer(RecursiveAI.OneGpu.GpuBuffer! buffer, ulong offset, System.Span<byte> destination) -> void
+abstract RecursiveAI.OneGpu.GpuDevice.ReadTexture(RecursiveAI.OneGpu.GpuTexture! texture, uint mipLevel, uint layer, System.Span<byte> destination) -> void
+abstract RecursiveAI.OneGpu.GpuDevice.Submit(RecursiveAI.OneGpu.GpuCommandEncoder! commands) -> void
+abstract RecursiveAI.OneGpu.GpuDevice.TakeValidationMessages() -> string![]!
+abstract RecursiveAI.OneGpu.GpuDevice.TryReadTimestamps(RecursiveAI.OneGpu.GpuTimestampSet! timestamps, uint first, System.Span<ulong> nanoseconds) -> bool
+abstract RecursiveAI.OneGpu.GpuDevice.WaitIdle() -> void
+abstract RecursiveAI.OneGpu.GpuDevice.WriteBuffer(RecursiveAI.OneGpu.GpuBuffer! buffer, ulong offset, System.ReadOnlySpan<byte> data) -> void
+abstract RecursiveAI.OneGpu.GpuDevice.WriteTexture(RecursiveAI.OneGpu.GpuTexture! texture, in RecursiveAI.OneGpu.TextureRegion region, System.ReadOnlySpan<byte> data) -> void
+abstract RecursiveAI.OneGpu.GpuDevice.WriteTexture(RecursiveAI.OneGpu.GpuTexture! texture, uint mipLevel, uint layer, System.ReadOnlySpan<byte> data) -> void
+abstract RecursiveAI.OneGpu.GpuObject.Dispose() -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.Draw(uint vertexCount, uint instanceCount = 1, uint firstVertex = 0, uint firstInstance = 0) -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.DrawIndexed(uint indexCount, uint instanceCount = 1, uint firstIndex = 0, int baseVertex = 0, uint firstInstance = 0) -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.DrawIndexedIndirect(RecursiveAI.OneGpu.GpuBuffer! arguments, ulong offset, uint drawCount = 1) -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.DrawIndirect(RecursiveAI.OneGpu.GpuBuffer! arguments, ulong offset, uint drawCount = 1) -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.EndPass() -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.SetBindGroup(uint setIndex, RecursiveAI.OneGpu.GpuBindGroup! group, System.ReadOnlySpan<uint> dynamicOffsets) -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.SetIndexBuffer(RecursiveAI.OneGpu.GpuBuffer! buffer, RecursiveAI.OneGpu.IndexFormat format, ulong offset = 0) -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.SetPipeline(RecursiveAI.OneGpu.GpuGraphicsPipeline! pipeline) -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.SetPushConstants(uint offset, System.ReadOnlySpan<byte> data) -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.SetScissor(int x, int y, uint width, uint height) -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.SetVertexBuffer(uint slot, RecursiveAI.OneGpu.GpuBuffer! buffer, ulong offset = 0) -> void
+abstract RecursiveAI.OneGpu.GpuRenderPass.SetViewport(float x, float y, float width, float height, float minDepth = 0, float maxDepth = 1) -> void
+abstract RecursiveAI.OneGpu.GpuSwapchain.Format.get -> RecursiveAI.OneGpu.GpuFormat
+abstract RecursiveAI.OneGpu.GpuSwapchain.Height.get -> uint
+abstract RecursiveAI.OneGpu.GpuSwapchain.ImageCount.get -> int
+abstract RecursiveAI.OneGpu.GpuSwapchain.Present() -> void
+abstract RecursiveAI.OneGpu.GpuSwapchain.Resize(uint width, uint height) -> void
+abstract RecursiveAI.OneGpu.GpuSwapchain.TryAcquire(out RecursiveAI.OneGpu.GpuTexture! backbuffer) -> RecursiveAI.OneGpu.AcquireStatus
+abstract RecursiveAI.OneGpu.GpuSwapchain.Width.get -> uint
+const RecursiveAI.OneGpu.DispatchIndirectArgs.Size = 12 -> int
+const RecursiveAI.OneGpu.DrawIndexedIndirectArgs.Size = 20 -> int
+const RecursiveAI.OneGpu.DrawIndirectArgs.Size = 16 -> int
+const RecursiveAI.OneGpu.GpuDevice.DefaultComputeUsage = RecursiveAI.OneGpu.BufferUsage.Storage | RecursiveAI.OneGpu.BufferUsage.CopySource | RecursiveAI.OneGpu.BufferUsage.CopyDestination -> RecursiveAI.OneGpu.BufferUsage
+const RecursiveAI.OneGpu.GpuDevice.DynamicOffsetAlignment = 256 -> uint
+const RecursiveAI.OneGpu.GpuDevice.MaxFramesInFlight = 2 -> int
+const RecursiveAI.OneGpu.GpuDevice.MaxPushConstantBytes = 128 -> uint
+const RecursiveAI.OneGpu.GpuDevice.StagingBudgetBytes = 33554432 -> ulong
+override RecursiveAI.OneGpu.GpuCooperativeMatrixShape.ToString() -> string!
+static RecursiveAI.OneGpu.BindGroupEntry.ForBuffer(uint binding, RecursiveAI.OneGpu.GpuBuffer! buffer) -> RecursiveAI.OneGpu.BindGroupEntry
+static RecursiveAI.OneGpu.BindGroupEntry.ForBuffer(uint binding, RecursiveAI.OneGpu.GpuBuffer! buffer, ulong offset, ulong size) -> RecursiveAI.OneGpu.BindGroupEntry
+static RecursiveAI.OneGpu.BindGroupEntry.ForBuffers(uint binding, System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.GpuBuffer!>! buffers, ulong size = 0) -> RecursiveAI.OneGpu.BindGroupEntry
+static RecursiveAI.OneGpu.BindGroupEntry.ForSampler(uint binding, RecursiveAI.OneGpu.GpuSampler! sampler) -> RecursiveAI.OneGpu.BindGroupEntry
+static RecursiveAI.OneGpu.BindGroupEntry.ForSamplers(uint binding, System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.GpuSampler!>! samplers) -> RecursiveAI.OneGpu.BindGroupEntry
+static RecursiveAI.OneGpu.BindGroupEntry.ForTexture(uint binding, RecursiveAI.OneGpu.GpuTexture! texture) -> RecursiveAI.OneGpu.BindGroupEntry
+static RecursiveAI.OneGpu.BindGroupEntry.ForTexture(uint binding, RecursiveAI.OneGpu.GpuTexture! texture, in RecursiveAI.OneGpu.TextureViewDesc view) -> RecursiveAI.OneGpu.BindGroupEntry
+static RecursiveAI.OneGpu.BindGroupEntry.ForTextures(uint binding, System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.GpuTexture!>! textures) -> RecursiveAI.OneGpu.BindGroupEntry
+static RecursiveAI.OneGpu.BlendState.Additive.get -> RecursiveAI.OneGpu.BlendState
+static RecursiveAI.OneGpu.BlendState.AlphaBlend.get -> RecursiveAI.OneGpu.BlendState
+static RecursiveAI.OneGpu.BlendState.Premultiplied.get -> RecursiveAI.OneGpu.BlendState
+static RecursiveAI.OneGpu.ColorAttachment.Clear(RecursiveAI.OneGpu.GpuTexture! target, float r, float g, float b, float a) -> RecursiveAI.OneGpu.ColorAttachment
+static RecursiveAI.OneGpu.GpuComputeCapabilities.None.get -> RecursiveAI.OneGpu.GpuComputeCapabilities!
+static RecursiveAI.OneGpu.GpuDevice.BytesPerTexel(RecursiveAI.OneGpu.GpuFormat format) -> uint
+static RecursiveAI.OneGpu.GpuDevice.LevelByteSize(RecursiveAI.OneGpu.GpuFormat format, uint width, uint height, uint depth, uint mipLevel) -> ulong
+static RecursiveAI.OneGpu.GpuDevice.LevelByteSize(RecursiveAI.OneGpu.GpuFormat format, uint width, uint height, uint mipLevel) -> ulong
+static RecursiveAI.OneGpu.GpuTexture.FullMipCount(uint width, uint height) -> uint
+static RecursiveAI.OneGpu.GpuTexture.FullMipCount(uint width, uint height, uint depth) -> uint
+static RecursiveAI.OneGpu.SamplerDesc.Linear.get -> RecursiveAI.OneGpu.SamplerDesc
+static RecursiveAI.OneGpu.SamplerDesc.Nearest.get -> RecursiveAI.OneGpu.SamplerDesc
+static RecursiveAI.OneGpu.ShaderLayouts.Bindings(System.ReadOnlySpan<OneShader.Layouts.EntryLayout!> entries, System.ReadOnlySpan<(uint Set, uint Binding)> dynamic = default(System.ReadOnlySpan<(uint Set, uint Binding)>), System.ReadOnlySpan<(uint Set, RecursiveAI.OneGpu.ShaderStage Stages)> widenSets = default(System.ReadOnlySpan<(uint Set, RecursiveAI.OneGpu.ShaderStage Stages)>), OneShader.Layouts.UnionOptions? options = null) -> RecursiveAI.OneGpu.ResourceBinding[]!
+static RecursiveAI.OneGpu.ShaderLayouts.PushConstants(System.ReadOnlySpan<OneShader.Layouts.EntryLayout!> entries) -> RecursiveAI.OneGpu.PushConstantRange
+static RecursiveAI.OneGpu.ShaderLayouts.Vertex(OneShader.Layouts.EntryLayout! entry, RecursiveAI.OneGpu.VertexStepMode step = RecursiveAI.OneGpu.VertexStepMode.Vertex, OneShader.Layouts.VertexLayoutOverrides? overrides = null) -> RecursiveAI.OneGpu.VertexBufferLayout!
+static RecursiveAI.OneGpu.ShaderLayouts.VertexStreams(OneShader.Layouts.EntryLayout! entry, params OneShader.Layouts.VertexStream[]! streams) -> RecursiveAI.OneGpu.VertexBufferLayout![]!
+static RecursiveAI.OneGpu.SurfaceSource.Android(nint nativeWindow) -> RecursiveAI.OneGpu.SurfaceSource
+static RecursiveAI.OneGpu.SurfaceSource.Canvas(string! canvasId) -> RecursiveAI.OneGpu.SurfaceSource
+static RecursiveAI.OneGpu.SurfaceSource.MetalLayer(nint layer) -> RecursiveAI.OneGpu.SurfaceSource
+static RecursiveAI.OneGpu.SurfaceSource.Wayland(nint display, nint surface) -> RecursiveAI.OneGpu.SurfaceSource
+static RecursiveAI.OneGpu.SurfaceSource.Win32(nint hinstance, nint hwnd) -> RecursiveAI.OneGpu.SurfaceSource
+static RecursiveAI.OneGpu.SurfaceSource.X11(nint display, nint window) -> RecursiveAI.OneGpu.SurfaceSource
+static RecursiveAI.OneGpu.TextureRegion.Rect(uint mip, uint layer, uint x, uint y, uint width, uint height) -> RecursiveAI.OneGpu.TextureRegion
+static RecursiveAI.OneGpu.TextureViewDesc.Layer(uint layer) -> RecursiveAI.OneGpu.TextureViewDesc
+static RecursiveAI.OneGpu.TextureViewDesc.Mip(uint mip) -> RecursiveAI.OneGpu.TextureViewDesc
+virtual RecursiveAI.OneGpu.GpuCommandEncoder.ReportWork(double operations) -> void
+virtual RecursiveAI.OneGpu.GpuCommandEncoder.SplitSubmission() -> void
+virtual RecursiveAI.OneGpu.GpuComputePipeline.ReportedWorkgroupMemoryBytes.get -> uint
+virtual RecursiveAI.OneGpu.GpuDevice.CreateShader(in RecursiveAI.OneGpu.ShaderSource source) -> RecursiveAI.OneGpu.GpuShader!
+virtual RecursiveAI.OneGpu.GpuDevice.MemoryStats.get -> RecursiveAI.OneGpu.GpuMemoryStats
+virtual RecursiveAI.OneGpu.GpuDevice.ReadBufferAsync(RecursiveAI.OneGpu.GpuBuffer! buffer, ulong offset, System.Memory<byte> destination) -> System.Threading.Tasks.ValueTask
+virtual RecursiveAI.OneGpu.GpuDevice.ReadTextureAsync(RecursiveAI.OneGpu.GpuTexture! texture, uint mipLevel, uint layer, System.Memory<byte> destination) -> System.Threading.Tasks.ValueTask

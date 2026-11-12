@@ -1,0 +1,5 @@
+#nullable enable
+RecursiveAI.OneGpu.WebGpu.WebGpu
+static RecursiveAI.OneGpu.WebGpu.WebGpu.CreateDeviceAsync(RecursiveAI.OneGpu.GpuDeviceOptions? options = null) -> System.Threading.Tasks.Task<RecursiveAI.OneGpu.GpuDevice!>!
+static RecursiveAI.OneGpu.WebGpu.WebGpu.IsAvailable.get -> bool
+static RecursiveAI.OneGpu.WebGpu.WebGpu.SettleAsync(RecursiveAI.OneGpu.GpuDevice! device) -> System.Threading.Tasks.Task!

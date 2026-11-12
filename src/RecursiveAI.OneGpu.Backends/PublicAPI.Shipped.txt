@@ -1,0 +1,8 @@
+#nullable enable
+RecursiveAI.OneGpu.GpuBackends
+static RecursiveAI.OneGpu.GpuBackends.CreateDevice(RecursiveAI.OneGpu.GpuDeviceOptions? options = null) -> RecursiveAI.OneGpu.GpuDevice!
+static RecursiveAI.OneGpu.GpuBackends.CreateDeviceAsync(RecursiveAI.OneGpu.GpuDeviceOptions? options = null) -> System.Threading.Tasks.Task<RecursiveAI.OneGpu.GpuDevice!>!
+static RecursiveAI.OneGpu.GpuBackends.EnumerateAdapters() -> System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.GpuAdapterInfo!>!
+static RecursiveAI.OneGpu.GpuBackends.IsAvailable.get -> bool
+static RecursiveAI.OneGpu.GpuBackends.Selected.get -> RecursiveAI.OneGpu.GpuBackend
+static RecursiveAI.OneGpu.GpuBackends.UnavailableReason.get -> string!

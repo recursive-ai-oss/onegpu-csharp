@@ -1,0 +1,5 @@
+#nullable enable
+RecursiveAI.OneGpu.Vulkan.VulkanGpu
+static RecursiveAI.OneGpu.Vulkan.VulkanGpu.CreateDevice(RecursiveAI.OneGpu.GpuDeviceOptions? options = null) -> RecursiveAI.OneGpu.GpuDevice!
+static RecursiveAI.OneGpu.Vulkan.VulkanGpu.EnumerateAdapters() -> System.Collections.Generic.IReadOnlyList<RecursiveAI.OneGpu.GpuAdapterInfo!>!
+static RecursiveAI.OneGpu.Vulkan.VulkanGpu.IsAvailable.get -> bool
