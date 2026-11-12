@@ -13,6 +13,7 @@
 // Grid: x = tiles of pixels, y = tiles of output channels, z = images * groups.
 
 #include "Functions.hlsl"
+#include "TileAccum.hlsli"
 
 #if F16
 typedef uint Elem;
@@ -127,7 +128,9 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     int iw0 = (int)(ow * P.SW) - (int)P.PW;
 
     // Sixteen named scalars rather than an array: the Metal output of the shader compiler keeps indexed arrays in thread-local memory.
-    float c00 = 0.0; float c01 = 0.0; float c02 = 0.0; float c03 = 0.0; float c10 = 0.0; float c11 = 0.0; float c12 = 0.0; float c13 = 0.0; float c20 = 0.0; float c21 = 0.0; float c22 = 0.0; float c23 = 0.0; float c30 = 0.0; float c31 = 0.0; float c32 = 0.0; float c33 = 0.0;
+    TILE_DECLARE(c)
+    TILE_DECLARE(u)
+    uint groupSteps = 0;
 
     for (uint k0 = 0; k0 < P.K; k0 += BK)
     {
@@ -176,6 +179,7 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
 
         GroupMemoryBarrierWithGroupSync();
 
+        TILE_DECLARE(t)
         [unroll] for (uint kk2 = 0; kk2 < BK; kk2++)
         {
             float a0 = As[kk2][ty + 0];
@@ -186,26 +190,21 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
             float b1 = Bs[kk2][tx + 16];
             float b2 = Bs[kk2][tx + 32];
             float b3 = Bs[kk2][tx + 48];
-            c00 = mad(a0, b0, c00);
-            c01 = mad(a0, b1, c01);
-            c02 = mad(a0, b2, c02);
-            c03 = mad(a0, b3, c03);
-            c10 = mad(a1, b0, c10);
-            c11 = mad(a1, b1, c11);
-            c12 = mad(a1, b2, c12);
-            c13 = mad(a1, b3, c13);
-            c20 = mad(a2, b0, c20);
-            c21 = mad(a2, b1, c21);
-            c22 = mad(a2, b2, c22);
-            c23 = mad(a2, b3, c23);
-            c30 = mad(a3, b0, c30);
-            c31 = mad(a3, b1, c31);
-            c32 = mad(a3, b2, c32);
-            c33 = mad(a3, b3, c33);
+            TILE_STEP(t, a0, a1, a2, a3, b0, b1, b2, b3)
+        }
+
+        TILE_ADD(u, t)
+        if (++groupSteps == TILE_STEPS_PER_GROUP)
+        {
+            TILE_ADD(c, u)
+            TILE_ZERO(u)
+            groupSteps = 0;
         }
 
         GroupMemoryBarrierWithGroupSync();
     }
+
+    TILE_ADD(c, u)
 
     StoreElement(m0 + ty + 0, n0 + tx + 0, c00);
     StoreElement(m0 + ty + 0, n0 + tx + 16, c01);
