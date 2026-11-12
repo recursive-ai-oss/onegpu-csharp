@@ -17,6 +17,13 @@ public sealed class Int8Throughput
         ("minilm ffn-up 1x128", 128, 1536, 384),
         ("minilm ffn-down 1x128", 128, 384, 1536),
         ("minilm ffn-up 8x128", 1024, 1536, 384),
+        ("whisper enc proj 1500", 1500, 768, 768),
+        ("whisper enc ffn-up 1500", 1500, 3072, 768),
+        ("whisper dec proj 1", 1, 768, 768),
+        ("whisper dec ffn-up 1", 1, 3072, 768),
+        ("whisper dec ffn-down 1", 1, 768, 3072),
+        ("whisper dec logits 1", 1, 51865, 768),
+        ("whisper dec proj 4", 4, 768, 768),
         ("square 2048", 2048, 2048, 2048),
     ];
 
@@ -35,23 +42,33 @@ public sealed class Int8Throughput
         var hasDot = d.Capabilities.Compute.Int8DotProduct;
         foreach (var allowDot in new[] { true, false })
         {
-            // Without the instruction both rounds run the portable kernel, which has one tile.
-            if (!allowDot && !hasDot)
-            {
-                continue;
-            }
-
             foreach (var tile in allowDot && hasDot ? new[] { 0, 32, 64 } : new[] { 0 })
             {
                 var g = new Int8Gemm(d, new Int8GemmOptions { AllowPackedDot = allowDot, Tile = tile });
+                if (gemms.Any(x => x.Gemm.Variant == g.Variant && tile == 0))
+                {
+                    g.Dispose();
+                    continue;
+                }
+
                 gemms.Add((tile == 0 ? "auto" : $"tile{tile}", g));
             }
         }
 
         foreach (var (tile, gemm) in gemms)
         {
+            if (Environment.GetEnvironmentVariable("ONEGPU_INT8_VARIANT") is { Length: > 0 } variant && !gemm.Variant.Contains(variant, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             foreach (var (name, m, n, k) in Shapes)
             {
+                if (Environment.GetEnvironmentVariable("ONEGPU_INT8_ONLY") is { Length: > 0 } only && !name.Contains(only, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 var p = new Int8GemmProblem(m, n, k) { Lda = k, Ldb = n };
                 using var a = d.CreateBuffer<sbyte>(m * k);
                 using var b = d.CreateBuffer<sbyte>(k * n);

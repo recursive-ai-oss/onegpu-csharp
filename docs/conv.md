@@ -29,6 +29,7 @@
 | depthwise (one input channel per group, any channel multiplier) | direct kernel, one thread per output element, window order fixed |
 | every other convolution on the portable matrix kernel (float32 everywhere; half on devices without matrix hardware) | **implicit GEMM**: a 64x64x16 tile kernel that gathers the input window while it loads the tile; float32 fuses bias, residual and activation into the store, half writes float32 accumulators and an epilogue pass finishes |
 | float32 on Metal (simdgroup matrices) | **implicit GEMM on matrix hardware** (`ConvCoopF32.hlsl`): the 4-subgroup 64x64x16 simdgroup tile of `Gemm`, the window gathered while the input tile is staged (no column matrix), the bias, residual and activation applied as the result is stored, so the output is written once. A pointwise convolution (1x1, stride 1, no padding) whose tile lies inside the output reads weights and input straight from memory with no staging. Grids under 40 workgroups use a 64x32 tile. Both modes (see Determinism) |
+| float16 on Metal (simdgroup matrices) | the same implicit kernel with half operands (`ConvCoop.hlsli` with `CONV_F16`): float32 accumulation on one chain, bias, residual and activation applied as the halves are stored; with split k or an activation the kernel does not fuse, it leaves float32 planes in the accumulator scratch for the epilogue pass |
 | 1x1, stride 1, no padding, with matrix hardware (half) | `Gemm` on the input as it lies (no unfolding) |
 | any other shape with matrix hardware (half) | im2col (Chellapilla et al., 2006) into the column scratch, then `Gemm` (cooperative or simdgroup matrices) and the epilogue pass; groups loop |
 | transposed convolution | `Gemm` of the transposed weights with the input, then a gathering col2im (one thread per output element, no atomics) with the same epilogue |
@@ -118,3 +119,17 @@ ranges of k added in range order. On Apple GPUs `GpuKernelMode.Deterministic` ru
 output tile is summed by one simdgroup in k order), which is 1.6-1.7x faster than the scalar tile it used before (ResNet-50 b1 27-29 ms to 16.4-17.1 ms, b8 145 to 90 ms, MobileNetV3 b1 5.2 to 3.8 ms); elsewhere it selects the portable
 matrix kernel. Results are bit-identical run to run on one device and driver in that mode; `Fast` may use matrix hardware on other devices, whose summation order is the hardware's. The tests run two passes of seven layer shapes
 (two split) per element type and compare hashes.
+
+### Apple M2, float16 and the pointwise edge tile (indicative, GPU timestamps, 100 calls per command buffer)
+
+The last pixel tile of a pointwise layer whose pixel count is not a multiple of 64 (14 x 14 = 196, 28 x 28 = 784) is moved back to end at the last pixel, so it is a whole tile and reads its operands directly. It recomputes pixels the previous tile also writes, from the same inputs in the same order, so the stores agree.
+Float32 with the wide tile stages straight into the tiles (register staging cost occupancy there: ResNet-50 b8 127 ms against 110); the narrow tile keeps it.
+
+| Convolution layers of | batch | float32 before | float32 now | float16 before | float16 now |
+|---|---|---|---|---|---|
+| ResNet-50 | 1 | 17.0 ms | 12.4 ms | 18.0 ms | 9.7 ms |
+| ResNet-50 | 8 | 110 ms | 105 ms | 114 ms | 62 ms |
+
+Where the float16 time goes at batch 1 (9.7 ms): 3x3 layers 4.8 ms at about 800 GFLOP/s, 1x1 stride-1 layers about 3.5 ms (600-1400), stride-2 1x1 projections about 1 ms, the stem 0.3 ms; the measured matrix peak of the M2 is about 1.7 TFLOP/s.
+The 3x3 layers are bound by the gathering of the input tile (one scattered load per element); loading the weights straight from memory (no change) and compile-time 3 x 3 window arithmetic (9% on those layers) do not close it.
+A kernel that reads padded input rows as matrix operands would need a padded copy of the input and a weight layout with the taps outermost.

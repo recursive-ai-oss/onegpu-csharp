@@ -158,7 +158,7 @@ public sealed class Gemm : IDisposable
     // A device that only has 64-wide subgroups is not eligible and runs the portable kernel (see docs/gemm.md).
     const uint MatrixSubgroupSize = 32;
 
-    static bool MatrixVariantFits(GpuDevice device, GemmElementType type, bool wide)
+    internal static bool MatrixVariantFits(GpuDevice device, GemmElementType type, bool wide)
     {
         // float32 fragments exist only as simdgroup matrices; no Vulkan device lists them, so that kernel is built for Metal alone.
         if (device.Backend is not (GpuBackend.Vulkan or GpuBackend.Metal) || (type == GemmElementType.F32 && device.Backend != GpuBackend.Metal))

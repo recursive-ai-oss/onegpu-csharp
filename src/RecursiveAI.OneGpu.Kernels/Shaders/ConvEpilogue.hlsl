@@ -1,6 +1,6 @@
 // The end of a convolution: y = activation(accumulator + bias[channel] + residual), element-wise over an NCHW tensor.
 //
-// F32 works in place: the matrix product wrote the accumulators into y and this pass rewrites them. F16 reads float32 accumulators from a
+// F32 works in place: the matrix product wrote the accumulators into y and this pass rewrites them. F16 reads float32 accumulators (or, from the matrix kernel, planes of partial sums added in range order) from a
 // scratch buffer and writes halves (the bias and the residual are halves too). The order is the one of the graph the operator fuses: bias
 // first, then the residual, then the activation, each rounded in float32.
 //
@@ -48,6 +48,11 @@ float EpilogueValue(uint i)
 {
 #if F16
     float v = EpAcc[CP.OffAcc + i];
+    // The matrix kernel leaves one plane per range of k (a single plane when only the activation is left to this pass).
+    for (uint s = 1u; s < CP.Splits; s++)
+    {
+        v += EpAcc[CP.OffAcc + s * CP.SplitStride + i];
+    }
 #elif SPLIT
     float v = EpAcc[CP.OffAcc + i];
     for (uint s = 1u; s < CP.Splits; s++)

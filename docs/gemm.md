@@ -132,3 +132,10 @@ latency than four.
 
 Single-row products (decode, M = 1) are memory bound and use one row of a 64-row tile: 100 to 150 GFLOP/s on the RTX 4070, 2 to 9 on the M2.
 A skinny-M variant and larger tiles for the Apple GPU are the next tuning steps.
+
+## 8-bit products on Apple matrix hardware
+
+`Int8Gemm` on Metal stages each tile as float16 after subtracting the zero points (a value in -255..255 is exact in float16), multiplies on the simdgroup matrices (products exact in float32) and adds float32 sums of at most 2^24 in magnitude. A chunk of 16 steps of 16 (256 terms) is exact for two operands up to 255 in magnitude; 32 or 64 steps when an operand is a plain int8. After each chunk the sums become int32 and add into int32 registers, which wrap like the definition. The result is the same integer for every summation order, so one kernel serves both modes. Tests include K = 4096 at the extremes.
+`Int8GemmSkinny` takes M <= 16 with a non-transposed B (decoder steps): 32 columns x 4 rows per workgroup, k split 16 ways, integer sums.
+Indicative on an M2 (GPU timestamps): the matrix tile reaches 0.67-0.77 TOPS at BERT, MiniLM and Whisper-encoder shapes against 0.52-0.58 for the portable tile (1.3x, staging bound); decoder-step products with M = 1 take 28 us (projection), 80 us (ffn up), 97 us (ffn down) and 2.97 ms (vocabulary) against 271, 619, 1099 and 10020 us.
+A transposed B with M = 1 still takes the portable path.

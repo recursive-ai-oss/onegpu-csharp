@@ -7,9 +7,12 @@
 // never do, so the product passes through an OR with the top bit of P.Epi, which the host keeps zero but no compiler can know: the multiply's
 // result is then not the operand of an addition.
 
+// A shader that wants these after its push constants in the Metal argument numbering declares them itself and defines EPILOGUE_BINDINGS_DECLARED.
+#if !defined(EPILOGUE_BINDINGS_DECLARED)
 [[vk::binding(5, 0)]] StructuredBuffer<uint> EBias;
 [[vk::binding(6, 0)]] StructuredBuffer<uint> EScale;
 [[vk::binding(7, 0)]] StructuredBuffer<uint> EFBias;
+#endif
 
 uint StoreValue(int sum, uint col)
 {

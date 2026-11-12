@@ -76,8 +76,8 @@ public sealed class ConvThroughput
         using var w = ConvTests.Upload<T>(d, Rig.Random(nw, 2, -0.1f, 0.1f), 0, 0f);
         using var bb = ConvTests.Upload<T>(d, new float[p.OutChannels], 0, 0f);
         using var y = ConvTests.Upload<T>(d, new float[ny], 0, 0f);
-        const int Warm = 2;
-        const int Iterations = 10;
+        var warm = 2;
+        var iterations = Environment.GetEnvironmentVariable("ONEGPU_CONV_BENCH_ITERS") is { Length: > 0 } it ? int.Parse(it) : 10;
         const int MaxPasses = 8;
         void Record(GpuCommandEncoder e)
         {
@@ -91,7 +91,7 @@ public sealed class ConvThroughput
             }
         }
 
-        for (var i = 0; i < Warm; i++)
+        for (var i = 0; i < warm; i++)
         {
             var e = d.BeginCommands();
             Record(e);
@@ -99,9 +99,9 @@ public sealed class ConvThroughput
         }
 
         d.WaitIdle();
-        // One command buffer of Iterations calls, timed on the host; a second, with pass timestamps, for the GPU figure.
+        // One command buffer of iterations calls, timed on the host; a second, with pass timestamps, for the GPU figure.
         var enc = d.BeginCommands();
-        for (var i = 0; i < Iterations; i++)
+        for (var i = 0; i < iterations; i++)
         {
             Record(enc);
         }
@@ -109,16 +109,16 @@ public sealed class ConvThroughput
         var sw = Stopwatch.StartNew();
         d.Submit(enc);
         d.WaitIdle();
-        var wall = sw.Elapsed.TotalMilliseconds * 1e6 / Iterations;
+        var wall = sw.Elapsed.TotalMilliseconds * 1e6 / iterations;
         if (!timestamps)
         {
             return (wall, wall);
         }
 
-        using var set = d.CreateTimestampSet(2 * Iterations * MaxPasses);
+        using var set = d.CreateTimestampSet((uint)(2 * iterations * MaxPasses));
         var enc2 = d.BeginCommands();
-        enc2.BeginPassTiming(new PassTiming(set, 0, Iterations * MaxPasses));
-        for (var i = 0; i < Iterations; i++)
+        enc2.BeginPassTiming(new PassTiming(set, 0, (uint)(iterations * MaxPasses)));
+        for (var i = 0; i < iterations; i++)
         {
             Record(enc2);
         }
@@ -128,9 +128,9 @@ public sealed class ConvThroughput
         d.WaitIdle();
         var t = new ulong[2 * passes];
         Assert.True(d.TryReadTimestamps(set, 0, t));
-        var per = passes / Iterations;
-        var sums = new double[Iterations];
-        for (var i = 0; i < Iterations; i++)
+        var per = passes / iterations;
+        var sums = new double[iterations];
+        for (var i = 0; i < iterations; i++)
         {
             for (var j = 0; j < per; j++)
             {
@@ -140,6 +140,6 @@ public sealed class ConvThroughput
         }
 
         Array.Sort(sums);
-        return (sums[Iterations / 2], wall);
+        return (sums[iterations / 2], wall);
     }
 }

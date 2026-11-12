@@ -7,13 +7,16 @@ namespace RecursiveAI.OneGpu.Kernels;
 public sealed class Int8GemmOptions
 {
     /// <summary>
-    /// Allow the packed 8-bit dot-product variant when the device has one. Set to false to force the portable variant, for example to compare
-    /// the two or to rule the instruction out when chasing a problem.
+    /// Allow the packed 8-bit dot-product variant when the device has one. Set to false to force the portable variant (which also rules out the
+    /// matrix-hardware variant of Apple GPUs), for example to compare the variants or to rule the hardware out when chasing a problem.
     /// </summary>
     public bool AllowPackedDot { get; init; } = true;
 
     /// <summary>Test hook for the packed-dot variant: 0 chooses the tile by problem size, 32 or 64 forces that tile edge.</summary>
     internal int Tile { get; init; }
+
+    /// <summary>Test hook: false keeps the matrix-hardware variant off while leaving the packed-dot variant on.</summary>
+    internal bool AllowMatrixHardware { get; init; } = true;
 
 }
 
@@ -133,9 +136,11 @@ public sealed class Int8Gemm : IDisposable
     readonly GpuDevice _device;
     readonly int _maxBindGroups;
     readonly bool _dot;
+    readonly bool _matrix;
     readonly bool _discrete;
     readonly int _tile;
     readonly WideKernelPipeline?[] _gemm = new WideKernelPipeline?[2];
+    WideKernelPipeline? _rows;
     readonly WideKernelPipeline _epilogue;
     readonly GpuBuffer<uint> _dummy;
     readonly List<GpuBuffer<int>> _scratch = [];
@@ -152,9 +157,10 @@ public sealed class Int8Gemm : IDisposable
         _maxBindGroups = GpuKernelBindings.Check(maxCachedBindGroups);
         var compute = device.Capabilities.Compute;
         _dot = compute.Int8DotProduct && (compute.ShaderFeatures & DeviceFeatures.IntegerDotProduct) != 0 && (options?.AllowPackedDot ?? true);
+        _matrix = (options?.AllowPackedDot ?? true) && (options?.AllowMatrixHardware ?? true) && !_dot && MatrixVariantFits(device);
         _tile = options?.Tile ?? 0;
         _discrete = device.Adapter.Kind == AdapterKind.Discrete;
-        Variant = _dot ? "packed-dot-tile64x64x32" : "portable-tile64x64x16";
+        Variant = _dot ? "packed-dot-tile64x64x32" : _matrix ? "simdgroup-matrix-half-tile64x64x16" : "portable-tile64x64x16";
         try
         {
             _gemm[0] = CreateGemm(small: false);
@@ -170,8 +176,32 @@ public sealed class Int8Gemm : IDisposable
         _dummy = device.CreateBuffer<uint>(4, label: "int8 gemm unused operand");
     }
 
+    // The matrix variant stages bytes as float16 and runs 16x16x16 float16 fragments with float32 accumulation (Int8GemmCoop.hlsl), so it needs the device to
+    // offer exactly what the float16 matrix product needs plus the memory of its tiles; only Apple GPUs list such fragments (the packed dot, where there is one, wins elsewhere).
+    static bool MatrixVariantFits(GpuDevice device)
+    {
+        const uint TileBytes = ((64 * 24) + (16 * 72)) * 2 + (2 * 4 * 1024);
+        var cc = device.Capabilities.Compute;
+        return device.Backend == GpuBackend.Metal
+            && Gemm.MatrixVariantFits(device, GemmElementType.F16, wide: false)
+            && (Int8GemmCoop.Int8GemmMatrix.Layout.RequiredFeatures & ~cc.ShaderFeatures) == DeviceFeatures.None
+            && cc.MaxWorkgroupMemoryBytes >= TileBytes;
+    }
+
+    const int RowsMaxM = 16;
+    const int RowsTileN = 32;
+    const int RowsTileM = 4;
+
+    WideKernelPipeline CreateRows() =>
+        new(_device, new ShaderSource(ShaderStage.Compute, Int8GemmSkinny.Int8GemmRows.EntryPoint) { Msl = Int8GemmSkinny.Int8GemmRows.Msl, MslFunctionName = Int8GemmSkinny.Int8GemmRows.MslFunctionName, Layout = Int8GemmSkinny.Int8GemmRows.Layout }, GemmWords, "int8 gemm few rows", _maxBindGroups);
+
     WideKernelPipeline CreateGemm(bool small)
     {
+        if (_matrix)
+        {
+            return new WideKernelPipeline(_device, new ShaderSource(ShaderStage.Compute, Int8GemmCoop.Int8GemmMatrix.EntryPoint) { Msl = Int8GemmCoop.Int8GemmMatrix.Msl, MslFunctionName = Int8GemmCoop.Int8GemmMatrix.MslFunctionName, Layout = Int8GemmCoop.Int8GemmMatrix.Layout }, GemmWords, "int8 gemm matrix hardware", _maxBindGroups, 32);
+        }
+
         if (_dot)
         {
             var v = Int8GemmDot.Variants.Get(new Int8GemmDot.Key(small: small)).Int8GemmDotTiled;
@@ -333,13 +363,14 @@ public sealed class Int8Gemm : IDisposable
     }
 
     /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
-    public int BindGroupsCreated => WideKernelPipeline.Total(_gemm) + _epilogue.Created;
+    public int BindGroupsCreated => WideKernelPipeline.Total(_gemm) + (_rows?.Created ?? 0) + _epilogue.Created;
 
     /// <summary>Drops the cached bind groups (the pipelines stay); the next call with a buffer set builds its group again. Call it once the GPU has finished with the buffers they refer to.</summary>
     public void ReleaseBindings()
     {
         _gemm[0]?.ReleaseBindings();
         _gemm[1]?.ReleaseBindings();
+        _rows?.ReleaseBindings();
         _epilogue.ReleaseBindings();
     }
 
@@ -348,6 +379,7 @@ public sealed class Int8Gemm : IDisposable
     {
         _gemm[0]?.Dispose();
         _gemm[1]?.Dispose();
+        _rows?.Dispose();
         _epilogue.Dispose();
         _dummy.Dispose();
         foreach (var s in _scratch)
@@ -527,9 +559,11 @@ public sealed class Int8Gemm : IDisposable
         var ldb = p.Ldb == 0 ? Math.Max(p.TransposeB ? p.K : p.N, 1) : p.Ldb;
         var big = ((long)((p.N + 63) / 64) * ((p.M + 63) / 64)) * p.Batch;
         var small = _dot && (_tile == 32 || (_tile == 0 && _discrete && big < SmallTileGroups));
+        // Few rows against weights stored K x N: the weights stream through once, so the row kernel (32 columns by 4 rows per workgroup) beats a 64 x 64 tile.
+        var rows = _matrix && !p.TransposeB && p.M <= RowsMaxM && ((p.N + RowsTileN - 1) / RowsTileN) <= (long)(_device.Capabilities.Compute.MaxWorkgroupCount == 0 ? 65535u : _device.Capabilities.Compute.MaxWorkgroupCount);
         var edge = small ? 32 : 64;
-        var groupsX = (uint)((p.N + edge - 1) / edge);
-        var groupsY = (uint)((p.M + edge - 1) / edge);
+        var groupsX = (uint)((p.N + (rows ? RowsTileN : edge) - 1) / (rows ? RowsTileN : edge));
+        var groupsY = (uint)((p.M + (rows ? RowsTileM : edge) - 1) / (rows ? RowsTileM : edge));
         var limit = _device.Capabilities.Compute.MaxWorkgroupCount;
         var fold = false;
         if (limit != 0 && (groupsX > limit || groupsY > limit))
@@ -574,6 +608,11 @@ public sealed class Int8Gemm : IDisposable
             flags |= 512u;
         }
 
+        if (_matrix && !rows)
+        {
+            flags |= ExactSteps(aSigned && za is null, bSigned && zb is null) << 16;
+        }
+
         Span<uint> w = stackalloc uint[GemmWords];
         w[0] = (uint)p.M;
         w[1] = (uint)p.N;
@@ -595,8 +634,16 @@ public sealed class Int8Gemm : IDisposable
         w[17] = epi.OffFloatBias;
         w[18] = groupsX;
         var dummy = _dummy.Buffer;
-        var pipeline = _gemm[small ? 1 : 0] ??= CreateGemm(small);
+        var pipeline = rows ? _rows ??= CreateRows() : _gemm[small ? 1 : 0] ??= CreateGemm(small);
         pipeline.Record(encoder, w, groupsX, groupsY, (uint)p.Batch, [a, b, c, zaBuffer ?? dummy, zbBuffer ?? dummy, epi.IntBias ?? dummy, epi.Scale ?? dummy, epi.FloatBias ?? dummy]);
+    }
+
+    // How many 16-wide steps of k the matrix variant may add in float32 before it must fold into int32: a term is a product of two values that are
+    // each at most 255 in magnitude (a byte minus a zero point), or 128 for a plain int8, and every partial sum of integers stays exact while it is at most 2^24.
+    static uint ExactSteps(bool aPlainInt8, bool bPlainInt8)
+    {
+        var bound = (aPlainInt8 ? 128L : 255L) * (bPlainInt8 ? 128L : 255L);
+        return (uint)Math.Min(64L, (1L << 24) / bound / 16);
     }
 
     void Finish(GpuCommandEncoder encoder, in Int8GemmProblem p, GpuBuffer sums, int offsetSums, GpuBuffer output, int offsetOutput, uint mode, int zeroPointY, Int8Operand<int>? intBias, GpuBuffer? scale, Int8Operand<float>? floatBias, int offsetScale, uint scaleFlags)

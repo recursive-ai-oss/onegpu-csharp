@@ -18,11 +18,11 @@ internal sealed class WideKernelPipeline : IDisposable
     readonly int _span;
     readonly int _maxGroups;
 
-    public WideKernelPipeline(GpuDevice device, in ShaderSource source, int pushWords, string label, int maxGroups = GpuKernelBindings.DefaultMaxCachedBindGroups)
+    public WideKernelPipeline(GpuDevice device, in ShaderSource source, int pushWords, string label, int maxGroups = GpuKernelBindings.DefaultMaxCachedBindGroups, uint requiredSubgroupSize = 0)
     {
         _device = device;
         _maxGroups = maxGroups;
-        _kernel = device.CreateComputeKernel(source, label);
+        _kernel = requiredSubgroupSize == 0 ? device.CreateComputeKernel(source, label) : device.CreateComputeKernel(source, label, requiredSubgroupSize);
         if (_kernel.PushConstants.Size != pushWords * 4 || _kernel.Bindings.Count > MaxBuffers)
         {
             var kernel = _kernel;

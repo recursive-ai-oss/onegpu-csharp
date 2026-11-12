@@ -30,6 +30,10 @@
     <OneShader Include="Shaders/ConvIntegerPack.hlsl" />
     <OneShader Include="Shaders/ConvCoopF32.hlsl" Targets="Msl" />
     <OneShader Include="Shaders/ConvCoopNarrowF32.hlsl" Targets="Msl" />
+    <OneShader Include="Shaders/ConvCoopF16.hlsl" Targets="Msl" Enable16BitTypes="true" />
+    <OneShader Include="Shaders/ConvCoopNarrowF16.hlsl" Targets="Msl" Enable16BitTypes="true" />
+    <OneShader Include="Shaders/ConvCoopSplitF16.hlsl" Targets="Msl" Enable16BitTypes="true" />
+    <OneShader Include="Shaders/ConvCoopNarrowSplitF16.hlsl" Targets="Msl" Enable16BitTypes="true" />
     <OneShader Include="Shaders/DepthwiseConv.hlsl" Axes="F16" />
     <OneShader Include="Shaders/GlobalPool.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Im2Col.hlsl" Axes="F16" />
@@ -51,6 +55,8 @@
     <OneShader Include="Shaders/RecurrentStep.hlsl" Axes="F16;SMALL;STD;CELL=LSTM|GRU|RNN" />
     <OneShader Include="Shaders/Int8GemmDot.hlsl" Axes="SMALL" />
     <OneShader Include="Shaders/Int8GemmKernel.hlsl" />
+    <OneShader Include="Shaders/Int8GemmCoop.hlsl" Targets="Msl" Enable16BitTypes="true" />
+    <OneShader Include="Shaders/Int8GemmSkinny.hlsl" Targets="Msl" />
     <OneShader Include="Shaders/Norm.hlsl" Axes="F16;WAVE" />
     <OneShader Include="Shaders/Reduce.hlsl" Axes="F16;WAVE;RRANK=R1|RN" />
     <OneShader Include="Shaders/ScatterElements.hlsl" Axes="ELEM=W16|W32|W64" />

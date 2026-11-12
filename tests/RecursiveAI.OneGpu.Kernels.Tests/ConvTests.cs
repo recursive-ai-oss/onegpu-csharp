@@ -146,7 +146,7 @@ public sealed class ConvTests
             using var br = res is null ? null : Upload<Half>(d, res, p.OffsetResidual, 0.25f);
             using var by = Upload<Half>(d, new float[ny], p.OffsetY, Sentinel);
             using var cols = chunkImages is not null && perImageColumns > 0 ? d.CreateBuffer<Half>(GpuKernelBuffers.PaddedHalfLength((int)(perImageColumns * chunkImages.Value) + 2)) : null;
-            using var acc = chunkImages is not null ? d.CreateBuffer<float>(Math.Max(1, p.OutChannels * p.OutHeight * p.OutWidth * chunkImages.Value)) : null;
+            using var acc = chunkImages is not null ? d.CreateBuffer<float>(Math.Max(1, (int)(k.Scratch(p, true).AccumulatorElementsPerImage * chunkImages.Value))) : null;
             Rig.Run(d, e => k.Encode(e, p, bx, bw, bb, br, by, cols, acc));
             var got = await Read(by, p.OffsetY, ny, pad);
             var (s, r) = Rig.Errors(got, want);

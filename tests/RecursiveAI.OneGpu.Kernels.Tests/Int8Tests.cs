@@ -245,6 +245,19 @@ public sealed class Int8Tests
             }
         }
 
+        // The longest sums: every byte at an extreme, K up to 4096 (the matrix variant adds 256 to 1024 terms in float32 before it folds into int32; each of
+        // these sums reaches a quarter of the int32 range or more, so a lost bit anywhere shows), with and without zero points, and with few rows for the row kernel.
+        foreach (var fill in new[] { 0x00, 0x7F, 0x80, 0xFF })
+        {
+            for (var s = 0; s < 4; s++)
+            {
+                foreach (var (m, n, k) in new[] { (33, 35, 4096), (3, 70, 4096), (65, 64, 1024) })
+                {
+                    cases.Add(new Case { Name = $"long extreme {fill:X2} {m}x{n}x{k}", P = Problem(m, n, k, transB: (s & 1) != 0), ASigned = (s & 1) != 0, BSigned = (s & 2) != 0, ZaMode = (s + fill) % 3, ZbMode = (s + 1) % 3, Fill = fill });
+                }
+            }
+        }
+
         foreach (var (name, gemm) in Configs(d, all: true))
         {
             using (gemm)

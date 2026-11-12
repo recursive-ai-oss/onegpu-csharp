@@ -72,8 +72,10 @@ public sealed class ConvKernels : IDisposable
     readonly ConvPipeline?[] _convGemm = new ConvPipeline?[3];
     ConvPipeline? _convCoop;
     ConvPipeline? _convCoopNarrow;
+    readonly ConvPipeline?[] _convCoopHalf = new ConvPipeline?[4];   // index: 2 if the narrow tile + 1 if it leaves float32 planes for the epilogue pass
     Gemm? _gemm32;
     Gemm? _gemm16;
+    Gemm? _probe16;
     Gemm? _probe;   // a fast-mode product, to ask whether the device has simdgroup matrices when the instance is deterministic
     GpuBuffer<float>? _dummy;
     GpuBuffer<float>? _ownColumns32;
@@ -172,13 +174,22 @@ public sealed class ConvKernels : IDisposable
         long colPerImage = variant == ConvVariant.Im2ColMatrixProduct && !UsesCoopImplicit(half) && !UsesImplicitGemm(half)
             ? (long)problem.InChannels * problem.KernelHeight * problem.KernelWidth * ohw
             : 0;
+        var accPerImage = half && variant != ConvVariant.Depthwise ? yImage : 0;
         if (variant != ConvVariant.Depthwise && UsesCoopImplicit(half))
         {
             var (_, splits, _) = CoopPlan(problem);
-            colPerImage = splits > 1 ? splits * yImage : 0;
+            if (half)
+            {
+                // Halves leave float32 planes (one per range of k) for the epilogue pass only when k is cut or the activation is not fused into the kernel.
+                colPerImage = 0;
+                accPerImage = splits > 1 || !FusableActivation(problem.Activation.Op) ? splits * yImage : 0;
+            }
+            else
+            {
+                colPerImage = splits > 1 ? splits * yImage : 0;
+            }
         }
 
-        var accPerImage = half && variant != ConvVariant.Depthwise ? yImage : 0;
         return new ConvScratch(colPerImage * problem.Batch, accPerImage * problem.Batch, colPerImage, accPerImage);
     }
 
@@ -360,12 +371,16 @@ public sealed class ConvKernels : IDisposable
         var (narrow, kSplits, kPerSplit) = coop ? CoopPlan(p) : (false, 1, (int)kElems);
         // With float32 operands the implicit kernel applies the bias, residual and the activations it knows as it stores; anything else is left to the epilogue pass.
         // A split convolution leaves all of that to the pass that adds the ranges.
-        var fused = implicitGemm && !half && kSplits == 1 && FusableActivation(p.Activation.Op);
+        var fused = implicitGemm && (coop || !half) && kSplits == 1 && FusableActivation(p.Activation.Op);
         long colPerImage = pointwise || implicitGemm ? 0 : (long)p.InChannels * p.KernelHeight * p.KernelWidth * ohw;
-        if (kSplits > 1)
+        if (kSplits > 1 && !half)
         {
             colPerImage = kSplits * yImage;
         }
+
+        // Halves on the matrix kernel keep float32 planes in the accumulator scratch when the epilogue pass has to finish the sums.
+        var planes = coop && half && !fused;
+        var accPerImage = planes ? kSplits * yImage : yImage;
 
         if (colPerImage > 0)
         {
@@ -390,18 +405,18 @@ public sealed class ConvKernels : IDisposable
             CheckScratchRange(ConvName, nameof(columns), cols.Buffer, columnsOffset, chunk * colPerImage, [(nameof(x), x.Buffer, p.OffsetX, xImage * p.Batch), (nameof(w), w.Buffer, p.OffsetW, (long)p.OutChannels * kElems), (nameof(y), y.Buffer, p.OffsetY, yImage * p.Batch), (nameof(residual), residual?.Buffer, p.OffsetResidual, yImage * p.Batch), (nameof(bias), bias?.Buffer, p.OffsetBias, p.OutChannels)]);
         }
 
-        if (half)
+        if (half && (!coop || planes))
         {
-            acc = accumulators ?? OwnAccumulators(yImage, chunk);
+            acc = accumulators ?? OwnAccumulators(accPerImage, chunk);
             CheckScratchOffset(ConvName, nameof(accumulators), accumulatorsOffset, acc.Length);
-            var fit = (acc.Length - accumulatorsOffset) / yImage;
+            var fit = (acc.Length - accumulatorsOffset) / accPerImage;
             if (fit < 1)
             {
-                throw new GpuKernelShapeException(ConvName, nameof(accumulators), $"the scratch holds {acc.Length - accumulatorsOffset} elements from its offset; one image needs {yImage}");
+                throw new GpuKernelShapeException(ConvName, nameof(accumulators), $"the scratch holds {acc.Length - accumulatorsOffset} elements from its offset; one image needs {accPerImage}");
             }
 
             chunk = Math.Min(chunk, fit);
-            CheckScratchRange(ConvName, nameof(accumulators), acc.Buffer, accumulatorsOffset, chunk * yImage, [(nameof(columns), cols?.Buffer, columnsOffset, chunk * colPerImage)]);
+            CheckScratchRange(ConvName, nameof(accumulators), acc.Buffer, accumulatorsOffset, chunk * accPerImage, [(nameof(columns), cols?.Buffer, columnsOffset, chunk * colPerImage)]);
         }
 
         var tilesX = ((ohw + (narrow ? 31 : 63)) / (narrow ? 32 : 64));
@@ -427,7 +442,7 @@ public sealed class ConvKernels : IDisposable
             var cn = (int)Math.Min(chunk, p.Batch - n0);
             if (implicitGemm)
             {
-                var pipe = coop ? (narrow ? (_convCoopNarrow ??= CreateConvCoop(true)) : (_convCoop ??= CreateConvCoop(false))) : (_convGemm[kind] ??= CreateConvGemm(half));
+                var pipe = coop ? (half ? (_convCoopHalf[(narrow ? 2 : 0) + (planes ? 1 : 0)] ??= CreateConvCoopHalf(narrow, planes)) : narrow ? (_convCoopNarrow ??= CreateConvCoop(true)) : (_convCoop ??= CreateConvCoop(false))) : (_convGemm[kind] ??= CreateConvGemm(half));
                 cg[0] = (uint)coutG;
                 cg[1] = (uint)ohw;
                 cg[2] = (uint)kElems;
@@ -446,7 +461,7 @@ public sealed class ConvKernels : IDisposable
                 cg[15] = (uint)p.PadLeft;
                 cg[16] = (uint)(p.OffsetX + (n0 * xImage));
                 cg[17] = (uint)p.OffsetW;
-                cg[18] = half ? (uint)accumulatorsOffset : (uint)(p.OffsetY + (n0 * yImage));
+                cg[18] = half && (!coop || planes) ? (uint)accumulatorsOffset : (uint)(p.OffsetY + (n0 * yImage));
                 cg[19] = (uint)p.OffsetBias;
                 cg[20] = (uint)(p.OffsetResidual + (n0 * yImage));
                 cg[21] = (uint)p.OutChannels;
@@ -454,7 +469,7 @@ public sealed class ConvKernels : IDisposable
                 cg[23] = fused ? act : 0u;
                 cg[24] = fused ? p0 : 0u;
                 cg[25] = fused ? p1 : 0u;
-                var target = half ? acc!.Buffer : y.Buffer;
+                var target = half && (!coop || planes) ? acc!.Buffer : y.Buffer;
                 var useBias = fused && bias is not null ? bias.Buffer : DummyFloat().Buffer;
                 var useRes = fused && residual is not null ? residual.Buffer : DummyFloat().Buffer;
                 var groupsZ = (uint)(cn * p.Groups);
@@ -463,7 +478,15 @@ public sealed class ConvKernels : IDisposable
                     cg[26] = 0;
                     cg[27] = 0;
                     cg[28] = 0;
-                    if (kSplits > 1)
+                    if (planes)
+                    {
+                        // Halves: one plane per range of k in the float32 accumulator scratch (also with one range, when the epilogue pass applies the activation).
+                        cg[26] = kSplits > 1 ? (uint)kPerSplit : 0u;
+                        cg[27] = (uint)(cn * yImage);
+                        cg[28] = groupsZ;
+                        groupsZ *= (uint)kSplits;
+                    }
+                    else if (kSplits > 1)
                     {
                         // The planes of partial sums go to the column scratch; z runs split-major.
                         target = cols!.Buffer;
@@ -531,11 +554,11 @@ public sealed class ConvKernels : IDisposable
 
             if (needEpilogue)
             {
-                var pipe = _epilogue[kSplits > 1 ? 2 : kind] ??= CreateEpilogue(half, kSplits > 1);
+                var pipe = _epilogue[half ? 1 : kSplits > 1 ? 2 : 0] ??= CreateEpilogue(half, !half && kSplits > 1);
                 var count = (long)cn * yImage;
                 e[0] = (uint)count;
                 e[1] = (uint)(p.OffsetY + (n0 * yImage));
-                e[2] = (uint)(kSplits > 1 ? columnsOffset : accumulatorsOffset);
+                e[2] = (uint)(half ? accumulatorsOffset : kSplits > 1 ? columnsOffset : accumulatorsOffset);
                 e[3] = (uint)p.OffsetBias;
                 e[4] = (uint)(p.OffsetResidual + (n0 * yImage));
                 e[5] = (uint)ohw;
@@ -604,8 +627,8 @@ public sealed class ConvKernels : IDisposable
     // Deterministic mode takes it too: a simdgroup matrix product is a fixed function of its operands, every output tile is summed by one simdgroup in the order of k
     // (or of the shape-determined ranges of k, added in range order), and nothing here depends on scheduling. The tests compare two runs bit for bit.
     bool UsesCoopImplicit(bool half) =>
-        AllowImplicit && AllowCoopImplicit && !half && _device.Backend == GpuBackend.Metal
-        && (_mode == GpuKernelMode.Fast ? GemmVariantFloat32 : (_probe ??= new Gemm(_device, GemmElementType.F32, GpuKernelMode.Fast, _gemmOptions, _maxBindGroups)).Variant).StartsWith("simdgroup", StringComparison.Ordinal);
+        AllowImplicit && AllowCoopImplicit && _device.Backend == GpuBackend.Metal
+        && (_mode == GpuKernelMode.Fast ? (half ? GemmVariantFloat16 : GemmVariantFloat32) : (half ? (_probe16 ??= new Gemm(_device, GemmElementType.F16, GpuKernelMode.Fast, _gemmOptions, _maxBindGroups)) : (_probe ??= new Gemm(_device, GemmElementType.F32, GpuKernelMode.Fast, _gemmOptions, _maxBindGroups))).Variant).StartsWith("simdgroup", StringComparison.Ordinal);
 
     // Activations the implicit kernel applies itself (see ConvAct in ConvGemm.hlsl).
     static bool FusableActivation(GpuUnaryOp op) =>
@@ -902,7 +925,7 @@ public sealed class ConvKernels : IDisposable
     }
 
     /// <summary>How many bind groups the family has built so far; it stops growing once the buffer sets in use are cached (see <see cref="ReleaseBindings"/>).</summary>
-    public int BindGroupsCreated => KernelPipeline.Total(_im2col, _epilogue, _depthwise, _col2im) + ConvPipeline.Total(_convGemm) + (_convCoop?.Created ?? 0) + (_convCoopNarrow?.Created ?? 0) + (_gemm32?.BindGroupsCreated ?? 0) + (_gemm16?.BindGroupsCreated ?? 0) + (_probe?.BindGroupsCreated ?? 0);
+    public int BindGroupsCreated => KernelPipeline.Total(_im2col, _epilogue, _depthwise, _col2im) + ConvPipeline.Total(_convGemm) + (_convCoop?.Created ?? 0) + (_convCoopNarrow?.Created ?? 0) + ConvPipeline.Total(_convCoopHalf) + (_gemm32?.BindGroupsCreated ?? 0) + (_gemm16?.BindGroupsCreated ?? 0) + (_probe?.BindGroupsCreated ?? 0) + (_probe16?.BindGroupsCreated ?? 0);
 
     /// <summary>
     /// Drops every cached bind group. Call it after disposing buffers that will not be used again, so the groups do not keep them alive.
@@ -925,10 +948,16 @@ public sealed class ConvKernels : IDisposable
 
         _convCoop?.ReleaseBindings();
         _convCoopNarrow?.ReleaseBindings();
+        foreach (var c in _convCoopHalf)
+        {
+            c?.ReleaseBindings();
+        }
+
 
         _gemm32?.ReleaseBindings();
         _gemm16?.ReleaseBindings();
         _probe?.ReleaseBindings();
+        _probe16?.ReleaseBindings();
     }
 
     /// <summary>Releases the pipelines, bind groups and the instance's own scratch once the GPU has finished with them.</summary>
@@ -953,10 +982,18 @@ public sealed class ConvKernels : IDisposable
         _convCoop = null;
         _convCoopNarrow?.Dispose();
         _convCoopNarrow = null;
+        for (var i = 0; i < _convCoopHalf.Length; i++)
+        {
+            _convCoopHalf[i]?.Dispose();
+            _convCoopHalf[i] = null;
+        }
+
         _gemm32?.Dispose();
         _gemm16?.Dispose();
         _probe?.Dispose();
         _probe = null;
+        _probe16?.Dispose();
+        _probe16 = null;
         _dummy?.Dispose();
         _ownColumns32?.Dispose();
         _ownColumns16?.Dispose();
@@ -991,6 +1028,20 @@ public sealed class ConvKernels : IDisposable
     {
         var e = ConvGemm.Variants.Get(new ConvGemm.Key(f16: half)).ConvGemmTiled;
         return new ConvPipeline(_device, KernelSources.Make(e.EntryPoint, e.SpirV, e.Msl, e.MslFunctionName, e.Wgsl, e.WgslEntryPoint, e.Layout), 26, "conv-gemm", _maxBindGroups);
+    }
+
+    ConvPipeline CreateConvCoopHalf(bool narrow, bool planes)
+    {
+        if (planes)
+        {
+            return narrow
+                ? new ConvPipeline(_device, new ShaderSource(ShaderStage.Compute, ConvCoopNarrowSplitF16.ConvCoop.EntryPoint) { Msl = ConvCoopNarrowSplitF16.ConvCoop.Msl, MslFunctionName = ConvCoopNarrowSplitF16.ConvCoop.MslFunctionName, Layout = ConvCoopNarrowSplitF16.ConvCoop.Layout }, 29, "conv-coop-f16-narrow-planes", _maxBindGroups, 32)
+                : new ConvPipeline(_device, new ShaderSource(ShaderStage.Compute, ConvCoopSplitF16.ConvCoop.EntryPoint) { Msl = ConvCoopSplitF16.ConvCoop.Msl, MslFunctionName = ConvCoopSplitF16.ConvCoop.MslFunctionName, Layout = ConvCoopSplitF16.ConvCoop.Layout }, 29, "conv-coop-f16-planes", _maxBindGroups, 32);
+        }
+
+        return narrow
+            ? new ConvPipeline(_device, new ShaderSource(ShaderStage.Compute, ConvCoopNarrowF16.ConvCoop.EntryPoint) { Msl = ConvCoopNarrowF16.ConvCoop.Msl, MslFunctionName = ConvCoopNarrowF16.ConvCoop.MslFunctionName, Layout = ConvCoopNarrowF16.ConvCoop.Layout }, 29, "conv-coop-f16-narrow", _maxBindGroups, 32)
+            : new ConvPipeline(_device, new ShaderSource(ShaderStage.Compute, ConvCoopF16.ConvCoop.EntryPoint) { Msl = ConvCoopF16.ConvCoop.Msl, MslFunctionName = ConvCoopF16.ConvCoop.MslFunctionName, Layout = ConvCoopF16.ConvCoop.Layout }, 29, "conv-coop-f16", _maxBindGroups, 32);
     }
 
     ConvPipeline CreateConvCoop(bool narrow)
