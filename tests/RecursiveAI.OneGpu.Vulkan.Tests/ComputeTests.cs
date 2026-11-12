@@ -172,8 +172,10 @@ public sealed class ComputeTests
         Assert.True(total <= best.Wall * 1.02, $"GPU time {total / 1e6:F2} ms exceeds wall time {best.Wall / 1e6:F2} ms");
         Assert.True(total >= best.Wall * 0.3, $"GPU time {total / 1e6:F2} ms is far below wall time {best.Wall / 1e6:F2} ms");
 
-        // The second pass does twice the work of the first.
-        Assert.InRange(best.Second / best.First, 1.4, 2.8);
+        // The second pass does twice the work of the first. A software driver on a few CPU cores spends a fixed time per pass beside the work
+        // (thread wake-up and dispatch), so twice the work can measure as a little under 1.4 times; a wrong tick rate is off by a factor of
+        // two or more, which these bounds still catch.
+        Assert.InRange(best.Second / best.First, 1.25, 2.8);
         Console.WriteLine($"compute pass timing on {d.Adapter.Name}: {best.First / 1e6:F3} ms and {best.Second / 1e6:F3} ms of {best.Wall / 1e6:F3} ms wall (iterations {iterations})");
     }
 
