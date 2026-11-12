@@ -46,20 +46,28 @@ public sealed class AccumulationAccuracyTests
         return r;
     }
 
-    public static IEnumerable<TheoryDataRow<int, int, int>> GemmShapes()
-    {
-        yield return new(64, 64, 768);
-        yield return new(64, 64, 3072);
-        yield return new(64, 64, 4096);
-        yield return new(1500, 768, 3072); // Whisper-small encoder fc2
-    }
+    // Whisper-small encoder fc2 is the last shape. The browser runs the reference on one WebAssembly thread, so it keeps to 3e8 multiply-adds.
+    static readonly (int M, int N, int K)[] GemmShapes = [(64, 64, 768), (64, 64, 3072), (64, 64, 4096), (1500, 768, 3072)];
 
-    [Theory]
-    [MemberData(nameof(GemmShapes))]
-    public async Task Float32GemmErrorAgainstDouble(int m, int n, int k)
+    [Fact]
+    public async Task Float32GemmErrorAgainstDouble()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
+        foreach (var (m, n, k) in GemmShapes)
+        {
+#if WEB_BACKEND
+            if ((long)m * n * k > 300_000_000)
+            {
+                continue;
+            }
+#endif
+            await CheckGemm(d, m, n, k);
+        }
+    }
+
+    static async Task CheckGemm(GpuDevice d, int m, int n, int k)
+    {
         foreach (var biased in new[] { false, true })
         {
             var (a, b) = Data(m * k, k * n, m + n + k, biased);
@@ -83,21 +91,34 @@ public sealed class AccumulationAccuracyTests
         }
     }
 
-    public static IEnumerable<TheoryDataRow<string, int, int, int, int, int, int, int>> ConvShapes()
-    {
-        // name, in channels, height, width, out channels, kernel h, kernel w, stride (width); pad is "same" for the kernel size.
-        yield return new("whisper stem 1 (80 -> 384, k3, 3000 frames)", 80, 1, 3000, 384, 1, 3, 1);
-        yield return new("whisper stem 2 (384 -> 384, k3, stride 2)", 384, 1, 3000, 384, 1, 3, 2);
-        yield return new("resnet-50 stage 1 3x3 (64 -> 64, 56x56)", 64, 56, 56, 64, 3, 3, 1);
-        yield return new("resnet-50 stage 4 3x3 (512 -> 512, 7x7)", 512, 7, 7, 512, 3, 3, 1);
-    }
+    // Name, input channels, height, width, output channels, kernel height, kernel width, stride along the width; padding keeps the size.
+    static readonly (string Name, int Cin, int H, int W, int Cout, int Kh, int Kw, int Stride)[] ConvShapes =
+    [
+        ("whisper stem 1 (80 -> 384, k3, 3000 frames)", 80, 1, 3000, 384, 1, 3, 1),
+        ("whisper stem 2 (384 -> 384, k3, stride 2)", 384, 1, 3000, 384, 1, 3, 2),
+        ("resnet-50 stage 1 3x3 (64 -> 64, 56x56)", 64, 56, 56, 64, 3, 3, 1),
+        ("resnet-50 stage 4 3x3 (512 -> 512, 7x7)", 512, 7, 7, 512, 3, 3, 1),
+    ];
 
-    [Theory]
-    [MemberData(nameof(ConvShapes))]
-    public async Task Float32ConvolutionErrorAgainstDouble(string name, int cin, int h, int w, int cout, int kh, int kw, int stride)
+    [Fact]
+    public async Task Float32ConvolutionErrorAgainstDouble()
     {
         using var gpu = new GpuFixture();
         var d = gpu.Device;
+        foreach (var (name, cin, h, w, cout, kh, kw, stride) in ConvShapes)
+        {
+#if WEB_BACKEND
+            if ((long)cin * kh * kw * cout * (h * w / stride) > 300_000_000)
+            {
+                continue;
+            }
+#endif
+            await CheckConv(d, name, cin, h, w, cout, kh, kw, stride);
+        }
+    }
+
+    static async Task CheckConv(GpuDevice d, string name, int cin, int h, int w, int cout, int kh, int kw, int stride)
+    {
         var p = new ConvProblem(1, cin, h, w, cout, kh, kw)
         {
             StrideWidth = stride,
