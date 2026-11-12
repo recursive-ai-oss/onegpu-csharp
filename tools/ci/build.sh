@@ -3,7 +3,7 @@
 # needs the wasm-tools workload and is built by test-web.sh; with the workload installed, `dotnet build OneGpu.slnx` builds everything.
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
-for project in tests/RecursiveAI.OneGpu.Vulkan.Tests tests/RecursiveAI.OneGpu.Tests tests/RecursiveAI.OneGpu.AotSmoke; do
+for project in tests/RecursiveAI.OneGpu.Vulkan.Tests tests/RecursiveAI.OneGpu.Tests tests/RecursiveAI.OneGpu.Kernels.Tests tests/RecursiveAI.OneGpu.AotSmoke; do
   dotnet build "$project" -c Release
 done
 

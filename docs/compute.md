@@ -93,6 +93,13 @@ to a buffer wins. Copies recorded between passes are ordered the same way.
 `DispatchChainTests` records chains of dependent passes (transposes of a matrix back and forth, repeated full writes to one buffer, copies between passes)
 and checks every element.
 
+### Counting passes
+
+`GpuCommandEncoder.ComputePassCount` and `DispatchCount` say how many compute passes were begun and how many `Dispatch` and `DispatchIndirect`
+calls were recorded since `BeginCommands` handed the encoder out (read them before `Submit`). The encoder counts as it records, so they need
+no timestamps and cost nothing, and they count what the caller recorded on every backend: Metal's shared compute encoders do not change them. An
+empty grid (a zero dimension) is counted although it runs nothing. `PassCountTests` checks the counts on every backend.
+
 ## Errors
 
 | Exception | Raised when | Extra data |

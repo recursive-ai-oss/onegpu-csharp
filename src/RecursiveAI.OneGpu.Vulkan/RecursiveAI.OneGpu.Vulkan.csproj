@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Vulkan backend of the GPU layer.</Description>
+    <Description>Vulkan 1.3 backend for onegpu on Windows and Linux, with no native binaries.</Description>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- The one place native interop lives for graphics: blittable structs and function pointers into the Vulkan loader. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

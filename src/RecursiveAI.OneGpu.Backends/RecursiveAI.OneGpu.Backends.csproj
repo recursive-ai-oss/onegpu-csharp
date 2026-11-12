@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Picks the graphics backend for the machine: Metal on Apple platforms, WebGPU in a browser, Vulkan elsewhere.</Description>
+    <Description>Picks the onegpu backend for the platform: Metal on Apple, WebGPU in a browser, Vulkan elsewhere.</Description>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
