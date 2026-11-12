@@ -48,12 +48,17 @@ struct GemmParams
     uint StrideA;
     uint StrideB;
     uint StrideC;
-    uint Flags;     // bit 0: A is stored K x M (transposed); bit 1: B is stored N x K (transposed); bit 2: add Bias[BiasOffset + column]; bit 3: the bias is indexed by row instead
+    uint Flags;     // bit 0: A is stored K x M (transposed); bit 1: B is stored N x K (transposed); bit 2: add Bias[BiasOffset + column]; bit 3: the bias is indexed by row instead;
+                    // bit 4: k is split (see below)
     float Alpha;
     float Beta;
     uint BiasOffset;
     uint Act;
 };
+// A split product (bit 4) writes raw sums and leaves alpha, beta, the bias and the activation to the pass that adds the ranges (GemmSplitReduce.hlsl), so it reuses
+// four integer words and the push-constant block stays the size it has always had: Act holds the number of terms of k per range (a multiple of 32), StrideC the
+// elements between two planes of partial sums and BiasOffset the number of batches of this dispatch. The planes are dense, so Ldc is N and a batch's matrix is M * N
+// elements. The z axis counts range-major: z = range * batches + batch. Plane `range` of batch b starts at OffsetC + (range * batches + b) * M * N.
 
 [[vk::push_constant]] ConstantBuffer<GemmParams> P;
 
@@ -75,6 +80,12 @@ void StoreElement(uint baseC, uint row, uint col, float value)
 {
     if (row < P.M && col < P.N)
     {
+        if ((P.Flags & 16u) != 0u)
+        {
+            C[baseC + row * P.N + col] = value;
+            return;
+        }
+
         uint at = baseC + row * P.Ldc + col;
         float r = P.Alpha * value;
         if (P.Beta != 0.0) { r = mad(P.Beta, C[at], r); }
@@ -87,9 +98,21 @@ void GemmTiledBody(uint3 group, uint tid)
     uint m0 = group.y * BM;
     uint n0 = group.x * BN;
     uint batch = group.z;
+    uint kBegin = 0;
+    uint kEnd = P.K;
+    uint planeBase = 0;
+    if ((P.Flags & 16u) != 0u)
+    {
+        uint range = batch / P.BiasOffset;
+        batch = batch - range * P.BiasOffset;
+        kBegin = range * P.Act;
+        kEnd = min(P.K, kBegin + P.Act);
+        planeBase = range * P.StrideC;
+    }
+
     uint baseA = P.OffsetA + batch * P.StrideA;
     uint baseB = P.OffsetB + batch * P.StrideB;
-    uint baseC = P.OffsetC + batch * P.StrideC;
+    uint baseC = P.OffsetC + planeBase + (((P.Flags & 16u) != 0u) ? batch * P.M * P.N : batch * P.StrideC);
     bool transA = (P.Flags & 1u) != 0u;
     bool transB = (P.Flags & 2u) != 0u;
 
@@ -102,7 +125,7 @@ void GemmTiledBody(uint3 group, uint tid)
     TILE_DECLARE(u)
     uint groupSteps = 0;
 
-    for (uint k0 = 0; k0 < P.K; k0 += 2 * BK)
+    for (uint k0 = kBegin; k0 < kEnd; k0 += 2 * BK)
     {
         // Two staged steps (32 terms) chain into one block sum t.
         TILE_DECLARE(t)
@@ -120,7 +143,7 @@ void GemmTiledBody(uint3 group, uint tid)
             uint gm = m0 + r;
             uint gk = kb + k;
             float v = 0.0;
-            if (gm < P.M && gk < P.K)
+            if (gm < P.M && gk < kEnd)
             {
                 v = LoadElement(A, baseA + (transA ? gk * P.Lda + gm : gm * P.Lda + gk));
             }
@@ -136,7 +159,7 @@ void GemmTiledBody(uint3 group, uint tid)
             uint gn = n0 + c;
             uint gk = kb + k;
             float v = 0.0;
-            if (gn < P.N && gk < P.K)
+            if (gn < P.N && gk < kEnd)
             {
                 v = LoadElement(B, baseB + (transB ? gn * P.Ldb + gk : gk * P.Ldb + gn));
             }

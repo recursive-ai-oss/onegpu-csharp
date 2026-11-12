@@ -134,11 +134,11 @@ public sealed class AccumulationAccuracyTests
             using var bx = d.CreateBuffer<float>(x);
             using var bw = d.CreateBuffer<float>(wt);
             using var by = d.CreateBuffer<float>(want.Length);
-            var colCount = ConvKernels.ColumnElements(p);
-            using var cols = colCount > 0 ? d.CreateBuffer<float>((int)colCount) : null;
             foreach (var mode in new[] { GpuKernelMode.Fast, GpuKernelMode.Deterministic })
             {
                 using var k = new ConvKernels(d, mode);
+                var colCount = k.Scratch(p, false).ColumnElements;
+                using var cols = colCount > 0 ? d.CreateBuffer<float>((int)colCount) : null;
                 Rig.Run(d, e => k.Encode(e, p, bx, bw, null, null, by, cols));
                 var first = await Rig.DownloadAsync(by);
                 Rig.Run(d, e => k.Encode(e, p, bx, bw, null, null, by, cols));

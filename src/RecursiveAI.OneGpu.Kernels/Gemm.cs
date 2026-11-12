@@ -39,8 +39,9 @@ public sealed class GemmOptions
 /// The constructor picks a variant from the device's capabilities once and reports it in <see cref="Variant"/>. In
 /// <see cref="GpuKernelMode.Fast"/> that is a matrix-hardware variant when the device has one for the element type and an
 /// output tile of 64 x 64 is available, otherwise the portable tiled variant. In <see cref="GpuKernelMode.Deterministic"/> it is always
-/// the portable tiled variant: each output element is summed by one thread in increasing k order in float32 with fused multiply-add,
-/// with no atomics, no split of k and no subgroup arithmetic, so a second run on the same device and driver gives the same bits.
+/// the portable tiled variant (or, for float32 products of at most four rows on Vulkan and WebGPU, the few-rows kernel): the order in which each element's terms are summed
+/// depends only on the shape, with fused multiply-add, no atomics and no subgroup arithmetic, so a second run on the same device and driver gives the same bits.
+/// A small grid over a long k is cut into ranges whose partial sums a second pass adds in range order; that, too, depends only on the shape.
 /// </para>
 /// <para>
 /// Operands must be storage buffers created with <see cref="GpuDevice.CreateBuffer{T}(int, BufferUsage, string?)"/>. A and B may be the
@@ -61,6 +62,9 @@ public sealed class Gemm : IDisposable
     readonly uint _tileN;
     readonly ulong _splitBudget;
     GpuBuffer<float>? _noBias;
+    KernelPipeline? _skinny;
+    KernelPipeline? _splitReduce;
+    GpuBuffer<float>? _splitScratch;
     readonly Dictionary<(GpuBuffer, GpuBuffer, GpuBuffer, GpuBuffer), GpuBindGroup> _bindGroups = [];
 
     /// <summary>Creates the kernel for one element type and mode.</summary>
@@ -267,7 +271,9 @@ public sealed class Gemm : IDisposable
     }
 
     /// <summary>How many bind groups this family has built since it was created. A warm call with buffers it has already seen builds none, so a consumer can record a run twice and check that the second adds nothing. Read-only; not reset by <c>ReleaseBindings</c>.</summary>
-    public int BindGroupsCreated { get; private set; }
+    public int BindGroupsCreated => _bindGroupsCreated + (_skinny?.Created ?? 0) + (_splitReduce?.Created ?? 0);
+
+    int _bindGroupsCreated;
 
     /// <summary>Drops the cached bind groups. Call it after disposing operand buffers that will not be used again, so the groups do not keep them reachable.</summary>
     public void ReleaseBindings()
@@ -278,6 +284,8 @@ public sealed class Gemm : IDisposable
         }
 
         _bindGroups.Clear();
+        _skinny?.ReleaseBindings();
+        _splitReduce?.ReleaseBindings();
     }
 
     /// <summary>Releases the pipeline and the cached bind groups once the GPU has finished with them.</summary>
@@ -286,6 +294,12 @@ public sealed class Gemm : IDisposable
         ReleaseBindings();
         _noBias?.Dispose();
         _noBias = null;
+        _skinny?.Dispose();
+        _skinny = null;
+        _splitReduce?.Dispose();
+        _splitReduce = null;
+        _splitScratch?.Dispose();
+        _splitScratch = null;
         _kernel.Dispose();
 
     }
@@ -348,8 +362,19 @@ public sealed class Gemm : IDisposable
 
             group = _device.CreateBindGroup(_layout, 0, [BindGroupEntry.ForBuffer(0, a), BindGroupEntry.ForBuffer(1, b), BindGroupEntry.ForBuffer(2, c), BindGroupEntry.ForBuffer(3, biasBuffer)]);
             _bindGroups.Add(key, group);
-            BindGroupsCreated++;
+            _bindGroupsCreated++;
         }
+
+        var opsAll = 2.0 * p.M * p.N * p.K * p.Batch;
+        if (UsesSkinny(p))
+        {
+            EncodeSkinny(encoder, p, a, b, c, biasBuffer, lda, ldb, ldc, epilogue);
+            encoder.ReportWork(opsAll);
+            return;
+        }
+
+        // The ranges of k come from the whole product, so cutting it into pieces for the submission budget (below) leaves every element's sum as it is.
+        var (splits, perSplit) = SplitPlan(p);
 
         // One dispatch unless the product carries more arithmetic than a submission should (see GemmOptions.AllowSplitting): then whole
         // products are grouped, or a single product is cut into blocks of rows, and the encoder is told about each piece. A piece is a
@@ -376,6 +401,19 @@ public sealed class Gemm : IDisposable
             for (var r0 = 0; r0 < p.M; r0 += rowsPerPiece)
             {
                 var rows = Math.Min(rowsPerPiece, p.M - r0);
+                if (splits > 1)
+                {
+                    var piece = p;
+                    piece.M = rows;
+                    piece.Batch = nb;
+                    piece.OffsetA = checked((int)(p.OffsetA + ((long)b0 * p.StrideA) + (p.TransposeA ? r0 : (long)r0 * lda)));
+                    piece.OffsetB = checked((int)(p.OffsetB + ((long)b0 * p.StrideB)));
+                    piece.OffsetC = checked((int)(p.OffsetC + ((long)b0 * p.StrideC) + ((long)r0 * ldc)));
+                    EncodeSplit(encoder, piece, a, b, c, biasBuffer, lda, ldb, ldc, epilogue, epilogue.OffsetBias + (epilogue.BiasAxis == GemmBiasAxis.Row ? r0 : 0), splits, perSplit);
+                    encoder.ReportWork(2.0 * rows * p.N * p.K * nb);
+                    continue;
+                }
+
                 var push = new PushBlock
                 {
                     M = (uint)rows,
@@ -406,6 +444,159 @@ public sealed class Gemm : IDisposable
             }
         }
     }
+
+    // Products with at most four rows (decoding): a kernel that streams B once. Not on Metal (the Apple kernels are tuned separately), for float32 and plain A.
+    bool UsesSkinny(in GemmProblem p)
+    {
+        if (ElementType != GemmElementType.F32 || !Variant.StartsWith("tiled", StringComparison.Ordinal) || _device.Backend == GpuBackend.Metal 
+            || p.TransposeA || p.M > 4 || p.K == 0)
+        {
+            return false;
+        }
+
+        var limit = _device.Capabilities.Compute.MaxWorkgroupCount;
+        var tilesX = (uint)(((long)p.N + (p.TransposeB ? 7 : 15)) / (p.TransposeB ? 8 : 16));
+        return limit == 0 || (tilesX <= limit && (uint)p.Batch <= limit);
+    }
+
+    void EncodeSkinny(GpuCommandEncoder encoder, in GemmProblem p, GpuBuffer a, GpuBuffer b, GpuBuffer c, GpuBuffer bias, int lda, int ldb, int ldc, in GemmEpilogue epilogue)
+    {
+        var pipe = _skinny ??= new KernelPipeline(_device, new ShaderSource(ShaderStage.Compute, GemmSkinny.GemmSkinnyOp.EntryPoint) { SpirV = GemmSkinny.GemmSkinnyOp.SpirV, Wgsl = GemmSkinny.GemmSkinnyOp.Wgsl, WgslEntryPoint = GemmSkinny.GemmSkinnyOp.WgslEntryPoint, Layout = GemmSkinny.GemmSkinnyOp.Layout }, 4, 17, "gemm skinny", _maxBindGroups);
+        var push = MakePush(p, lda, ldb, ldc, epilogue, p.M, 0);
+        var wide = !p.TransposeB && p.N >= SkinnyWideFrom;
+        if (wide)
+        {
+            push.Flags |= 32u;
+        }
+
+        var cols = p.TransposeB ? 8 : wide ? 32 : 16;
+        var tilesX = (uint)(((long)p.N + cols - 1) / cols);
+        pipe.Record(encoder, MemoryMarshal.Cast<PushBlock, uint>(new ReadOnlySpan<PushBlock>(in push)), tilesX, (uint)p.Batch, [a, b, c, bias]);
+    }
+
+    // How many ranges of k a product with a small grid is cut into, and how many terms each holds, from the shape alone. A 128 x 768 product at 64 x 64 tiles has 24
+    // workgroups on a GPU with dozens of cores, each walking the whole of k; ranges that run as workgroups of their own fill it, and their planes of partial sums are added
+    // in range order by a second pass, so the bits depend on the shape and nothing else. A range is a multiple of 32 terms (a block-sum boundary of the kernel).
+    (int Splits, int PerSplit) SplitPlan(in GemmProblem p)
+    {
+        if (!Variant.StartsWith("tiled", StringComparison.Ordinal) || _device.Backend == GpuBackend.Metal || p.M == 0 || p.N == 0)
+        {
+            return (1, p.K);
+        }
+
+        long groups = (((long)p.M + 63) / 64) * (((long)p.N + 63) / 64) * p.Batch;
+        var blocks = ((long)p.K + 31) / 32;
+        if (groups >= SplitBelow || blocks < 2 * SplitMinBlocks)
+        {
+            return (1, p.K);
+        }
+
+        var perProduct = (long)p.Batch * p.M * p.N;
+        var splits = Math.Min(Math.Min(SplitMaxSplits, (SplitBelow + groups - 1) / groups), Math.Min(blocks / SplitMinBlocks, SplitScratchElements / perProduct));
+        var limit = _device.Capabilities.Compute.MaxWorkgroupCount;
+        if (limit != 0)
+        {
+            splits = Math.Min(splits, limit / Math.Max(p.Batch, 1));
+        }
+
+        if (splits < 2)
+        {
+            return (1, p.K);
+        }
+
+        var per = (int)((blocks + splits - 1) / splits * 32);
+        return ((int)(((long)p.K + per - 1) / per), per);
+    }
+
+    const long SplitScratchElements = 4L << 20;   // 16 MiB of float32 planes, allocated once on first use
+    const long SplitBelow = 384;        // workgroups of 64 x 64
+    const long SplitMaxSplits = 16;
+    const long SplitMinBlocks = 2;      // 32-term blocks a range must keep
+    const long SkinnyWideFrom = 8192;   // columns from which the kernel reads 32 columns of B per warp row
+
+    void EncodeSplit(GpuCommandEncoder encoder, in GemmProblem p, GpuBuffer a, GpuBuffer b, GpuBuffer c, GpuBuffer bias, int lda, int ldb, int ldc, in GemmEpilogue epilogue, int biasOffset, int splits, int perSplit)
+    {
+        var scratch = _splitScratch ??= _device.CreateBuffer<float>((int)SplitScratchElements, label: "gemm split planes");
+        var planeStride = (long)p.Batch * p.M * p.N;
+        var unused = (_noBias ??= _device.CreateBuffer<float>(4, label: "gemm unused bias")).Buffer;
+        var key = (a, b, scratch.Buffer, unused);
+        if (!_bindGroups.TryGetValue(key, out var group))
+        {
+            if (_bindGroups.Count >= _maxBindGroups)
+            {
+                ReleaseBindings();
+            }
+
+            group = _device.CreateBindGroup(_layout, 0, [BindGroupEntry.ForBuffer(0, a), BindGroupEntry.ForBuffer(1, b), BindGroupEntry.ForBuffer(2, scratch.Buffer), BindGroupEntry.ForBuffer(3, key.Item4)]);
+            _bindGroups.Add(key, group);
+            _bindGroupsCreated++;
+        }
+
+        var push = new PushBlock
+        {
+            M = (uint)p.M,
+            N = (uint)p.N,
+            K = (uint)p.K,
+            Lda = (uint)lda,
+            Ldb = (uint)ldb,
+            Ldc = (uint)p.N,
+            OffsetA = (uint)p.OffsetA,
+            OffsetB = (uint)p.OffsetB,
+            OffsetC = 0,
+            StrideA = (uint)p.StrideA,
+            StrideB = (uint)p.StrideB,
+            Flags = (p.TransposeA ? 1u : 0u) | (p.TransposeB ? 2u : 0u) | 16u,
+            StrideC = (uint)planeStride,
+            BiasOffset = (uint)p.Batch,
+            Act = (uint)perSplit,
+        };
+        var pass = encoder.BeginComputePass();
+        pass.SetPipeline(_pipeline);
+        pass.SetBindGroup(0, group);
+        pass.SetPushConstants(0, MemoryMarshal.AsBytes(new ReadOnlySpan<PushBlock>(in push)));
+        pass.Dispatch((uint)((p.N + (int)_tileN - 1) / (int)_tileN), (uint)((p.M + (int)_tileM - 1) / (int)_tileM), (uint)((long)splits * p.Batch));
+        pass.EndPass();
+
+        var reduce = _splitReduce ??= new KernelPipeline(_device, new ShaderSource(ShaderStage.Compute, GemmSplitReduce.GemmSplitReduceOp.EntryPoint) { SpirV = GemmSplitReduce.GemmSplitReduceOp.SpirV, Wgsl = GemmSplitReduce.GemmSplitReduceOp.Wgsl, WgslEntryPoint = GemmSplitReduce.GemmSplitReduceOp.WgslEntryPoint, Layout = GemmSplitReduce.GemmSplitReduceOp.Layout }, 3, 14, "gemm split reduce", _maxBindGroups);
+        var (gx, gy) = Grid.For(_device, (planeStride + 255) / 256);
+        Span<uint> r = stackalloc uint[14];
+        r[0] = (uint)planeStride;
+        r[1] = (uint)p.N;
+        r[2] = (uint)((long)p.M * p.N);
+        r[3] = (uint)ldc;
+        r[4] = (uint)p.OffsetC;
+        r[5] = (uint)p.StrideC;
+        r[6] = (uint)splits;
+        r[7] = (uint)planeStride;
+        r[8] = epilogue.Bias is null ? 0u : (epilogue.BiasAxis == GemmBiasAxis.Row ? 12u : 4u);
+        r[9] = BitConverter.SingleToUInt32Bits(p.Alpha);
+        r[10] = BitConverter.SingleToUInt32Bits(p.Beta);
+        r[11] = (uint)biasOffset;
+        r[12] = (uint)epilogue.Activation;
+        r[13] = gx;
+        reduce.Record(encoder, r, gx, gy, [scratch.Buffer, c, bias]);
+    }
+
+    static PushBlock MakePush(in GemmProblem p, int lda, int ldb, int ldc, in GemmEpilogue epilogue, int rows, int r0) => new()
+    {
+        M = (uint)rows,
+        N = (uint)p.N,
+        K = (uint)p.K,
+        Lda = (uint)lda,
+        Ldb = (uint)ldb,
+        Ldc = (uint)ldc,
+        OffsetA = (uint)(p.OffsetA + (p.TransposeA ? r0 : (long)r0 * lda)),
+        OffsetB = (uint)p.OffsetB,
+        OffsetC = (uint)(p.OffsetC + ((long)r0 * ldc)),
+        StrideA = (uint)p.StrideA,
+        StrideB = (uint)p.StrideB,
+        StrideC = (uint)p.StrideC,
+        Flags = (p.TransposeA ? 1u : 0u) | (p.TransposeB ? 2u : 0u) | (epilogue.Bias is null ? 0u : (epilogue.BiasAxis == GemmBiasAxis.Row ? 12u : 4u)),
+        Alpha = p.Alpha,
+        Beta = p.Beta,
+        BiasOffset = (uint)(epilogue.OffsetBias + (epilogue.BiasAxis == GemmBiasAxis.Row ? r0 : 0)),
+        Act = (uint)epilogue.Activation,
+    };
 
     void CheckBindable(string operand, GpuBuffer buffer)
     {

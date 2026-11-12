@@ -46,10 +46,42 @@ elements are read from storage buffers as 16-bit values, which needs 16-bit stor
 ## Deterministic mode
 
 `GpuKernelMode.Deterministic` always uses the portable kernel. Each element of C is summed by one invocation, in increasing k, in float32
-with fused multiply-add; there is no split of k, no atomic, no subgroup arithmetic and no dependence on how workgroups are scheduled, so two
-runs on one device and driver give the same bits. Different devices and drivers may differ in the last bits (fused multiply-add
+with fused multiply-add, or, where the grid is small (see "Small grids and few rows"), as range sums added in range order, in both modes; there is
+no atomic, no subgroup arithmetic and no dependence on how workgroups are scheduled, so two runs on one device and driver give the same bits. Different devices and drivers may differ in the last bits (fused multiply-add
 contraction and rounding of the compiler's output are theirs). `Fast` may use another summation order and the matrix-hardware variants, so
 `Fast` and `Deterministic` results differ by rounding.
+
+## Small grids and few rows (portable kernel, Vulkan and WebGPU)
+
+Two cases leave a large GPU idle with the 64 x 64 tile: a small grid over a long k, and a product with only a few rows. Both are chosen from the shape alone and serve
+`Fast` and `Deterministic` alike, because both fix the order in which an element's terms are added.
+
+- **Split k.** With fewer than 384 workgroups of 64 x 64 (a 128 x 768 product has 24) and at least 128 terms of k, k is cut into up to 16 ranges of a multiple of 32 terms (at least 64
+  terms each), aiming at about 384 workgroups. Each range writes its raw sums to its own plane of an instance-owned 16 MiB float32 scratch buffer (allocated on first use; fewer ranges when
+  the planes would not fit), and one more pass adds the planes in range order, then applies alpha, beta, the bias and the activation. A product cut into row or batch pieces for the
+  submission budget uses the ranges of the whole product, so its bits do not change. Not used on matrix hardware, whose kernels are untouched.
+- **Few rows.** A float32 product with at most four rows of A (decoding one to four tokens), A not transposed, runs a kernel that streams B once: for B stored K x N a workgroup
+  owns 16 columns (32 from N = 8192, so a warp reads 128 bytes of a row) and its 256 threads split k into 16 (8) interleaved slices; for B stored N x K a workgroup owns 8 columns and 32
+  threads per column read consecutive k. Every thread chains its terms in increasing k, and one thread adds the slice (lane) sums in order through workgroup memory.
+  Not on Metal. Float16 and bfloat16 inputs keep the tile.
+
+Measured on the RTX 4070 (GPU time from timestamps, float32, indicative; before is the 64 x 64 tile alone):
+
+| Product (M x N x K) | Before | After | |
+|---|---|---|---|
+| 128 x 768 x 768 (BERT-base projection, batch 1) | 58 us | 29 us | 2.0x |
+| 128 x 2304 x 768 | 94 us | 76 us | 1.2x |
+| 128 x 3072 x 768 (feed-forward up) | 135 us | 100 us | 1.35x |
+| 128 x 768 x 3072 (feed-forward down) | 222 us | 100 us | 2.2x |
+| 1024 x 768 x 3072 (BERT batch 8, feed-forward down) | 925 us | 758 us | 1.2x |
+| 1 x 768 x 768 | 57 us | 5.9 us | 9.7x |
+| 1 x 3072 x 768 | 93 us | 11 us | 8.4x |
+| 1 x 768 x 3072 | 221 us | 15 us | 15x |
+| 1 x 51865 x 768, B stored N x K (decoder logits) | 771 us | 330 us | 2.3x (159 MB in 330 us: 480 GB/s) |
+| 1 x 51865 x 768, B stored K x N | 768 us | 337 us | 2.3x |
+| 4 x 3072 x 768 | 93 us | 11 us | 8.6x |
+
+After a split the 128-row products run at 6.0 TFLOP/s, the tile's rate on large shapes (5.1-6.9), so the next step for them is a faster float32 tile, not more splitting.
 
 ## Accumulation order
 
@@ -130,8 +162,9 @@ the hand-written SPIR-V it replaced and bfloat16 is 1.3 to 2.2 times (the smalle
 square 4096 product), because the operands are now copied into workgroup memory without a detour through float32 and eight subgroups hide more
 latency than four.
 
-Single-row products (decode, M = 1) are memory bound and use one row of a 64-row tile: 100 to 150 GFLOP/s on the RTX 4070, 2 to 9 on the M2.
-A skinny-M variant and larger tiles for the Apple GPU are the next tuning steps.
+Single-row products (decode, M = 1) are memory bound. On Vulkan and WebGPU, float32 products of at most four rows have their own kernel (see "Small grids and few rows"):
+242 GFLOP/s for the vocabulary projection on the RTX 4070 at 480 GB/s of weights, against 103 with the tile. On the M2 they still use one row of a 64-row tile (2 to 9 GFLOP/s);
+a few-rows kernel and larger tiles for the Apple GPU are the next tuning steps.
 
 ## 8-bit products on Apple matrix hardware
 

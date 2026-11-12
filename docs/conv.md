@@ -27,7 +27,7 @@
 | Layer class | Variant |
 |---|---|
 | depthwise (one input channel per group, any channel multiplier) | direct kernel, one thread per output element, window order fixed |
-| every other convolution on the portable matrix kernel (float32 everywhere; half on devices without matrix hardware) | **implicit GEMM**: a 64x64x16 tile kernel that gathers the input window while it loads the tile; float32 fuses bias, residual and activation into the store, half writes float32 accumulators and an epilogue pass finishes |
+| every other convolution on the portable matrix kernel (float32 everywhere; half on devices without matrix hardware) | **implicit GEMM**: a 64x64x16 tile kernel that gathers the input window while it loads the tile; float32 fuses bias, residual and activation into the store, half writes float32 accumulators and an epilogue pass finishes. A float32 grid of fewer than 384 workgroups **splits k** (below) |
 | float32 on Metal (simdgroup matrices) | **implicit GEMM on matrix hardware** (`ConvCoopF32.hlsl`): the 4-subgroup 64x64x16 simdgroup tile of `Gemm`, the window gathered while the input tile is staged (no column matrix), the bias, residual and activation applied as the result is stored, so the output is written once. A pointwise convolution (1x1, stride 1, no padding) whose tile lies inside the output reads weights and input straight from memory with no staging. Grids under 40 workgroups use a 64x32 tile. Both modes (see Determinism) |
 | float16 on Metal (simdgroup matrices) | the same implicit kernel with half operands (`ConvCoop.hlsli` with `CONV_F16`): float32 accumulation on one chain, bias, residual and activation applied as the halves are stored; with split k or an activation the kernel does not fuse, it leaves float32 planes in the accumulator scratch for the epilogue pass |
 | 1x1, stride 1, no padding, with matrix hardware (half) | `Gemm` on the input as it lies (no unfolding) |
@@ -43,7 +43,7 @@ run every layer set in four configurations (fast, fast with matrix hardware off,
 - **Cooperative-matrix implicit GEMM** (window gather in the matrix tile load). On the RTX 4070, f16 ResNet-50 at b8 the im2col+`Gemm` layers already run at 6.6-13 TFLOP/s
   for 3x3 and 11-21 TFLOP/s for the 1x1 layers that use `Gemm` directly; the unfold pass is a bandwidth-bound write and read of at most a few tens of megabytes per layer. The
   ceiling for the change is the gap between the 3x3 and the 1x1 rate, about 1.3-1.6x on 3x3 layers, which are 2.4 of about 5.8 ms. Dropped as not worth a second coop kernel family now.
-- **Winograd F(2x2,3x3)** (Lavin and Gray, 2016). `WinogradBound` in the tests times the sixteen batched products it needs with the real `Gemm` plus a copy moving the bytes its
+- **Winograd F(2x2,3x3)** (Lavin and Gray, 2016); not needed once small grids split k (see above). `WinogradBound` in the tests times the sixteen batched products it needs with the real `Gemm` plus a copy moving the bytes its
   transforms must move: a floor no implementation can beat. RTX 4070, ResNet-50 stride-1 3x3 layers at b8 summed (host clock, indicative): **float32 direct 6.3 ms, floor 2.7 ms;
   half direct 2.4 ms, floor 1.0 ms.** The floor leaves room (the transforms run as three irregular passes, realistically 1.5x the copy floor, and half Winograd carries
   larger rounding error through the transformed data than the 2e-3 half tolerance leaves comfortably), but it is a speed-up for one model's 3x3 layers only, MobileNetV3 and DBNet
@@ -76,6 +76,33 @@ the planes. Batch is part of the shape, so chunking an oversized batch does not 
 The M2's clock state moves ResNet-50 b1 by about 20 % between sessions, so the table pairs runs made alternately in one session (five pairs; split-k won every one). Deterministic mode, ResNet-50 b1 20.4 ms, b8 90.5 ms.
 
 A version that prefetched the next tile into registers ran 40 % slower (register pressure), and wider narrow-tile thresholds ran slower at batch 8.
+
+### RTX 4070, float32 portable kernel: split k for small grids
+
+At batch 1 the late layers of a classifier have few tiles (a 7 x 7 image is one tile of pixels, 512 output channels eight tiles) and each workgroup walks 4608 terms of k alone, so the 4070's 46 multiprocessors
+mostly idle: those layers ran at 0.4 to 1.5 TFLOP/s. The portable implicit kernel therefore splits k the way the Apple kernel does: when the grid has fewer than 384 workgroups and k has at least
+eight 32-term blocks, k is cut into up to 16 ranges (at least 128 terms each, aiming at about 512 workgroups) that run as workgroups of their own, each into its own plane of raw sums in the column scratch,
+and the epilogue pass adds the planes in range order, then bias, residual and activation (any activation works). Ranges are a multiple of 32 terms, so each starts on a block-sum boundary of the kernel;
+the cut depends only on the shape, so both modes use it and two runs are bit-identical. `Scratch()` reports the planes (`ranges * output size` per image; the static `ColumnElements` counts the unfolded columns only).
+A grid of 392 workgroups (56 x 56 at batch 8) stays whole: two ranges measured 4 to 30 % slower there. Used on every device whose float32 product is the portable tile: NVIDIA, AMD and
+Intel Vulkan, lavapipe, WebGPU (Metal has its own split above).
+
+Winograd, which this document priced at a floor of 2.3-2.4x, is not needed: ResNet-50's convolutions at batch 1 went from 6.48 to 2.57 ms.
+
+GPU time from timestamps, RTX 4070, driver 595.99, float32, fast mode, indicative (convolution layers summed over the model's layer list, each shape counted as often as the model uses it; whole-k is the same binary
+with the split turned off):
+
+| Model | batch | whole k | split k |
+|---|---|---|---|
+| ResNet-50 | 1 | 6.48 ms | 2.57 ms |
+| ResNet-50 | 8 | 16.67 ms | 15.52 ms |
+| MobileNetV3-large | 1 | 1.51 ms | 0.92 ms |
+| MobileNetV3-large | 8 | 2.87 ms | 2.57 ms |
+| DBNet 512 | 1 | 0.95 ms | 0.95 ms |
+| DBNet 512 | 8 | 6.77 ms | 5.75 ms |
+
+ResNet-50 batch 1, layers (microseconds, whole k then split k): 3x3 512 -> 512 at 7 x 7 520 -> 73; 3x3 512 -> 512 stride 2 on 14 x 14 532 -> 74; 3x3 256 -> 256 at 14 x 14 264 -> 70;
+1x1 2048 -> 512 at 7 x 7 209 -> 36; 1x1 1024 -> 256 at 14 x 14 104 -> 36; 3x3 128 -> 128 at 28 x 28 138 -> 67. Scaled error against double over the 32 accumulation-test rows is at most 2.7e-7 (2.1e-7 to 3.3e-7 before).
 
 ## Pooling and resize
 

@@ -170,6 +170,21 @@ internal static class GemmReference
         yield return C("offsets", 45, 55, 35, t => { t.P.OffsetA = 3; t.P.OffsetB = 5; t.P.OffsetC = 7; });
         yield return C("batch", 33, 47, 19, t => { t.P.Batch = 5; t.P.StrideA = (33 * 19) + 3; t.P.StrideB = (19 * 47) + 1; t.P.StrideC = (33 * 47) + 2; });
         yield return C("batch shared B", 40, 50, 30, t => { t.P.Batch = 3; t.P.StrideA = 40 * 30; t.P.StrideB = 0; t.P.StrideC = 40 * 50; t.P.Beta = 1f; });
+        // At most four rows of A: a kernel of its own on Vulkan and WebGPU (float32), in both layouts of B, with remainders in k and in the columns.
+        yield return C("skinny m=2", 2, 130, 77);
+        yield return C("skinny m=3 transB", 3, 45, 301, t => t.P.TransposeB = true);
+        yield return C("skinny m=4 alpha beta", 4, 100, 130, t => { t.P.Alpha = 0.5f; t.P.Beta = 1.5f; });
+        yield return C("skinny m=4 transB alpha beta", 4, 19, 200, t => { t.P.Alpha = -1.25f; t.P.Beta = 0.5f; t.P.TransposeB = true; });
+        yield return C("skinny padded offsets", 3, 70, 150, t => { t.P.OffsetA = 5; t.P.OffsetB = 9; t.P.OffsetC = 3; }, 7, 5, 4);
+        yield return C("skinny batch", 1, 90, 100, t => { t.P.Batch = 6; t.P.StrideA = 100 + 3; t.P.StrideB = 100 * 90; t.P.StrideC = 90 + 1; });
+        yield return C("skinny batch transB", 2, 33, 70, t => { t.P.Batch = 3; t.P.TransposeB = true; t.P.StrideA = 2 * 70; t.P.StrideB = 33 * 70; t.P.StrideC = 2 * 33; });
+        yield return C("m=5 not skinny", 5, 120, 200);
+        // A small grid with a long k: k is cut into ranges whose planes a second pass adds in order (ranges are multiples of 32 terms; k not a multiple of 32 in several).
+        yield return C("split k=700", 70, 90, 700);
+        yield return C("split k=1000 alpha beta", 65, 65, 1000, t => { t.P.Alpha = 0.75f; t.P.Beta = -0.5f; });
+        yield return C("split transA transB", 64, 130, 1500, t => { t.P.TransposeA = true; t.P.TransposeB = true; });
+        yield return C("split batch offsets padded", 40, 70, 777, t => { t.P.Batch = 3; t.P.StrideA = (40 * 777) + 2; t.P.StrideB = 0; t.P.StrideC = (40 * 71) + 5; t.P.OffsetA = 4; t.P.OffsetC = 6; t.P.Beta = 1f; }, 3, 2, 1);
+        yield return C("split k=129", 20, 20, 129);
         yield return C("batch transB", 64, 64, 64, t => { t.P.Batch = 4; t.P.TransposeB = true; t.P.StrideA = 64 * 64; t.P.StrideB = 64 * 64; t.P.StrideC = 64 * 64; });
     }
 

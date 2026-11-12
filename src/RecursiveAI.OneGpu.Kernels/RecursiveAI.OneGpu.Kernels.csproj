@@ -65,6 +65,8 @@
     <OneShader Include="Shaders/Transpose.hlsl" Axes="ELEM=W16|W32|W64" />
     <OneShader Include="Shaders/Unary.hlsl" Axes="F16" />
     <OneShader Include="Shaders/Where.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/GemmSkinny.hlsl" Targets="SpirV;Wgsl" />
+    <OneShader Include="Shaders/GemmSplitReduce.hlsl" Targets="SpirV;Wgsl" />
     <OneShader Include="Shaders/GemmF32.hlsl" />
     <OneShader Include="Shaders/GemmF16.hlsl" />
     <OneShader Include="Shaders/GemmBF16.hlsl" />

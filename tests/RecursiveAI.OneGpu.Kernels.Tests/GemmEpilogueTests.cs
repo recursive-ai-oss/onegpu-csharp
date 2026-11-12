@@ -112,6 +112,10 @@ public sealed class GemmEpilogueTests
         yield return new GemmProblem(130, 200, 70) { Alpha = 0.5f, Beta = 0.5f };
         yield return new GemmProblem(33, 40, 0) { Beta = 1f };
         yield return new GemmProblem(48, 96, 40) { Batch = 3, StrideA = 48 * 40, StrideB = 0, StrideC = 48 * 96, OffsetC = 5, TransposeB = true };
+        // Few rows (a kernel of its own) and a small grid over a long k (split into ranges): the epilogue runs in their last pass.
+        yield return new GemmProblem(3, 100, 700);
+        yield return new GemmProblem(2, 77, 300) { TransposeB = true, Alpha = 0.5f };
+        yield return new GemmProblem(70, 90, 1200) { Beta = 0.5f };
         // BERT feed-forward up-projection on a batch of 8 sequences of 128 tokens, and the same at batch 1.
         yield return new GemmProblem(128, 3072, 768);
         yield return new GemmProblem(1024, 3072, 768);

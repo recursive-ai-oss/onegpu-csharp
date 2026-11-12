@@ -17,6 +17,16 @@ public sealed class GemmThroughput
         ("bert scores 8x12x128", 128, 128, 64, 96, true),
         ("whisper dec logits 1", 1, 51865, 768, 1, true),
         ("square 4096", 4096, 4096, 4096, 1, false),
+        ("bert b1 proj 128", 128, 768, 768, 1, false),
+        ("bert b1 qkv 128", 128, 2304, 768, 1, false),
+        ("bert b1 ffn-up 128", 128, 3072, 768, 1, false),
+        ("bert b1 ffn-down 128", 128, 768, 3072, 1, false),
+        ("dec proj 1", 1, 768, 768, 1, false),
+        ("dec ffn-up 1", 1, 3072, 768, 1, false),
+        ("dec ffn-down 1", 1, 768, 3072, 1, false),
+        ("dec logits 1 (not transposed)", 1, 51865, 768, 1, false),
+        ("dec ffn-up 4", 4, 3072, 768, 1, false),
+        ("dec logits 4", 4, 51865, 768, 1, true),
     ];
 
     [Fact]
@@ -31,7 +41,8 @@ public sealed class GemmThroughput
         var d = f.Device;
         var timestamps = d.Capabilities.Timestamps;
         var noHardware = Environment.GetEnvironmentVariable("ONEGPU_GEMM_NO_HARDWARE") == "1";
-        foreach (var type in new[] { GemmElementType.F32, GemmElementType.F16, GemmElementType.BF16 })
+        var only = Environment.GetEnvironmentVariable("ONEGPU_GEMM_BENCH_TYPES");
+        foreach (var type in new[] { GemmElementType.F32, GemmElementType.F16, GemmElementType.BF16 }.Where(t => only is null || only.Contains(t.ToString(), StringComparison.Ordinal)))
         {
             using var gemm = new Gemm(d, type, GpuKernelMode.Fast, new GemmOptions { AllowMatrixHardware = !noHardware, WorkgroupSubgroups = int.TryParse(Environment.GetEnvironmentVariable("ONEGPU_GEMM_SUBGROUPS"), out var sgs) ? sgs : 0 });
             foreach (var (name, m, n, k, batch, transB) in Shapes)

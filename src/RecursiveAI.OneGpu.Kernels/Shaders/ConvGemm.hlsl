@@ -10,6 +10,9 @@
 // inputs (halves read as pairs inside 32-bit words) the kernel writes the raw float32 sums and the epilogue pass converts them: two threads of
 // different tiles can share a half-precision word, so a tiled kernel cannot write halves directly.
 //
+// When the grid is small (late layers of a classifier at batch 1: a few tiles, each thousands deep) k is cut into ranges that run as workgroups of their own,
+// each into its own plane of raw sums; the epilogue pass adds the planes in range order. The ranges and the order depend only on the shape.
+//
 // Grid: x = tiles of pixels, y = tiles of output channels, z = images * groups.
 
 #include "Functions.hlsl"
@@ -47,11 +50,14 @@ struct ConvGemmParams
     uint PH, PW;
     uint OffX, OffW, OffY, OffBias, OffRes;
     uint Cout;
-    uint Flags;     // bit 0: add the bias, bit 1: add the residual, bit 2: pointwise (1x1, stride 1, no padding)
-    uint Act;       // 0 none, else the unary operation number + 1
+    uint Flags;     // bit 0: add the bias, bit 1: add the residual, bit 2: pointwise (1x1, stride 1, no padding), bit 3: k is split (see below)
+    uint Act;       // 0 none, else the unary operation number + 1; with bit 3: the range of k per workgroup in terms (a multiple of 32)
     float P0;
     float P1;
 };
+// A split convolution has no fused bias, residual or activation (the pass that adds the planes applies them), so it reuses the words that name them, all integers, and the
+// push-constant block stays the size it has always had: Act is the range of k per workgroup, OffBias the elements between two planes of partial sums and OffRes the
+// number of images * groups of this dispatch.
 
 [[vk::push_constant]] ConstantBuffer<ConvGemmParams> P;
 
@@ -103,14 +109,28 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
 {
     uint m0 = group.y * BM;
     uint n0 = group.x * BN;
-    uint image = group.z / P.Groups;
-    uint g = group.z - image * P.Groups;
+    uint ig = group.z;
+    uint kBegin = 0;
+    uint kEnd = P.K;
+    uint planeBase = 0;
+    if ((P.Flags & 8u) != 0u)
+    {
+        uint imageGroups = P.OffRes;
+        uint split = ig / imageGroups;
+        ig = ig - split * imageGroups;
+        kBegin = split * P.Act;
+        kEnd = min(P.K, kBegin + P.Act);
+        planeBase = split * P.OffBias;
+    }
+
+    uint image = ig / P.Groups;
+    uint g = ig - image * P.Groups;
     uint cinG = P.Cin / P.Groups;
     uint xBase = P.OffX + (image * P.Cin + g * cinG) * P.H * P.W;
     uint wBase = P.OffW + g * P.M * P.K;
     gImage = image;
     gChannel0 = g * P.M;
-    gYBase = P.OffY + (image * P.Cout + g * P.M) * P.N;
+    gYBase = P.OffY + planeBase + (image * P.Cout + g * P.M) * P.N;
     bool pointwise = (P.Flags & 4u) != 0u;
     uint taps = P.KH * P.KW;
 
@@ -132,7 +152,7 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
     TILE_DECLARE(u)
     uint groupSteps = 0;
 
-    for (uint k0 = 0; k0 < P.K; k0 += 2 * BK)
+    for (uint k0 = kBegin; k0 < kEnd; k0 += 2 * BK)
     {
         // Two staged steps (32 terms) chain into one block sum t.
         TILE_DECLARE(t)
@@ -147,7 +167,7 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
             uint gm = m0 + r;
             uint gk = kb + k;
             float v = 0.0;
-            if (gm < P.M && gk < P.K)
+            if (gm < P.M && gk < kEnd)
             {
                 v = LoadElem(ConvW, wBase + gm * P.K + gk);
             }
@@ -159,7 +179,7 @@ void ConvGemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
             uint k = bk0 + f * 4u;
             uint gk = kb + k;
             float v = 0.0;
-            if (pixelValid && gk < P.K)
+            if (pixelValid && gk < kEnd)
             {
                 if (pointwise)
                 {

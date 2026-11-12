@@ -149,7 +149,8 @@ public sealed class ConvKernels : IDisposable
 
         if (UsesImplicitGemm(half))
         {
-            return (half ? "implicit " : "implicit fused-epilogue ") + gemm + " + " + (half ? "epilogue pass" : "bias/residual/activation in the store");
+            var splits = half ? 1 : PortablePlan(problem).Splits;
+            return (half ? "implicit " : "implicit fused-epilogue ") + gemm + " + " + (half ? "epilogue pass" : splits > 1 ? $"k cut into {splits} ranges added in order by the epilogue pass" : "bias/residual/activation in the store");
         }
 
         return (shape == ConvVariant.MatrixProduct ? "matrix product " : "im2col + matrix product ") + gemm + " + epilogue pass";
@@ -189,6 +190,11 @@ public sealed class ConvKernels : IDisposable
                 colPerImage = splits > 1 ? splits * yImage : 0;
             }
         }
+        else if (variant != ConvVariant.Depthwise && !half && UsesImplicitGemm(half))
+        {
+            var (_, splits, _) = PortablePlan(problem);
+            colPerImage = splits > 1 ? splits * yImage : 0;
+        }
 
         return new ConvScratch(colPerImage * problem.Batch, accPerImage * problem.Batch, colPerImage, accPerImage);
     }
@@ -203,7 +209,8 @@ public sealed class ConvKernels : IDisposable
 
     /// <summary>
     /// Elements of the column matrix the whole batch of <paramref name="problem"/> needs (float32 or float16 elements, matching the data type): 0 for variants
-    /// that need none. A buffer of at least one image's worth (<c>ColumnElements / Batch</c>) works; the batch is then chunked.
+    /// that need none. A buffer of at least one image's worth (<c>ColumnElements / Batch</c>) works; the batch is then chunked. This is the size of the unfolded columns only; a
+    /// device that cuts a small grid's k into ranges needs the partial-sum planes as well, so size scratch with <see cref="Scratch(in ConvProblem, bool)"/>, which knows the device.
     /// </summary>
     /// <param name="problem">The convolution; it must be valid.</param>
     public static long ColumnElements(in ConvProblem problem) =>
@@ -368,7 +375,7 @@ public sealed class ConvKernels : IDisposable
         var pointwise = variant == ConvVariant.MatrixProduct;
         var coop = UsesCoopImplicit(half);
         var implicitGemm = coop || UsesImplicitGemm(half);
-        var (narrow, kSplits, kPerSplit) = coop ? CoopPlan(p) : (false, 1, (int)kElems);
+        var (narrow, kSplits, kPerSplit) = coop ? CoopPlan(p) : implicitGemm && !half ? PortablePlan(p) : (false, 1, (int)kElems);
         // With float32 operands the implicit kernel applies the bias, residual and the activations it knows as it stores; anything else is left to the epilogue pass.
         // A split convolution leaves all of that to the pass that adds the ranges.
         var fused = implicitGemm && (coop || !half) && kSplits == 1 && FusableActivation(p.Activation.Op);
@@ -473,32 +480,45 @@ public sealed class ConvKernels : IDisposable
                 var useBias = fused && bias is not null ? bias.Buffer : DummyFloat().Buffer;
                 var useRes = fused && residual is not null ? residual.Buffer : DummyFloat().Buffer;
                 var groupsZ = (uint)(cn * p.Groups);
-                if (coop)
+                cg[26] = 0;
+                cg[27] = 0;
+                cg[28] = 0;
+                if (planes)
                 {
-                    cg[26] = 0;
-                    cg[27] = 0;
-                    cg[28] = 0;
-                    if (planes)
-                    {
-                        // Halves: one plane per range of k in the float32 accumulator scratch (also with one range, when the epilogue pass applies the activation).
-                        cg[26] = kSplits > 1 ? (uint)kPerSplit : 0u;
-                        cg[27] = (uint)(cn * yImage);
-                        cg[28] = groupsZ;
-                        groupsZ *= (uint)kSplits;
-                    }
-                    else if (kSplits > 1)
-                    {
-                        // The planes of partial sums go to the column scratch; z runs split-major.
-                        target = cols!.Buffer;
-                        cg[18] = (uint)columnsOffset;
-                        cg[26] = (uint)kPerSplit;
-                        cg[27] = (uint)(cn * yImage);
-                        cg[28] = groupsZ;
-                        groupsZ *= (uint)kSplits;
-                    }
+                    // Halves: one plane per range of k in the float32 accumulator scratch (also with one range, when the epilogue pass applies the activation).
+                    cg[26] = kSplits > 1 ? (uint)kPerSplit : 0u;
+                    cg[27] = (uint)(cn * yImage);
+                    cg[28] = groupsZ;
+                    groupsZ *= (uint)kSplits;
+                }
+                else if (kSplits > 1)
+                {
+                    // The planes of partial sums go to the column scratch; z runs split-major.
+                    target = cols!.Buffer;
+                    cg[18] = (uint)columnsOffset;
+                    cg[26] = (uint)kPerSplit;
+                    cg[27] = (uint)(cn * yImage);
+                    cg[28] = groupsZ;
+                    groupsZ *= (uint)kSplits;
                 }
 
-                pipe.Record(encoder, coop ? cg : cg[..26], (uint)tilesX, (uint)tilesY, groupsZ, x.Buffer, w.Buffer, target, useBias, useRes);
+                if (coop)
+                {
+                    pipe.Record(encoder, cg, (uint)tilesX, (uint)tilesY, groupsZ, x.Buffer, w.Buffer, target, useBias, useRes);
+                }
+                else
+                {
+                    // The portable kernel has 26 push words; a split one reuses the activation words (see ConvGemm.hlsl).
+                    if (kSplits > 1)
+                    {
+                        cg[22] |= 8u;
+                        cg[23] = (uint)kPerSplit;
+                        cg[19] = cg[27];
+                        cg[20] = cg[28];
+                    }
+
+                    pipe.Record(encoder, cg[..26], (uint)tilesX, (uint)tilesY, groupsZ, x.Buffer, w.Buffer, target, useBias, useRes);
+                }
             }
             else
             {
@@ -613,6 +633,39 @@ public sealed class ConvKernels : IDisposable
         var perSplit = (int)((steps + splits - 1) / splits * 16);
         return (narrow, (int)((kElems + perSplit - 1) / perSplit), perSplit);
     }
+
+    // How many ranges of k the portable implicit kernel cuts a small grid into (float32 only), from the shape alone. The 64 x 64 tiles of a late layer at batch 1
+    // (a 7 x 7 image has one tile of pixels) leave most of a large GPU idle while each workgroup walks thousands of terms; ranges that run as workgroups of their
+    // own fill it, and their planes are added in range order afterwards, so the bits depend on the shape and nothing else. A range is a multiple of 32 terms so
+    // every range starts on a block-sum boundary.
+    (bool Narrow, int Splits, int KPerSplit) PortablePlan(in ConvProblem p)
+    {
+        long ohw = (long)p.OutHeight * p.OutWidth;
+        long coutG = p.OutChannels / p.Groups;
+        long kElems = (long)(p.InChannels / p.Groups) * p.KernelHeight * p.KernelWidth;
+        long groups = ((ohw + 63) / 64) * ((coutG + 63) / 64) * p.Groups * p.Batch;
+        var blocks = (kElems + 31) / 32;
+        if (!AllowKSplit || _device.Backend == GpuBackend.Metal || groups >= PortableSplitBelow || blocks < 2 * PortableMinBlocks)
+        {
+            return (false, 1, (int)kElems);
+        }
+
+        var splits = (int)Math.Min(Math.Min(PortableMaxSplits, (PortableSplitTarget + groups - 1) / groups), blocks / PortableMinBlocks);
+        if (splits < 2)
+        {
+            return (false, 1, (int)kElems);
+        }
+
+        var perSplit = (int)((blocks + splits - 1) / splits * 32);
+        return (false, (int)((kElems + perSplit - 1) / perSplit), perSplit);
+    }
+
+    // Grids under 384 workgroups are cut into up to 16 ranges of at least 128 terms, aiming at about 512 workgroups (ResNet-50's convolutions at batch 1 on an RTX 4070:
+    // 6.5 ms before, 2.6 ms with this). A grid of 392 (a 56 x 56 layer at batch 8) is left whole: two ranges measured 4 to 30 % slower there.
+    const long PortableSplitBelow = 384;
+    const long PortableSplitTarget = 512;
+    const int PortableMaxSplits = 16;
+    const int PortableMinBlocks = 4;   // 32-term blocks a range must keep
 
     // The implicit kernel is the portable tiled product with the window gathering built in. Where the matrix product of the element type runs on matrix
     // hardware the column-matrix path keeps that speed, so the implicit kernel is chosen only next to the portable product.
