@@ -30,13 +30,15 @@ struct Int8GemmParams
     uint Lda;
     uint Ldb;
     uint Flags;     // bit 0 A is int8, bit 1 B is int8, bit 2 B stored N x K, bit 3 zero point of A present, bit 4 one per row, bit 5 of B present, bit 6 one per column,
-                    // bit 7 every row of A (offset, stride, Lda) starts on a word boundary, bit 8 the same for B
+                    // bit 7 every row of A (offset, stride, Lda) starts on a word boundary, bit 8 the same for B,
+                    // bit 9 the tiles are numbered row-major over a GridX-wide grid instead of x = column tile, y = row tile
     uint OffZA;
     uint OffZB;
     uint Epi;       // see Int8GemmEpilogue.hlsli
     uint OffBias;
     uint OffScale;
     uint OffFBias;
+    uint GridX;     // workgroups along x when Flags bit 9 folds the tile grid into one dimension
 };
 
 [[vk::push_constant]] ConstantBuffer<Int8GemmParams> P;
@@ -99,6 +101,20 @@ void Int8GemmTiled(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
 {
     uint m0 = group.y * BM;
     uint n0 = group.x * BN;
+    if ((P.Flags & 512u) != 0u)
+    {
+        // A product with more tiles than one grid axis can hold: the host lays the tiles out over x and y, numbered row-major.
+        // Which tile a workgroup owns depends only on its id, and surplus workgroups of the last row leave before touching anything.
+        uint tilesN = (P.N + BN - 1u) / BN;
+        uint flat = group.y * P.GridX + group.x;
+        m0 = (flat / tilesN) * BM;
+        n0 = (flat % tilesN) * BN;
+        if (m0 >= P.M)
+        {
+            return;
+        }
+    }
+
     uint batch = group.z;
     uint baseA = P.OffA + batch * P.StrideA;
     uint baseB = P.OffB + batch * P.StrideB;

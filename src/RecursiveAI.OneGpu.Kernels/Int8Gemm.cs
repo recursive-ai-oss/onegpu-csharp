@@ -121,7 +121,7 @@ public struct Int8GemmProblem
 public sealed class Int8Gemm : IDisposable
 {
     const string Name = "Int8Gemm";
-    const int GemmWords = 18;
+    const int GemmWords = 19;
     const int EpilogueWords = 11;
 
     // On a discrete GPU the packed-dot variant runs a product with fewer 64x64 tiles than this on 32x32 tiles, which put four times as many
@@ -531,6 +531,14 @@ public sealed class Int8Gemm : IDisposable
         var groupsX = (uint)((p.N + edge - 1) / edge);
         var groupsY = (uint)((p.M + edge - 1) / edge);
         var limit = _device.Capabilities.Compute.MaxWorkgroupCount;
+        var fold = false;
+        if (limit != 0 && (groupsX > limit || groupsY > limit))
+        {
+            // More tiles along one axis than a grid dimension holds (a very wide or very tall product): number the tiles row-major over x and y.
+            (groupsX, groupsY) = Grid.For(_device, (long)groupsX * groupsY);
+            fold = true;
+        }
+
         if (limit != 0 && (groupsX > limit || groupsY > limit || (uint)p.Batch > limit))
         {
             throw new GpuKernelShapeException(Name, "M, N or Batch", $"the grid of {groupsX} x {groupsY} x {p.Batch} workgroups exceeds the device limit of {limit} per axis");
@@ -561,6 +569,11 @@ public sealed class Int8Gemm : IDisposable
             flags |= 256u;
         }
 
+        if (fold)
+        {
+            flags |= 512u;
+        }
+
         Span<uint> w = stackalloc uint[GemmWords];
         w[0] = (uint)p.M;
         w[1] = (uint)p.N;
@@ -580,6 +593,7 @@ public sealed class Int8Gemm : IDisposable
         w[15] = epi.OffIntBias;
         w[16] = epi.OffScale;
         w[17] = epi.OffFloatBias;
+        w[18] = groupsX;
         var dummy = _dummy.Buffer;
         var pipeline = _gemm[small ? 1 : 0] ??= CreateGemm(small);
         pipeline.Record(encoder, w, groupsX, groupsY, (uint)p.Batch, [a, b, c, zaBuffer ?? dummy, zbBuffer ?? dummy, epi.IntBias ?? dummy, epi.Scale ?? dummy, epi.FloatBias ?? dummy]);

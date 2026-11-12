@@ -630,6 +630,72 @@ internal static class KernelSmoke
     }
 
 
+    /// <summary>A small ConvInteger (uint8 input with a zero point, int8 weights with one zero point per channel, padding, two groups) against the definition.</summary>
+    public static async Task<int> ConvIntegerAsync(GpuDevice device)
+    {
+        const int Cin = 4, Cout = 6, H = 7, W = 6, Groups = 2;
+        var x = new byte[Cin * H * W];
+        for (var i = 0; i < x.Length; i++)
+        {
+            x[i] = (byte)((i * 53) % 251);
+        }
+
+        var w = new sbyte[Cout * (Cin / Groups) * 9];
+        for (var i = 0; i < w.Length; i++)
+        {
+            w[i] = (sbyte)(((i * 29) % 255) - 127);
+        }
+
+        byte[] xz = [131];
+        sbyte[] wz = [3, -4, 0, 7, -1, 2];
+        var problem = new ConvProblem(1, Cin, H, W, Cout, 3, 3) { PadTop = 1, PadBottom = 1, PadLeft = 1, PadRight = 1, Groups = Groups };
+        using var conv = new ConvIntegerKernels(device);
+        using var bx = device.CreateBuffer<byte>(x);
+        using var bw = device.CreateBuffer<sbyte>(w);
+        using var bxz = device.CreateBuffer<byte>(xz);
+        using var bwz = device.CreateBuffer<sbyte>(wz);
+        using var by = device.CreateBuffer<int>(Cout * H * W);
+        var commands = device.BeginCommands();
+        conv.Encode(commands, problem, bx, bw, by, new Int8Operand<byte>(bxz, 0), new Int8Operand<sbyte>(bwz, 0, true));
+        device.Submit(commands);
+        var got = new int[Cout * H * W];
+        await by.ReadAsync(got);
+
+        var wrong = 0;
+        for (var m = 0; m < Cout; m++)
+        {
+            var g = m / (Cout / Groups);
+            for (var i = 0; i < H; i++)
+            {
+                for (var j = 0; j < W; j++)
+                {
+                    var acc = 0;
+                    for (var c = 0; c < Cin / Groups; c++)
+                    {
+                        for (var kh = 0; kh < 3; kh++)
+                        {
+                            for (var kw = 0; kw < 3; kw++)
+                            {
+                                int ih = i + kh - 1, iw = j + kw - 1;
+                                if (ih < 0 || ih >= H || iw < 0 || iw >= W)
+                                {
+                                    continue;
+                                }
+
+                                acc += (x[((((g * (Cin / Groups)) + c) * H) + ih) * W + iw] - xz[0]) * (w[((((m * (Cin / Groups)) + c) * 3) + kh) * 3 + kw] - wz[m]);
+                            }
+                        }
+                    }
+
+                    wrong += got[((m * H) + i) * W + j] == acc ? 0 : 1;
+                }
+            }
+        }
+
+        return wrong;
+    }
+
+
     // Abramowitz and Stegun 7.1.26, enough for a 1e-4 smoke check.
     static double Erf(double x)
     {

@@ -841,33 +841,33 @@ public sealed class ConvKernels : IDisposable
         }
     }
 
-    static void CheckConv(in ConvProblem p, long oh, long ow)
+    internal static void CheckConv(in ConvProblem p, long oh, long ow, string name = ConvName)
     {
         if (p.Batch < 1)
         {
-            throw new GpuKernelShapeException(ConvName, nameof(p.Batch), $"batch {p.Batch} must be at least 1");
+            throw new GpuKernelShapeException(name, nameof(p.Batch), $"batch {p.Batch} must be at least 1");
         }
 
         if (p.InChannels < 1 || p.OutChannels < 1)
         {
-            throw new GpuKernelShapeException(ConvName, p.InChannels < 1 ? nameof(p.InChannels) : nameof(p.OutChannels), $"channel counts {p.InChannels}, {p.OutChannels} must be at least 1");
+            throw new GpuKernelShapeException(name, p.InChannels < 1 ? nameof(p.InChannels) : nameof(p.OutChannels), $"channel counts {p.InChannels}, {p.OutChannels} must be at least 1");
         }
 
         if (p.Groups < 1 || p.InChannels % p.Groups != 0 || p.OutChannels % p.Groups != 0)
         {
-            throw new GpuKernelShapeException(ConvName, nameof(p.Groups), $"{p.Groups} groups do not divide {p.InChannels} input and {p.OutChannels} output channels");
+            throw new GpuKernelShapeException(name, nameof(p.Groups), $"{p.Groups} groups do not divide {p.InChannels} input and {p.OutChannels} output channels");
         }
 
-        CheckWindow(ConvName, "height", p.Height, p.KernelHeight, p.StrideHeight, p.DilationHeight, p.PadTop, p.PadBottom);
-        CheckWindow(ConvName, "width", p.Width, p.KernelWidth, p.StrideWidth, p.DilationWidth, p.PadLeft, p.PadRight);
+        CheckWindow(name, "height", p.Height, p.KernelHeight, p.StrideHeight, p.DilationHeight, p.PadTop, p.PadBottom);
+        CheckWindow(name, "width", p.Width, p.KernelWidth, p.StrideWidth, p.DilationWidth, p.PadLeft, p.PadRight);
         if (oh < 1)
         {
-            throw new GpuKernelShapeException(ConvName, "height", $"the kernel ({p.KernelHeight} with dilation {p.DilationHeight}) does not fit the padded input ({p.Height} + {p.PadTop} + {p.PadBottom})");
+            throw new GpuKernelShapeException(name, "height", $"the kernel ({p.KernelHeight} with dilation {p.DilationHeight}) does not fit the padded input ({p.Height} + {p.PadTop} + {p.PadBottom})");
         }
 
         if (ow < 1)
         {
-            throw new GpuKernelShapeException(ConvName, "width", $"the kernel ({p.KernelWidth} with dilation {p.DilationWidth}) does not fit the padded input ({p.Width} + {p.PadLeft} + {p.PadRight})");
+            throw new GpuKernelShapeException(name, "width", $"the kernel ({p.KernelWidth} with dilation {p.DilationWidth}) does not fit the padded input ({p.Width} + {p.PadLeft} + {p.PadRight})");
         }
     }
 

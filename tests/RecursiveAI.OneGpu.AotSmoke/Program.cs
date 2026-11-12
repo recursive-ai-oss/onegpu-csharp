@@ -57,6 +57,7 @@ for (var i = 0; i < Count; i++)
 }
 
 wrong += await KernelSmoke.RunAsync(device);
+wrong += await KernelSmoke.ConvIntegerAsync(device);
 
 device.WaitIdle();
 var messages = device.TakeValidationMessages();
