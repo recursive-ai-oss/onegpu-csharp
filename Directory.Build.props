@@ -66,10 +66,11 @@
     <None Include="$(MSBuildThisFileDirectory)assets/icon.png" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
 
-  <!-- Package validation fails a pack on an unintended breaking change. This is the first release, so there is no baseline version yet;
-       set PackageValidationBaselineVersion to the last published version after each release. -->
+  <!-- Package validation fails a pack on an unintended breaking change against the last published version; move the baseline after
+       each release. -->
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselineVersion>1.0.0</PackageValidationBaselineVersion>
   </PropertyGroup>
 
   <!-- "Ships" means the code goes into a consumer's program: everything under src/. Those projects get the package guard

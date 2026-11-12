@@ -87,7 +87,9 @@ jobs:
         run: |
           dotnet workload install wasm-tools
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers clang zlib1g-dev
+          # The layer version is pinned in tools/ci/fetch-validation-layer.sh, as in ci.yml.
+          layer=$(sed -n 's/^LAYER_PACKAGE_VERSION="\(.*\)"$/\1/p' tools/ci/fetch-validation-layer.sh)
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers "vulkan-validationlayers=$layer" clang zlib1g-dev
 
       - name: Restore
         run: dotnet restore OneGpu.slnx
