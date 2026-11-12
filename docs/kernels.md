@@ -42,6 +42,7 @@ device.Submit(encoder);
 | `ScatterKernels` | ScatterND and ScatterElements with reduction none, add, mul, min or max |
 | `LayoutKernels` | Slice (including negative steps), Expand, Concat (up to four inputs per pass, more by chaining; inputs may live in the output's buffer when their ranges do not overlap the output's, read in place, or through a scratch copy in a browser); Expand may run in place (below) |
 | `Int8Gemm` | MatMulInteger (uint8/int8 in any mix, scalar or per-row/column zero points, int32 result), the float-scaled form and the requantized form of QLinearMatMul |
+| `ConvIntegerKernels` | ConvInteger (uint8/int8 input and weights in any mix, scalar x zero point, scalar or per-channel w zero point, groups, dilation, padding, rank 3 and 4, int32 result) |
 | `DynamicQuantizeKernels` | DynamicQuantizeLinear (float32 to uint8 with scale and zero point) |
 | `DequantizeKernels` | DequantizeLinear: uint8, int8 or int32 to float32 or Half, per tensor or per axis, optional zero point; QuantizeLinear: float32 or Half to uint8 or int8, per tensor or per axis |
 | `RecurrentKernels` | ONNX RNN, GRU and LSTM over float32 or Half, forward, reverse and bidirectional (see [recurrent.md](recurrent.md)) |
@@ -154,6 +155,7 @@ The reductions, softmax and normalisation have both modes.
   outputs share, so it keeps the sums in a scratch buffer for a second pass. That scratch is the instance's own and grows on demand (a larger product then builds a new bind group), unless the caller
   places it: `Int8Scratch` (buffer plus element offset) on `EncodeRequantized`, sized with `Int8Gemm.ScratchElements`, or `ReserveScratch` once at session creation.
   `Int8Gemm.Variant` reports the variant chosen for the device, and `Int8GemmOptions.AllowPackedDot = false` forces the portable one; both give the same bits.
+  A product with more tiles along one axis than a dispatch grid holds (a very wide or tall one: more than 65535 tiles, that is 4.19 million columns at 64-wide tiles) numbers its tiles row-major over x and y; the tile a workgroup owns still depends only on its id, so the bits do not change.
   - **Packed dot** (`packed-dot-tile64x64x32`): chosen when the device reports an 8-bit dot product (`GpuComputeCapabilities.Int8DotProduct`: Vulkan `shaderIntegerDotProduct`,
     the browser's `packed_4x8_integer_dot_product`). Four byte pairs are multiplied and summed per instruction (`dot4add_i8packed`). That instruction takes signed bytes only, so
     unsigned operands are staged as `u - 128` and the zero points move by the same amount; the zero points are then applied after the loop from byte sums collected while staging:

@@ -85,11 +85,26 @@ A version that prefetched the next tile into registers ran 40 % slower (register
   the same taps. Not provided: cubic, antialias, `exclude_outside`, `tf_crop_and_resize`.
 - `BatchNormalization` has no kernel: inference batch norm folds into the convolution weights in the graph, and the DBNet and reference exports are already folded.
 
+## ConvInteger
+
+`ConvIntegerKernels` is ONNX `ConvInteger`: `y = sum (x - xZero) * (w - wZero[m])` in int32 with wrap-around, for uint8 and int8 `x` and `w` in any mix, the geometry of `ConvProblem` (strides, dilations,
+asymmetric padding, groups, 1-D as height 1). The zero point of `x` is one value and that of `w` one value or one per output channel, in device buffers of their operand's own type. A padded tap is
+the real value zero, which is the quantized value `xZero`, so it adds nothing: the unfolding pass writes `xZero` into padded positions and the product subtracts it again, which is
+how onemodel's CPU kernel treats padding.
+
+It is lowered to `Int8Gemm` as the float convolution is to `Gemm` (Chellapilla et al., 2006): one pass unfolds the windows of each image and group into a byte matrix (`K = InChannels / Groups * KH * KW` rows, rows padded to
+a multiple of four bytes so the product reads whole words), then the weights of the group multiply it. One group makes one product for the whole batch. Several groups make one product per image and group,
+which is slow for depthwise convolutions with many channels (no direct 8-bit depthwise kernel yet). Sums are exact integers, so the packed-dot and portable products, every device and both `GpuKernelMode`
+values give the same bits. Column scratch is the instance's own (up to 64 MiB, then the batch runs in chunks of images) or caller-placed (`GpuBuffer<TX>` and a byte offset that is a multiple of four,
+`ConvIntegerKernels.ScratchBytesPerImage`). Tested bit for bit against a plain C# definition of the operator on the Whisper-small front end (80 to 768 channels over 3000 frames, kernel 3, and 768 to 768 with stride 2),
+ResNet-50 and MobileNet shapes, dilation, asymmetric padding, groups, offsets, extreme values and all four type combinations, with the packed-dot product and with it ruled out.
+
 ## Tolerances (what the tests assert; scaled error as in [kernels.md](kernels.md))
 
 | Operation | float32 | half in, float32 accumulation |
 |---|---|---|
 | Conv, ConvTranspose (fast and deterministic) | 1e-5 (measured <= 2.1e-6 over 23 ResNet-50, 45 MobileNetV3-large and 34 DBNet layer shapes, b1 and b8) | 2e-3 (measured <= 4.4e-4) |
+| ConvInteger | bit-exact (int32) | |
 | MaxPool, GlobalMaxPool | bit-exact | bit-exact |
 | AveragePool, GlobalAveragePool | 1e-5 (measured 2.3e-7) | 2e-3 |
 | Resize nearest | bit-exact | bit-exact |

@@ -6,14 +6,15 @@
 // Tells the managed side that a page already loaded this script and registered it, so the library does not import a second copy.
 globalThis.__onegpuLoaded = true;
 
-const O = [];            // handle -> WebGPU object (or a small record around one)
-const M = [];            // handle -> metadata of textures
+// Each GpuDevice created in a page is a context of its own: its WebGPU device, its handle table and its pass state. The names below always hold the
+// context that was entered last (see enter), so the interpreter reads like single-device code; every exported function takes the context number first.
+let O = [];              // handle -> WebGPU object (or a small record around one)
+let M = [];              // handle -> metadata of textures
 let device = null, queue = null, adapterInfo = null;
-const messages = [];
-let lost = null;
+let messages = [];
 const td = new TextDecoder();
-const viewCache = new Map();
-const mipPipelines = new Map();
+let viewCache = new Map();
+let mipPipelines = new Map();
 
 const FMT = [null, 'r8unorm', 'rg8unorm', 'rgba8unorm', 'rgba8unorm-srgb', 'bgra8unorm', 'bgra8unorm-srgb', 'r16float', 'rgba16float', 'r32float', 'rg32float', 'rgba32float', 'r32uint', 'depth32float', 'depth32float-stencil8', 'rg16float', 'rg11b10ufloat', 'rgb10a2unorm', 'depth16unorm'];
 const BPT = [0, 1, 2, 4, 4, 4, 4, 2, 8, 4, 8, 16, 4, 4, 8, 4, 4, 4, 2];
@@ -26,6 +27,32 @@ const BO = ['add', 'subtract', 'reverse-subtract', 'min', 'max'];
 const ADDR = ['clamp-to-edge', 'repeat', 'mirror-repeat'];
 const isDepth = f => f.startsWith('depth');
 const hasStencil = f => f === 'depth32float-stencil8';
+
+// ---- contexts ----
+const contexts = [];
+let current = -1;
+function saveState() {
+  const c = contexts[current];
+  c.O = O; c.M = M; c.device = device; c.queue = queue; c.adapterInfo = adapterInfo; c.messages = messages; c.viewCache = viewCache; c.mipPipelines = mipPipelines;
+  c.pushRing = pushRing; c.pushOff = pushOff; c.lastPushOff = lastPushOff; c.enc = enc; c.rp = rp; c.cp = cp; c.curPipeline = curPipeline; c.curV = curV;
+  c.pipeLayout = pipeLayout; c.pending = pending; c.garbage = garbage;
+}
+function loadState(c) {
+  O = c.O; M = c.M; device = c.device; queue = c.queue; adapterInfo = c.adapterInfo; messages = c.messages; viewCache = c.viewCache; mipPipelines = c.mipPipelines;
+  pushRing = c.pushRing; pushOff = c.pushOff; lastPushOff = c.lastPushOff; enc = c.enc; rp = c.rp; cp = c.cp; curPipeline = c.curPipeline; curV = c.curV;
+  pipeLayout = c.pipeLayout; pending = c.pending; garbage = c.garbage;
+}
+function newContext() {
+  return { O: [], M: [], device: null, queue: null, adapterInfo: null, messages: [], lost: null, viewCache: new Map(), mipPipelines: new Map(), pushRing: null, pushOff: 0, lastPushOff: 0,
+    enc: null, rp: null, cp: null, curPipeline: null, curV: null, pipeLayout: new WeakMap(), pending: new Map(), garbage: [] };
+}
+// Makes a context the current one. Everything that runs between an await and the end of a function must have read what it needs before the await.
+function enter(id) {
+  if (id === current) return;
+  if (current >= 0) saveState();
+  loadState(contexts[id]);
+  current = id;
+}
 
 function note(m) { if (messages.length < 200) messages.push(m); }
 
@@ -49,12 +76,19 @@ export async function init(requestJson) {
   const limitNames = ['maxTextureDimension1D', 'maxTextureDimension2D', 'maxTextureDimension3D', 'maxTextureArrayLayers', 'maxBindGroups', 'maxBindingsPerBindGroup', 'maxDynamicUniformBuffersPerPipelineLayout', 'maxDynamicStorageBuffersPerPipelineLayout', 'maxSampledTexturesPerShaderStage', 'maxSamplersPerShaderStage', 'maxStorageBuffersPerShaderStage', 'maxStorageTexturesPerShaderStage', 'maxUniformBuffersPerShaderStage', 'maxUniformBufferBindingSize', 'maxStorageBufferBindingSize', 'maxVertexBuffers', 'maxBufferSize', 'maxVertexAttributes', 'maxVertexBufferArrayStride', 'maxInterStageShaderVariables', 'maxColorAttachments', 'maxColorAttachmentBytesPerSample', 'maxComputeWorkgroupStorageSize', 'maxComputeInvocationsPerWorkgroup', 'maxComputeWorkgroupSizeX', 'maxComputeWorkgroupSizeY', 'maxComputeWorkgroupSizeZ', 'maxComputeWorkgroupsPerDimension'];
   const requiredLimits = {};
   for (const k of limitNames) if (adapter.limits[k] !== undefined) requiredLimits[k] = adapter.limits[k];
-  device = await adapter.requestDevice({ requiredFeatures: features, requiredLimits });
+  const dev = await adapter.requestDevice({ requiredFeatures: features, requiredLimits });
+  const ctx = newContext();
+  contexts.push(ctx);
+  const id = contexts.length - 1;
+  enter(id);
+  device = dev;
   queue = device.queue;
-  device.addEventListener('uncapturederror', e => note('uncaptured error: ' + e.error.message));
-  device.lost.then(i => { lost = i.reason + ': ' + i.message; });
+  const own = messages;
+  device.addEventListener('uncapturederror', e => { if (own.length < 200) own.push('uncaptured error: ' + e.error.message); });
+  device.lost.then(i => { ctx.lost = i.reason + ': ' + i.message; });
   const info = adapter.info || {};
   adapterInfo = {
+    ctx: id,
     name: info.description || info.device || ((info.vendor || 'webgpu') + ' ' + (info.architecture || '')).trim(),
     vendor: info.vendor || '', architecture: info.architecture || '', features,
     software: !!(adapter.isFallbackAdapter || info.isFallbackAdapter || /swiftshader|llvmpipe|software/i.test((info.description || '') + (info.vendor || '') + (info.architecture || ''))),
@@ -67,21 +101,23 @@ export async function init(requestJson) {
   return JSON.stringify(adapterInfo);
 }
 
-export function takeMessages() {
-  const out = messages.splice(0, messages.length);
-  if (lost) { out.push('device lost: ' + lost); lost = null; }
+export function takeMessages(ctx) {
+  const c = contexts[ctx];
+  const out = c.messages.splice(0, c.messages.length);
+  if (c.lost) { out.push('device lost: ' + c.lost); c.lost = null; }
   return out.join('\n');
 }
 
-export function configureCanvas(canvasId, width, height) {
+export function configureCanvas(ctx, canvasId, width, height) {
+  enter(ctx);
   const canvas = document.getElementById(canvasId);
   if (!canvas) throw new Error('No canvas element with id "' + canvasId + '".');
   if (width > 0) canvas.width = width;
   if (height > 0) canvas.height = height;
   if (!canvas.__ctx) {
-    const ctx = canvas.getContext('webgpu');
-    ctx.configure({ device, format: 'bgra8unorm', viewFormats: ['bgra8unorm-srgb'], usage: 16 | 1, alphaMode: 'opaque' });
-    canvas.__ctx = ctx;
+    const gl = canvas.getContext('webgpu');
+    gl.configure({ device, format: 'bgra8unorm', viewFormats: ['bgra8unorm-srgb'], usage: 16 | 1, alphaMode: 'opaque' });
+    canvas.__ctx = gl;
   }
   return canvas.width + 'x' + canvas.height;
 }
@@ -338,15 +374,16 @@ function generateMips(enc, id) {
 
 // ---- the interpreter ----
 let enc = null, rp = null, cp = null, curPipeline = null, curV = null;
-const pipeLayout = new WeakMap();
-const pending = new Map();   // set index -> the bind group last set in this pass
+let pipeLayout = new WeakMap();
+let pending = new Map();   // set index -> the bind group last set in this pass
 function applyBind(set, gid, dyn) {
   const bg = realizeBindGroup(O[gid], curV);
   if (bg) (rp || cp).setBindGroup(set, bg, curV.pushGroup === set ? [...dyn, lastPushOff] : dyn);
 }
-const garbage = [];   // temporary buffers of the current encoder, destroyed once it is submitted
+let garbage = [];   // temporary buffers of the current encoder, destroyed once it is submitted
 
-export function exec(view) {
+export function exec(ctx, view) {
+  enter(ctx);
   const copy = view.slice();   // the managed buffer is only valid during this call
   u8 = copy; dv = new DataView(copy.buffer, copy.byteOffset, copy.byteLength); p = 0;
   try {
@@ -596,7 +633,8 @@ function graphicsPipeline() {
 }
 
 // ---- reads ----
-export async function readTexture(id, mip, layer, w, h, d, bpt) {
+export async function readTexture(ctx, id, mip, layer, w, h, d, bpt) {
+  enter(ctx);
   const m = M[id];
   const row = w * bpt, padded = (row + 255) & ~255;
   const buf = device.createBuffer({ size: padded * h * d, usage: 8 | 1 });
@@ -616,7 +654,8 @@ let ticketCounter = 0;
 function stash(bytes) { const t = ++ticketCounter; reads.set(t, bytes); return t; }
 export function takeRead(ticket, dest) { dest.set(reads.get(ticket)); reads.delete(ticket); }
 
-export async function readBuffer(id, offset, size) {
+export async function readBuffer(ctx, id, offset, size) {
+  enter(ctx);
   const padded = (size + 3) & ~3;
   const buf = device.createBuffer({ size: Math.max(4, padded), usage: 8 | 1 });
   const e = device.createCommandEncoder();
@@ -628,4 +667,4 @@ export async function readBuffer(id, offset, size) {
   return stash(out);
 }
 
-export function whenIdle() { return queue.onSubmittedWorkDone(); }
+export function whenIdle(ctx) { enter(ctx); return queue.onSubmittedWorkDone(); }
