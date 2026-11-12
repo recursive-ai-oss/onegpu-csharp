@@ -27,7 +27,7 @@
 
   <ItemGroup>
     <Compile Include="*.cs" />
-    <Compile Include="$(KernelTests)*.cs" Exclude="$(KernelTests)Fixture.cs;$(KernelTests)RecurrentThroughput.cs" />
+    <Compile Include="$(KernelTests)*.cs" Exclude="$(KernelTests)Fixture.cs;$(KernelTests)RecurrentThroughput.cs;$(KernelTests)DispatchCostThroughput.cs" />
     <Compile Include="$(Shared)FeatureTests.cs;$(Shared)ComputeTests.cs;$(Shared)RenderTests.cs;$(Shared)Png.cs;$(Shared)ReadHelpers.cs" />
     <OneShader Include="$(Shared)Shaders/*.hlsl" Exclude="$(Shared)Shaders/TextureArray.hlsl" Targets="SpirV;Msl;Wgsl" />
     <EmbeddedResource Include="../../testdata/gpu/*.png" LogicalName="golden/%(Filename)%(Extension)" />

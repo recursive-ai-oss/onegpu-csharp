@@ -30,6 +30,7 @@ public sealed class RecurrentThroughput
         }
 
         Time<float>(d, k, GpuRecurrentCell.Gru, 80, 1, 256, 256);
+
         Floor(d, 80);
         d.WaitIdle();
     }
@@ -59,6 +60,26 @@ public sealed class RecurrentThroughput
         }
 
         d.WaitIdle();
+        // Wall time with no pass timing: on Metal every timed pass gets an encoder of its own, so the timed runs below carry an encoder per pass.
+        var plain = new List<double>();
+        var recordTimes = new List<double>();
+        var submitTimes = new List<double>();
+        for (var i = 0; i < Calls; i++)
+        {
+            var sw0 = Stopwatch.StartNew();
+            var enc = d.BeginCommands();
+            k.Encode(enc, p, o);
+            recordTimes.Add(sw0.Elapsed.TotalMilliseconds * 1e6);
+            var sw = Stopwatch.StartNew();
+            d.Submit(enc);
+            submitTimes.Add(sw.Elapsed.TotalMilliseconds * 1e6);
+            d.WaitIdle();
+            plain.Add(sw.Elapsed.TotalMilliseconds * 1e6);
+        }
+
+        plain.Sort();
+        recordTimes.Sort();
+        submitTimes.Sort();
         var spans = new List<double>();
         var steps = new List<double>();
         var walls = new List<double>();
@@ -102,9 +123,9 @@ public sealed class RecurrentThroughput
         var gpu = Median(spans);
         var wall = Median(walls);
         var step = Median(steps);
-        var line = $"{d.Adapter.Name}\t{cell} bidirectional {typeof(T).Name}\tS{seq} B{batch} I{input} H{hidden}\t{gpu / 1000:F0} us gpu per call\t{wall / 1000:F0} us wall per call\t{step / 1000:F1} us per step (gpu passes)\t{wall / seq / 1000:F1} us wall per step";
+        var line = $"{d.Adapter.Name}\t{cell} bidirectional {typeof(T).Name}\tS{seq} B{batch} I{input} H{hidden}\t{gpu / 1000:F0} us gpu per call\t{wall / 1000:F0} us wall per call\t{step / 1000:F1} us per step (gpu passes)\t{wall / seq / 1000:F1} us wall per step\t{plain[plain.Count / 2] / 1000:F0} us wall per call untimed";
         Console.WriteLine("RECURRENT\t" + line);
-        Rig.Row(d, "recurrent timing (indicative)", typeof(T).Name, $"{cell} bidirectional S{seq} B{batch} I{input} H{hidden}", $"{gpu / 1000:F0} us gpu per call, {wall / 1000:F0} us wall per call, {step / 1000:F1} us per step (sum of the step passes), {wall / seq / 1000:F1} us wall per step");
+        Rig.Row(d, "recurrent timing (indicative)", typeof(T).Name, $"{cell} bidirectional S{seq} B{batch} I{input} H{hidden}", $"{gpu / 1000:F0} us gpu per call, {wall / 1000:F0} us wall per call, {step / 1000:F1} us per step (sum of the step passes), {wall / seq / 1000:F1} us wall per step, {plain[plain.Count / 2] / 1000:F0} us wall per call with no pass timing (record {recordTimes[recordTimes.Count / 2] / 1000:F0} us before it, submit call {submitTimes[submitTimes.Count / 2] / 1000:F0} us of it)");
     }
 
     // A chain of dependent passes of one small workgroup each: the floor of any one-pass-per-step design.

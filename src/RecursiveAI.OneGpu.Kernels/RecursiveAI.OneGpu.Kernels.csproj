@@ -45,7 +45,7 @@
     <OneShader Include="Shaders/Quantize.hlsl" Axes="SIGNED;F16" />
     <OneShader Include="Shaders/RecurrentInit.hlsl" Axes="F16" />
     <OneShader Include="Shaders/RecurrentOutputs.hlsl" Axes="F16" />
-    <OneShader Include="Shaders/RecurrentStep.hlsl" Axes="F16" />
+    <OneShader Include="Shaders/RecurrentStep.hlsl" Axes="F16;SMALL;STD;CELL=LSTM|GRU|RNN" />
     <OneShader Include="Shaders/Int8GemmDot.hlsl" Axes="SMALL" />
     <OneShader Include="Shaders/Int8GemmKernel.hlsl" />
     <OneShader Include="Shaders/Norm.hlsl" Axes="F16;WAVE" />

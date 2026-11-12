@@ -4,7 +4,7 @@
 // recurrent product Rec = H * R^T for the step and the gate arithmetic that follows, so a step is one dispatch and the dispatches are
 // ordered by the barriers between passes. A workgroup owns U hidden units of one direction (U = ROWS / gates computed in the pass, so ROWS
 // rows of R per workgroup) and all batch rows. For each row of R, LANES lanes (consecutive k, so loads coalesce) each sum k = lane, lane + LANES, ...
-// in increasing order, and the partial sums are combined by a fixed halving tree in shared memory. Nothing depends on the subgroup size, the
+// in increasing order, and the partial sums are combined in a fixed halving-tree order (LaneTree). Nothing depends on the subgroup size, the
 // scheduling or the occupancy, and there are no atomics, so a result is bit-identical from run to run on one device.
 //
 // State lives in one float buffer: H (two copies, swapped every step so no workgroup reads what another writes), C, r*H and z of a GRU
@@ -16,9 +16,23 @@
 
 #include "Functions.hlsl"
 
+// Batch rows a workgroup carries through the product at once. A product with a single batch row (the usual case for a recognizer or a decoder step)
+// needs one accumulator per thread, which keeps registers and shared memory low enough for many more workgroups to be resident (SMALL).
+#if SMALL
+#define BT 1u
+#else
 #define BT 8u
+#endif
 // Lanes that share one row of R, and so the rows a workgroup covers (256 / LANES). Fewer lanes per row means fewer workgroups per pass, each with more
 // work, which is what hides the latency of a pass that is a few microseconds of arithmetic.
+// The cell is fixed per kernel (CELL axis), so the other cells' code is not in it: a smaller kernel starts faster.
+#if CELL_LSTM
+#define CELLV 2u
+#elif CELL_GRU
+#define CELLV 1u
+#else
+#define CELLV 0u
+#endif
 #define LANES 8u
 #define ROWS (256u / LANES)
 
@@ -84,6 +98,14 @@ float Param(uint i)
 }
 
 // The activation a (0 f, 1 g, 2 h) of direction d. Definitions as in the ONNX operator documentation.
+// STD is the ONNX defaults (Sigmoid for f of an LSTM or GRU, Tanh everywhere else): five calls of the general switch below, each with eleven inlined
+// cases, make a kernel large enough that fetching its instructions dominates the short step, so layers with the defaults get the small form.
+#if STD
+float Act(uint d, uint a, float x)
+{
+    return (a == 0u && CELLV != 0u) ? Sigmoid(x) : Tanh(x);
+}
+#else
 float Act(uint d, uint a, float x)
 {
     uint kind = (P.Kinds >> (d * 12u + a * 4u)) & 15u;
@@ -109,6 +131,7 @@ float Act(uint d, uint a, float x)
         default: return (x > 20.0 || IsNaN(x)) ? x : log(1.0 + exp(x));
     }
 }
+#endif
 
 float LoadR(uint i)
 {
@@ -137,6 +160,11 @@ float LoadPeep(uint i)
 #endif
 }
 
+float LaneTree(uint at)
+{
+    return ((Sh[at] + Sh[at + 4u]) + (Sh[at + 2u] + Sh[at + 6u])) + ((Sh[at + 1u] + Sh[at + 5u]) + (Sh[at + 3u] + Sh[at + 7u]));
+}
+
 float ClipV(float v)
 {
     if (P.Clip > 0.0)
@@ -147,39 +175,34 @@ float ClipV(float v)
     return v;
 }
 
-[shader("compute")]
-[numthreads(256, 1, 1)]
-void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
+// One workgroup's share of a step: the hidden units gx * U .. gx * U + U - 1 of direction d, for the gates formed by the pass (ng of them from gate0).
+void StepGroup(uint d, uint tid, uint gx, uint stp, bool phase1, uint ng, uint gate0)
 {
-    uint d = gid.y;
     uint hid = P.Hid;
     uint batch = P.Batch;
-    uint cell = P.Flags & 3u;
+    const uint cell = CELLV;
     bool lbr = (P.Flags & 4u) != 0u;
     bool inputForget = (P.Flags & 8u) != 0u;
     bool hasBias = (P.Flags & 16u) != 0u;
     bool hasPeep = (P.Flags & 32u) != 0u;
     bool hasLens = (P.Flags & 64u) != 0u;
     bool layout1 = (P.Flags & 128u) != 0u;
-    bool phase1 = (P.Flags & 512u) != 0u;
     uint dirs = (P.Flags & 1024u) != 0u ? 2u : 1u;
     bool rev = ((P.Flags >> (12u + d)) & 1u) != 0u;
     uint totalGates = cell == 2u ? 4u : (cell == 1u ? 3u : 1u);
     uint gh = totalGates * hid;
     uint dbh = dirs * batch * hid;
-    uint ng = P.Gates & 15u;
-    uint gate0 = (P.Gates >> 4) & 15u;
     // ROWS rows of R per workgroup: U hidden units times the gates formed in this pass.
     uint U = ROWS / ng;
-    uint j0 = gid.x * U;
+    uint j0 = gx * U;
     uint row = tid / LANES;
     uint lane = tid % LANES;
     uint rowUnit = row % U;
     uint rowGate = row / U;
     bool rowLive = row < U * ng && j0 + rowUnit < hid;
 
-    uint hIn = P.OffState + (P.Step & 1u) * dbh;
-    uint hOut = P.OffState + (1u - (P.Step & 1u)) * dbh;
+    uint hIn = P.OffState + (stp & 1u) * dbh;
+    uint hOut = P.OffState + (1u - (stp & 1u)) * dbh;
     uint cOff = P.OffState + 2u * dbh;
     uint rhOff = P.OffState + 3u * dbh;
     uint zOff = P.OffState + 4u * dbh;
@@ -244,27 +267,19 @@ void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
             }
         }
 
+        // Batch-major in shared memory (one row of 256 per batch row, only the batch rows that exist), so neighbouring threads touch neighbouring words.
         [unroll]
         for (uint i2 = 0u; i2 < BT; i2++)
         {
-            Sh[tid * BT + i2] = acc[i2];
-        }
-
-        GroupMemoryBarrierWithGroupSync();
-        [unroll]
-        for (uint s = LANES / 2u; s > 0u; s >>= 1)
-        {
-            if (lane < s)
+            if (i2 < nb)
             {
-                [unroll]
-                for (uint i3 = 0u; i3 < BT; i3++)
-                {
-                    Sh[tid * BT + i3] += Sh[(tid + s) * BT + i3];
-                }
+                Sh[i2 * 256u + tid] = acc[i2];
             }
-
-            GroupMemoryBarrierWithGroupSync();
         }
+
+        // One barrier, then the thread that forms a unit's gates adds each row's eight lane sums itself in the halving-tree order
+        // ((p0 + p4) + (p2 + p6)) + ((p1 + p5) + (p3 + p7)), which is what a tree in shared memory gives bit for bit, without a barrier per level.
+        GroupMemoryBarrierWithGroupSync();
 
         // Gate arithmetic: one thread per (unit, batch row); a workgroup with more of them than threads loops.
         for (uint item = tid; item < U * BT; item += 256u)
@@ -278,7 +293,7 @@ void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
                 uint len = hasLens ? min(Lens[P.OffLens + b], P.Seq) : P.Seq;
                 uint vi = (d * batch + b) * hid + j;
                 float hPrev = State[hIn + vi];
-                if (P.Step >= len)
+                if (stp >= len)
                 {
                     if (finishes)
                     {
@@ -287,13 +302,13 @@ void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
                 }
                 else
                 {
-                    uint t = rev ? len - 1u - P.Step : P.Step;
+                    uint t = rev ? len - 1u - stp : stp;
                     uint xRow = layout1 ? b * P.Seq + t : t * batch + b;
                     uint xw = xBase + xRow * gh + j;
                     uint bB = P.OffBias + d * 2u * gh + j;
                     uint rB = bB + gh;
                     // Recurrent product of gate g (relative to this pass) for this unit and row.
-                    #define REC(g) Sh[((g * U + u) * LANES) * BT + bi]
+                    #define REC(g) LaneTree(bi * 256u + (g * U + u) * LANES)
                     float hNew = 0.0;
                     if (cell == 2u)
                     {
@@ -403,6 +418,16 @@ void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
         }
 
         // The next chunk of batch rows reuses the shared memory.
-        GroupMemoryBarrierWithGroupSync();
+        if (b0 + BT < batch)
+        {
+            GroupMemoryBarrierWithGroupSync();
+        }
     }
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void StepOp(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex)
+{
+    StepGroup(gid.y, tid, gid.x, P.Step, (P.Flags & 512u) != 0u, P.Gates & 15u, (P.Gates >> 4) & 15u);
 }
