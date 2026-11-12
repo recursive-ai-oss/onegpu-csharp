@@ -113,6 +113,22 @@ has browser-specific variants; see [`docs/attention.md`](docs/attention.md).
 
 Environment variables, the JavaScript module's surface and how the public API is frozen are in [`docs/environment.md`](docs/environment.md).
 
+## Speed
+
+Measured through onemodel's `RecursiveAI.OneModel.Gpu` on onemodel's reference set (MiniLM-L6, BERT-base, ResNet-50, MobileNetV3, DBNet, CRNN,
+Whisper-small), against ONNX Runtime's GPU providers on the same machine and model file. Ratio is ours divided by the reference; the bar is 1.5
+(target 1.15) on a desktop and 2.5 (target 1.5) in a browser. Full tables, method and the correctness runs: [`docs/speed.md`](docs/speed.md).
+
+| Platform | Reference | Rows judged | Result |
+|---|---|---|---|
+| Linux, RTX 4070, Vulkan | ONNX Runtime 1.31.1, WebGPU provider | 14 | all within the bar; worst ResNet-50 b8 1.40, BERT b8 1.35; the rest at or under 1.15 |
+| macOS, Apple M2, Metal | the faster of Core ML (GPU) and the WebGPU provider | 14 | 12 within the bar; **ResNet-50 float32 misses: 2.16 at batch 1 (13.09 vs 6.07 ms) and 2.21 at batch 8 (77.94 vs 35.27 ms) against Core ML on the GPU**, 0.82 and 0.81 against the WebGPU provider on Metal |
+| Chrome 155, RTX 4070, WebGPU | onnxruntime-web 1.31.1 | 12 | all within the bar; 11 within the target |
+| Windows 11, Intel Iris Xe, Vulkan (indicative) | ONNX Runtime 1.24.4, DirectML | 20 | misses on float32 BERT, MiniLM, ResNet-50 and Whisper, float16 ResNet-50 and MobileNetV3 at batch 8 (1.53 to 2.89; this GPU has no cooperative matrix); MobileNetV3 b1, DBNet, CRNN, float16 MiniLM and every 8-bit row within the bar |
+
+The misses are known and ship as they are; rows where the reference leaves compute to its CPU (the 8-bit models) are listed for information only.
+Native AOT on Windows has not been tested.
+
 ## Build and test
 
 ```

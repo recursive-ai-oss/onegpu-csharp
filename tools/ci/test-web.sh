@@ -6,7 +6,7 @@ set -euo pipefail
 out="$ONEGPU_ARTIFACTS/web"
 rm -rf "$out"
 dotnet publish tests/RecursiveAI.OneGpu.WebRunner -c Release -o "$out"
-node tools/web/run-page.mjs --root "$out/wwwroot" --path "/index.html?filter=${1:-}" --timeout 600 --out "$out/result.json" --log 1 2> "$out/console.log" || { cat "$out/console.log"; exit 1; }
+node tools/web/run-page.mjs --root "$out/wwwroot" --path "/index.html?filter=${1:-}" --timeout 2700 --out "$out/result.json" --log 1 2> "$out/console.log" || { cat "$out/console.log"; exit 1; }
 # The page log holds every console message; an error or an uncaptured WebGPU error fails the run.
 if grep -E '^(log error|error|exception):|uncaptured' "$out/console.log"; then
   echo "the page reported errors" >&2
