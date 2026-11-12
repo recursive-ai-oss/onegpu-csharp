@@ -145,6 +145,11 @@ public static partial class Runner
                     {
                         error = ex.InnerException?.ToString() ?? ex.Message;
                     }
+                    catch (Exception ex) when (ex.Message.StartsWith(DynamicSkipPrefix, StringComparison.Ordinal))
+                    {
+                        // An async test that skips throws the same marker from its awaited task.
+                        skipReason = ex.Message[DynamicSkipPrefix.Length..];
+                    }
                     catch (Exception ex)
                     {
                         error = ex.ToString();

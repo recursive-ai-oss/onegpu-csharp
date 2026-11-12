@@ -141,6 +141,8 @@ copied by hand. A page that registers its own copy (`setModuleImports('onegpu', 
 page, and the library then does not import a second one. `tools/ci/test-web-package.sh` checks the whole path with
 `tests/RecursiveAI.OneGpu.WebConsumer`, an app that restores the packed libraries from a scratch feed.
 
+Several devices can share a page: each `CreateDeviceAsync` makes a context of its own in `onegpu.js` (its WebGPU device, handle table, push-constant ring and pass state), and every call from a device names its context. Buffers and bind groups belong to the device that made them, as in WebGPU.
+
 Disposing a bind group, buffer-backed or not, while a command encoder that recorded it has not been submitted is safe on every backend. On the browser backend an
 encoder pins each bind group it records and a group disposed meanwhile is destroyed in the stream right after that encoder's commands, because WebGPU forbids destroying an object queued commands still name.
 An encoder that is never submitted keeps its groups alive.

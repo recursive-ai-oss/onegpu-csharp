@@ -102,6 +102,37 @@ typedef float Elem;
 #endif
 #endif
 
+// With VEC4 the key and value tiles are read four floats at a time (one 128-bit workgroup-memory access instead of four, and in a browser one bounds check
+// instead of four); the Apple GPUs measured ran that form 17-25% slower and keep the element-wise one. EACH_Q covers the PD / 4 groups of four that one thread holds; each group adds its four products in increasing element order, so
+// the sums are the ones the element-wise form made.
+#if ATTN_LOOPS
+#define EACH_Q(F) [loop] for (uint eq = 0u; eq < PD / 4u; eq++) { F(eq) }
+#elif HD_D32
+#if WAVE
+#define EACH_Q(F) U4(F, 0u)
+#else
+#define EACH_Q(F) U4(F, 0u) U4(F, 4u)
+#endif
+#elif HD_D64
+#if WAVE
+#define EACH_Q(F) U4(F, 0u) U4(F, 4u)
+#else
+#define EACH_Q(F) U16(F, 0u)
+#endif
+#elif HD_D128
+#if WAVE
+#define EACH_Q(F) U16(F, 0u)
+#else
+#define EACH_Q(F) U16(F, 0u) U16(F, 16u)
+#endif
+#else
+#if WAVE
+#define EACH_Q(F) U16(F, 0u) U16(F, 16u)
+#else
+#define EACH_Q(F) U64(F, 0u)
+#endif
+#endif
+
 #define FLAG_MASK 1u
 #define FLAG_CAUSAL 2u
 #define FLAG_LENS 4u
@@ -139,8 +170,13 @@ struct AttnParams
 [[vk::binding(5, 0)]] RWStructuredBuffer<Elem> AOut;
 [[vk::binding(6, 0)]] RWStructuredBuffer<float> APart;
 
+#if VEC4
+groupshared float4 gsK[BC * DIM / 4u];
+groupshared float4 gsV[BC * DIM / 4u];
+#else
 groupshared float gsK[BC * DIM];
 groupshared float gsV[BC * DIM];
+#endif
 
 bool IsNegInf(float x)
 {
@@ -238,6 +274,31 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
         GroupMemoryBarrierWithGroupSync();
         if (active)
         {
+#if VEC4
+            for (uint e = tid; e < BC * DIM / 4u; e += 64u)
+            {
+                uint r = e / (DIM / 4u);
+                uint c = (e % (DIM / 4u)) * 4u;
+                uint key = kb + r;
+                float4 kv = float4(0.0, 0.0, 0.0, 0.0);
+                float4 vv = float4(0.0, 0.0, 0.0, 0.0);
+                if (key < kEnd)
+                {
+                    [unroll]
+                    for (uint z = 0u; z < 4u; z++)
+                    {
+                        if (c + z < AP.D)
+                        {
+                            kv[z] = LoadE(AK, kBase + key * AP.KRow + c + z);
+                            vv[z] = LoadE(AV, vBase + key * AP.VRow + c + z);
+                        }
+                    }
+                }
+
+                gsK[e] = kv;
+                gsV[e] = vv;
+            }
+#else
             for (uint e = tid; e < BC * DIM; e += 64u)
             {
                 uint r = e / DIM;
@@ -254,6 +315,7 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
                 gsK[e] = kv;
                 gsV[e] = vv;
             }
+#endif
         }
 
         GroupMemoryBarrierWithGroupSync();
@@ -263,10 +325,19 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
         for (uint j = 0u; j < count; j++)
         {
             uint key = kb + j;
+#if VEC4
+            uint row = (j * DIM + dOff) / 4u;
+#else
             uint row = j * DIM;
+#endif
             float dot = 0.0;
+#if VEC4
+#define DOT_STEP(e) { float4 kk = gsK[row + (e)]; dot = mad(q[4u * (e)], kk.x, dot); dot = mad(q[4u * (e) + 1u], kk.y, dot); dot = mad(q[4u * (e) + 2u], kk.z, dot); dot = mad(q[4u * (e) + 3u], kk.w, dot); }
+            EACH_Q(DOT_STEP)
+#else
 #define DOT_STEP(d) dot = mad(q[d], gsK[row + dOff + (d)], dot);
             EACH_D(DOT_STEP)
+#endif
 #if WAVE
             // The shuffle sits outside every divergent branch so that both threads of the pair always take part.
             dot = dot + WaveReadLaneAt(dot, WaveGetLaneIndex() ^ 1u);
@@ -304,8 +375,13 @@ void AttentionTile(uint2 gid : SV_GroupID, uint tid : SV_GroupIndex)
                     }
 
                     RUNL += p;
+#if VEC4
+#define FMA_STEP(e) { float4 vq = gsV[row + (e)]; RUN[4u * (e)] = mad(p, vq.x, RUN[4u * (e)]); RUN[4u * (e) + 1u] = mad(p, vq.y, RUN[4u * (e) + 1u]); RUN[4u * (e) + 2u] = mad(p, vq.z, RUN[4u * (e) + 2u]); RUN[4u * (e) + 3u] = mad(p, vq.w, RUN[4u * (e) + 3u]); }
+                    EACH_Q(FMA_STEP)
+#else
 #define FMA_STEP(d) RUN[d] = mad(p, gsV[row + dOff + (d)], RUN[d]);
                     EACH_D(FMA_STEP)
+#endif
                 }
             }
         }

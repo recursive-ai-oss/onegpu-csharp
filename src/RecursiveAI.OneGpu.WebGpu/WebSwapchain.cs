@@ -16,7 +16,7 @@ internal sealed class WebSwapchain : GpuSwapchain
         _canvas = canvasId;
         _srgb = desc.Srgb;
         _id = device.NextId();
-        var size = Js.ConfigureCanvas(canvasId, (int)Math.Max(desc.Width, 1), (int)Math.Max(desc.Height, 1)).Split('x');
+        var size = Js.ConfigureCanvas(device.Context, canvasId, (int)Math.Max(desc.Width, 1), (int)Math.Max(desc.Height, 1)).Split('x');
         _width = uint.Parse(size[0], System.Globalization.CultureInfo.InvariantCulture);
         _height = uint.Parse(size[1], System.Globalization.CultureInfo.InvariantCulture);
     }

@@ -15,7 +15,7 @@ public static class WebGpu
     {
         ArgumentNullException.ThrowIfNull(device);
         device.WaitIdle();
-        await Js.WhenIdle().ConfigureAwait(true);
+        await Js.WhenIdle(device is WebGpuDevice web ? web.Context : 0).ConfigureAwait(true);
         await Task.Delay(5).ConfigureAwait(true);
     }
 
@@ -143,6 +143,6 @@ public static class WebGpu
         {
             Compute = compute,
         };
-        return new WebGpuDevice(info, caps);
+        return new WebGpuDevice(info, caps, r.GetProperty("ctx").GetInt32());
     }
 }
