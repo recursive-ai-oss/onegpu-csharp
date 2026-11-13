@@ -97,7 +97,7 @@ int8 rows are information, so none is a bar row here; they run (fast and exact, 
 
 ### Windows, Intel Iris Xe (Windows 11, driver 101.7085), indicative only
 
-Not publishable: one run on a shared laptop, ONNX Runtime 1.24.4 DirectML wheel, `tools/bar.ps1`. The float32 transformer rows (BERT, MiniLM), ResNet-50 (float32 and float16),
+Indicative only, like the README row: one run on a shared laptop, not repeated under the benchmark rules above, ONNX Runtime 1.24.4 DirectML wheel, `tools/bar.ps1`. The float32 transformer rows (BERT, MiniLM), ResNet-50 (float32 and float16),
 MobileNetV3 at batch 8 and Whisper **miss the 1.5 bar against DirectML (1.53 to 2.89)**: that GPU has no cooperative matrix, so the portable tiled kernels run. They ship as documented misses.
 NativeAOT on Windows is untested.
 

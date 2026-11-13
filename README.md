@@ -8,7 +8,7 @@ It has two jobs. It is a small, compute-first device layer (typed buffers, async
 capabilities as data) with the surfaces, textures and graphics pipelines a renderer needs. And it ships the compute kernels that
 machine-learning inference needs, written in HLSL and compiled at build time for all three backends.
 
-onemodel's `RecursiveAI.OneModel.Gpu` runs ONNX models on these kernels, and onegame, the family's game engine, takes its GPU layer from
+onemodel's `RecursiveAI.OneModel.Gpu` package, coming in a later OneModel release, runs ONNX models on these kernels, and onegame, the family's game engine, takes its GPU layer from
 these packages (its render graph and 2D/3D rendering stay in onegame).
 
 **Status:** 1.0.0, released on [nuget.org](https://www.nuget.org/packages/RecursiveAI.OneGpu.Backends/1.0.0). The public API is frozen: a change that breaks it needs a new major version.
@@ -26,7 +26,8 @@ these packages (its render graph and 2D/3D rendering stay in onegame).
 
 - **.NET 10.** Every package is trimmable and Native AOT compatible.
 - **Linux and Windows:** a Vulkan 1.3 driver (NVIDIA, AMD, Intel; the Mesa software driver works too). Tested on NVIDIA and AMD hardware and on
-  llvmpipe; Intel is not tested. The loader library (`libvulkan.so.1`, `vulkan-1.dll`) must be installed.
+  llvmpipe. Intel (Iris Xe on Windows) has had one indicative run of the tests and speed rows, not a full test or speed run (see
+  [Speed](#speed)). The loader library (`libvulkan.so.1`, `vulkan-1.dll`) must be installed.
 - **macOS:** Apple silicon with Metal. Tested on an M2.
 - **Browser:** Chrome with WebGPU. `shader-f16` and `subgroups` are used when the adapter offers them; a kernel that needs a missing feature
   falls back to a portable variant or reports it by name.
