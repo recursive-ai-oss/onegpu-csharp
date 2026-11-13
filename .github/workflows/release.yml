@@ -65,7 +65,7 @@ jobs:
 
   publish:
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # the validation layer pinned in tools/ci/fetch-validation-layer.sh is an Ubuntu 24.04 package
     environment: nuget
     permissions:
       id-token: write       # nuget.org Trusted Publishing and the provenance attestation
